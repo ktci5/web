@@ -16,6 +16,7 @@
  *  GET  /guide                       채널 사용 안내
  *  GET  /study                       스터디 자료 목차
  *  GET  /study/linux                 리눅스 CLI 심층 가이드
+ *  GET  /study/infra                 이 서버는 어떻게 돌아가나
  *  GET  /terms                       이용 약관
  *  GET  /privacy                     개인정보 보호 정책
  *  GET  /callback                    구 리다이렉트 URI 하위호환
@@ -38,6 +39,7 @@
  */
 
 import { LINUX_GUIDE_TITLE, LINUX_GUIDE_CSS, renderLinuxGuide } from './study-linux.js';
+import { INFRA_TITLE, INFRA_CSS, renderInfraGuide } from './study-infra.js';
 
 const DISCORD_API = 'https://discord.com/api/v10';
 const USER_AGENT = 'DiscordBot (https://ktci5.kr, 1.0)';
@@ -122,6 +124,8 @@ export default {
         return guarded(request, env, studyIndexPage);
       case '/study/linux':
         return guarded(request, env, linuxGuidePage);
+      case '/study/infra':
+        return guarded(request, env, infraGuidePage);
       case '/terms':
         return termsPage();
       case '/privacy':
@@ -254,6 +258,12 @@ const STUDY_MATERIALS = [
     tag: '읽기',
   },
   {
+    href: '/study/infra',
+    name: '이 서버는 어떻게 돌아가나',
+    desc: '도메인·Cloudflare·깃허브 연결을 L1 기초부터 L4 마스터까지. 지금 쓰는 시스템이 그대로 교재입니다.',
+    tag: '읽기',
+  },
+  {
     href: 'https://github.com/ktci5/study/blob/main/%EC%8A%A4%ED%84%B0%EB%94%94%EC%9E%90%EB%A3%8C/%EB%A6%AC%EB%88%85%EC%8A%A4/linux_cli_interactive_hub.html',
     name: '명령어 치트 시트 (인터랙티브)',
     desc: '분야별·난이도별 명령 36개. 검색과 원클릭 복사가 됩니다.',
@@ -289,6 +299,15 @@ function studyIndexPage(env) {
       </ul></section>`;
 
   return html(renderDoc({ title: '스터디 자료', heading: '📖 스터디 자료', html: body }));
+}
+
+function infraGuidePage(env) {
+  return html(renderDoc({
+    title: INFRA_TITLE,
+    heading: '🛠 이 서버는 어떻게 돌아가나',
+    html: renderInfraGuide(escapeHtml),
+    extraCss: INFRA_CSS,
+  }));
 }
 
 function linuxGuidePage(env) {
