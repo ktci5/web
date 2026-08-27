@@ -2006,16 +2006,6 @@ const BOT_COMMANDS = [
   ['/스터디자료', '깃허브 ktci5/study 저장소의 자료를 디스코드에서 바로 봅니다.'],
 ];
 
-// 교육과정에서 공유한 드라이브 폴더.
-const DRIVE_FOLDERS = [
-  ['Ⅰ. 훈련 자료', '12kJpmfEXBrBcQCd5dnkWgwa6lXUTjbn4'],
-  ['Ⅱ. 챌린저 제출 폴더', '11LzrTnTuwiboK-pTJxJkLggfb3E-XOMs'],
-  ['Ⅲ. 훈련수당 신청', '1Zb2aTj8o8fFbHmfrRvSEcYyAgTbfOLiO'],
-  ['📁 전체 모음 (KT CI5)', '1PTw0vZFG8aANdsBp7-Nf4cA7cUVNIlwT'],
-];
-
-const DRIVE_URL = (id) => `https://drive.google.com/drive/folders/${id}`;
-
 function guideItem(it) {
   const how = it.how?.length
     ? `<ul class="how">${it.how.map((h) => `<li>${h}</li>`).join('')}</ul>`
@@ -2043,12 +2033,6 @@ function guidePage(env) {
     .map(([c, d]) => `<div class="ch"><div class="ch-name"><code>${escapeHtml(c)}</code></div><div class="ch-desc"><p>${escapeHtml(d)}</p></div></div>`)
     .join('');
 
-  const drive = DRIVE_FOLDERS
-    .map(([name, id]) =>
-      `<div class="ch"><div class="ch-name"><a href="${DRIVE_URL(id)}" target="_blank" rel="noopener">${escapeHtml(name)}</a></div>` +
-      '<div class="ch-desc"><p>구글 드라이브에서 열립니다.</p></div></div>')
-    .join('');
-
   const body =
     '<p class="lead">인증이 끝났습니다. 아래 채널이 모두 열려 있습니다.<br>' +
     '디스코드가 처음이셔도 괜찮습니다. 기본 사용법부터 정리해두었습니다.</p>' +
@@ -2069,10 +2053,9 @@ function guidePage(env) {
 
     groups +
 
-    `<section><h2>자료실 (구글 드라이브)</h2>
-      <p class="lead">교육과정에서 공유한 폴더입니다. 과정에 등록한 구글 계정으로 로그인하면 열립니다.<br>
-      마지막 <strong>전체 모음</strong> 은 위 세 폴더를 한 곳에 모아둔 바로가기함입니다.</p>
-      ${drive}
+    `<section><h2>자료실</h2>
+      <p class="lead">교육과정 드라이브 폴더 링크는 <strong>#📚-자료공유</strong> 채널의 고정 메시지에 있습니다.
+      과정에 등록한 구글 계정으로 로그인하면 열립니다.</p>
       <h2>스터디 자료 올리기</h2>
       <p class="lead">채널마다 같은 이름의 드라이브 폴더가 하나씩 있습니다.</p>
       <ul class="how">
@@ -2080,6 +2063,7 @@ function guidePage(env) {
         <li>드라이브 창에 파일을 <strong>끌어다 놓으면</strong> 업로드됩니다.</li>
         <li>파일 이름에 <code>#태그</code> 를 넣어두면 나중에 <code>/자료검색</code> 으로 바로 찾힙니다.
             예: <code>LVM정리 #리눅스 #스토리지.pdf</code></li>
+        <li>깃허브에 올린 정리 문서는 <code>/스터디자료</code> 로 디스코드에서 바로 볼 수 있습니다.</li>
         <li>실수로 지워도 <strong>30일 안에는 휴지통에서 복구</strong>할 수 있고, 사라진 파일은 자동으로 알림이 갑니다.</li>
       </ul>
     </section>` +
@@ -2092,7 +2076,7 @@ function guidePage(env) {
       <ul class="how">
         <li>인증이 안 될 때 → 대기실에서 <strong>목록에 없어요</strong> 를 누르면 운영진에게 요청이 갑니다.</li>
         <li>채널이 안 보일 때 → 아직 인증 전이거나 그룹 전용 채널입니다.</li>
-        <li>드라이브가 안 열릴 때 → 과정에 등록한 구글 계정으로 로그인했는지 확인해주세요.</li>
+        <li>드라이브가 안 열릴 때 → <strong>#📚-자료공유</strong> 의 고정 메시지에서 링크를 확인하고, 과정에 등록한 구글 계정으로 로그인했는지 봐주세요.</li>
         <li>그 밖의 문제 → <strong>#❓-질문답변</strong> 에 남겨주세요.</li>
       </ul>
     </section>`;

@@ -502,15 +502,18 @@ node scripts/post-messages.mjs --post gate     # 대기실 안내만 게시
 | Ⅲ. 훈련수당 신청 | 수당 관련 서류 |
 | 전체 모음 (KT CI5) | 위 세 폴더 바로가기를 모아둔 폴더 |
 
-링크와 이름은 두 곳에 있습니다.
+드라이브 폴더 링크는 **디스코드 `#📚-자료공유` 채널에만** 둡니다.
+공개 저장소(`ktci5/web`, `ktci5/study`)와 웹 안내 페이지(`ktci5.kr`)에는 노출하지 않습니다.
+스터디 자료 폴더 주소가 검색이나 저장소 열람으로 새어나가지 않게 하기 위함입니다.
 
-| 파일 | 위치 |
+| 위치 | 드라이브 링크 |
 | --- | --- |
-| `src/index.js` | `DRIVE_FOLDERS` — `/guide` 의 자료실 항목 |
-| `scripts/post-messages.mjs` | `DRIVE_FOLDERS` — `#📚-자료공유` 게시 내용 |
+| `#📚-자료공유` 고정 메시지 | 있음 — `scripts/post-messages.mjs` 의 `DRIVE_FOLDERS` |
+| `/자료함` 명령 응답 | 있음 — 본인에게만 보이는 응답 |
+| `ktci5.kr` 웹 페이지 | 없음 |
+| 공개 저장소 문서 | 없음 |
 
 ```bash
-npx wrangler deploy                              # 안내 페이지 반영
 node scripts/post-messages.mjs --post drive      # 채널 안내 갱신
 ```
 
