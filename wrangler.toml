@@ -9,6 +9,20 @@ workers_dev = false
 pattern = "ktci5.kr"
 custom_domain = true
 
+# 프로젝트 결과물이 올라갈 자리. 지금은 "준비 중" 안내만 띄웁니다.
+# 실제 앱이 AWS 등에 올라가면 이 라우트를 빼고 DNS 를 그쪽으로 돌립니다.
+[[routes]]
+pattern = "project1.ktci5.kr"
+custom_domain = true
+
+[[routes]]
+pattern = "project2.ktci5.kr"
+custom_domain = true
+
+[[routes]]
+pattern = "project3.ktci5.kr"
+custom_domain = true
+
 # 값이 공개돼도 되는 설정만 여기에 둡니다. 나머지는 wrangler secret put 으로 등록.
 [vars]
 DISCORD_GUILD_ID = "1541782724363427922"

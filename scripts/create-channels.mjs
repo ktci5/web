@@ -26,8 +26,9 @@ const PLAN = [
     ],
   },
   {
-    category: '📁 03. 분야별 스터디',
+    category: '📁 03. TRACK A · Cloud Infra',
     channels: [
+      { name: '🧭-인프라-개요', topic: '인프라와 Cloud 개념, 가상화. Track A 의 출발점입니다.' },
       { name: '🌐-네트워크', topic: 'TCP/IP, 라우팅, 방화벽 등 네트워크 주제를 다룹니다.', voice: true },
       { name: '☁️-클라우드', topic: 'KT클라우드와 가상화, IaC 관련 질문과 자료를 나눕니다.', voice: true },
       { name: '🐳-컨테이너-쿠버네티스', topic: '도커와 쿠버네티스. 실습하다 막힌 곳을 함께 풉니다.', voice: true },
@@ -81,13 +82,28 @@ const PLAN = [
     ],
   },
   {
+    // 아직 배우지 않은 단계. 진도가 나가면 @everyone 차단만 풀어 공개합니다.
+    category: '📁 TRACK B · DevOps 🔒',
+    private: ['1402818881223135233'],
+    channels: [
+      { name: '🔀-git-cicd', topic: 'Git, CI/CD, GitOps. 진도가 나가면 공개합니다.' },
+      { name: '📊-모니터링', topic: 'Prometheus, Grafana. 진도가 나가면 공개합니다.' },
+    ],
+  },
+  {
+    category: '📁 TRACK C · AI Cloud/SRE 🔒',
+    private: ['1402818881223135233'],
+    channels: [
+      { name: '🔎-로그-관측', topic: 'ELK, Loki. 진도가 나가면 공개합니다.' },
+      { name: '🤖-mlops', topic: 'AWS Bedrock, MLOps. 진도가 나가면 공개합니다.' },
+    ],
+  },
+  {
     // 1차(기본) 프로젝트 준비. 아직 공개하지 않고 혼자 정리하는 단계입니다.
     category: '📁 09. 프로젝트 준비',
     private: ['1402818881223135233'], // 정다운 — 서버 소유자
     channels: [
       { name: '🎯-기본프로젝트', topic: '1차 프로젝트 전체 파이프라인 설계와 진행 상황. Python 앱 → Docker → K8s → AWS → Terraform.' },
-      { name: '🐍-python', topic: '프로젝트에 쓸 웹 애플리케이션과 자동화 스크립트. Track A 의 Python 파트.' },
-      { name: '🏗️-terraform-iac', topic: '인프라를 코드로. Terraform 으로 AWS 자원을 만들고 관리합니다.' },
       { name: '📐-설계노트', topic: '아키텍처 초안, 고민한 선택지, 왜 그렇게 정했는지 기록.' },
     ],
   },

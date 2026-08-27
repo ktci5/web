@@ -689,3 +689,38 @@ printf '%s' "$(openssl rand -hex 16)" | npx wrangler secret put PREVIEW_KEY
 | `#📐-설계노트` | 왜 그렇게 정했는지 기록 |
 
 공개할 준비가 되면 카테고리 권한에서 `@everyone` 차단만 풀면 됩니다.
+
+## 15. 프로젝트 서브도메인
+
+`project1~3.ktci5.kr` 은 프로젝트 결과물이 올라갈 자리입니다. 지금은 Worker 가
+"준비 중" 안내를 띄웁니다.
+
+| 주소 | 프로젝트 | 트랙 |
+| --- | --- | --- |
+| `project1.ktci5.kr` | 기본 프로젝트 | Track A · Cloud Infra |
+| `project2.ktci5.kr` | 심화 프로젝트 | Track B · DevOps |
+| `project3.ktci5.kr` | 실무 종합 프로젝트 | Track C · AI Cloud/SRE |
+
+내용은 `src/projects.js` 의 `PROJECTS` 에 있습니다. 호스트 이름이
+`project<숫자>.` 로 시작하면 경로와 상관없이 이 페이지를 돌려줍니다.
+
+### 실제 앱으로 넘길 때
+
+Worker 의 커스텀 도메인은 `wrangler.toml` 이 관리하므로, 해당 라우트를 빼고
+배포하면 연결이 풀립니다. 그다음 Cloudflare DNS 에서 실제 백엔드(AWS ALB 등)를
+가리키는 레코드를 만들면 됩니다.
+
+```toml
+# 이 블록을 지우고 배포하면 도메인이 Worker 에서 분리됩니다
+[[routes]]
+pattern = "project1.ktci5.kr"
+custom_domain = true
+```
+
+> 커스텀 도메인을 추가하면 wrangler 가 DNS 레코드까지 만들어줍니다.
+> 전파에 몇 분 걸리므로 바로 안 열려도 잠시 기다리면 됩니다.
+
+### 코드 저장소
+
+프로젝트 코드는 `ktci5/project1~3` (비공개) 에 둡니다. 학습 자료(`study`)나
+운영 코드(`web`)와 섞지 않습니다.

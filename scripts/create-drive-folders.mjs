@@ -22,7 +22,7 @@ const ROOT_ID = process.env.DRIVE_ROOT_ID || '1PTw0vZFG8aANdsBp7-Nf4cA7cUVNIlwT'
 // 파일이 쌓일 만한 카테고리만 옮깁니다. 공지·인증 채널은 폴더가 필요 없습니다.
 const INCLUDE = [
   '📁 02. 케이스 스터디',
-  '📁 03. 분야별 스터디',
+  '📁 03. TRACK A · Cloud Infra',
   '📁 04. 지역모임',
   '📁 05. 공부자료',
   '📁 06. 그룹스터디',

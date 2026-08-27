@@ -42,6 +42,7 @@
 
 import { LINUX_GUIDE_TITLE, LINUX_GUIDE_CSS, renderLinuxGuide } from './study-linux.js';
 import { INFRA_TITLE, INFRA_CSS, renderInfraGuide } from './study-infra.js';
+import { renderProjectPage } from './projects.js';
 
 const DISCORD_API = 'https://discord.com/api/v10';
 const USER_AGENT = 'DiscordBot (https://ktci5.kr, 1.0)';
@@ -87,6 +88,15 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const path = url.pathname.replace(/\/+$/, '') || '/';
+
+    // project1~3.ktci5.kr 은 결과물이 올라갈 자리입니다. 지금은 안내만 띄웁니다.
+    const project = url.hostname.match(/^project(\d+)\./);
+    if (project) {
+      const page = renderProjectPage(Number(project[1]), escapeHtml);
+      return page
+        ? html(page)
+        : errorPage('아직 준비되지 않은 프로젝트입니다.', 404);
+    }
 
     if (request.method === 'POST') {
       if (path === '/discord/interactions') {
