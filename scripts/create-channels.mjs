@@ -80,10 +80,36 @@ const PLAN = [
       { name: '🎧-휴게실', voice: true, voiceOnly: true },
     ],
   },
+  {
+    // 1차(기본) 프로젝트 준비. 아직 공개하지 않고 혼자 정리하는 단계입니다.
+    category: '📁 09. 프로젝트 준비',
+    private: ['1402818881223135233'], // 정다운 — 서버 소유자
+    channels: [
+      { name: '🎯-기본프로젝트', topic: '1차 프로젝트 전체 파이프라인 설계와 진행 상황. Python 앱 → Docker → K8s → AWS → Terraform.' },
+      { name: '🐍-python', topic: '프로젝트에 쓸 웹 애플리케이션과 자동화 스크립트. Track A 의 Python 파트.' },
+      { name: '🏗️-terraform-iac', topic: '인프라를 코드로. Terraform 으로 AWS 자원을 만들고 관리합니다.' },
+      { name: '📐-설계노트', topic: '아키텍처 초안, 고민한 선택지, 왜 그렇게 정했는지 기록.' },
+    ],
+  },
 ];
 
 function voiceName(ch) {
   return ch.voicePrefix ? ch.name.replace(/^[^-]+/, ch.voicePrefix) : ch.name;
+}
+
+const VIEW_CHANNEL = 1 << 10;
+
+// private: [사용자ID, ...] 를 주면 그 사람과 봇만 보이는 카테고리가 됩니다.
+// 하위 채널은 카테고리 권한을 그대로 물려받습니다.
+async function categoryOverwrites(env, allowUserIds) {
+  if (!allowUserIds?.length) return undefined;
+  const bot = await discord(env, '/users/@me');
+  return [
+    { id: env.DISCORD_GUILD_ID, type: 0, deny: String(VIEW_CHANNEL) }, // @everyone 차단
+    ...[...new Set([...allowUserIds, bot.id])].map((id) => ({
+      id, type: 1, allow: String(VIEW_CHANNEL),
+    })),
+  ];
 }
 
 const existing = await discord(env, `/guilds/${env.DISCORD_GUILD_ID}/channels`);
@@ -112,11 +138,17 @@ for (const group of PLAN) {
       }
       continue;
     }
+    const overwrites = await categoryOverwrites(env, group.private);
     cat = await discord(env, `/guilds/${env.DISCORD_GUILD_ID}/channels`, {
       method: 'POST',
-      body: JSON.stringify({ name: group.category, type: 4 }),
+      body: JSON.stringify({
+        name: group.category,
+        type: 4,
+        ...(overwrites && { permission_overwrites: overwrites }),
+      }),
     });
     cats.push(cat);
+    if (overwrites) console.log('  🔒 비공개 — 지정한 사람과 봇만 보입니다');
     willCreate++;
     console.log('  ✅ 카테고리 생성됨');
   }
