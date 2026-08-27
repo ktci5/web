@@ -1,0 +1,33 @@
+{
+  "name": "ktci5",
+  "version": "1.0.0",
+  "private": true,
+  "description": "ktci5.kr — KT클라우드 인프라교육 5기 디스코드 자동 인증 Worker",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "build": "wrangler deploy --dry-run --outdir dist",
+    "check": "node --check src/index.js && node --check scripts/_env.mjs && node --check scripts/register-commands.mjs && node --check scripts/register-role-metadata.mjs && node --check scripts/register-app-urls.mjs && node --check scripts/setup-google.mjs && node --check scripts/post-messages.mjs && node --check scripts/upload-roster.mjs && node --check scripts/set-channel-topics.mjs && node --check scripts/create-channels.mjs && node --check scripts/create-drive-folders.mjs && node --check scripts/post-channel-intros.mjs",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail",
+    "secrets": "bash scripts/setup-secrets.sh",
+    "register:commands": "node scripts/register-commands.mjs",
+    "register:metadata": "node scripts/register-role-metadata.mjs",
+    "register:urls": "node scripts/register-app-urls.mjs",
+    "setup:discord": "npm run register:urls && npm run register:commands && npm run register:metadata",
+    "setup:google": "node scripts/setup-google.mjs",
+    "roster": "node scripts/upload-roster.mjs",
+    "messages": "node scripts/post-messages.mjs",
+    "topics": "node scripts/set-channel-topics.mjs",
+    "channels": "node scripts/create-channels.mjs",
+    "drive": "node scripts/create-drive-folders.mjs",
+    "intros": "node scripts/post-channel-intros.mjs"
+  },
+  "devDependencies": {
+    "wrangler": "^4.42.0"
+  },
+  "allowScripts": {
+    "esbuild@0.28.1": true,
+    "workerd@1.20260825.1": true
+  }
+}

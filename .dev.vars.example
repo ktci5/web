@@ -1,0 +1,18 @@
+# 로컬 개발용 (wrangler dev). 복사해서 .dev.vars 로 쓰세요 — 커밋 금지.
+# scripts/register-*.mjs 도 이 파일을 읽습니다.
+DISCORD_CLIENT_ID=""
+DISCORD_CLIENT_SECRET=""
+DISCORD_BOT_TOKEN=""
+DISCORD_ROLE_ID=""
+DISCORD_PUBLIC_KEY=""
+
+# --- 스터디 일정 (구글 캘린더) ---
+# scripts/setup-google.mjs 가 서비스 계정 키에서 자동으로 채웁니다.
+GOOGLE_SA_EMAIL=""
+GOOGLE_SA_PRIVATE_KEY_B64=""
+# 캘린더 설정 및 공유 → 캘린더 통합 → 캘린더 ID
+GOOGLE_CALENDAR_ID=""
+
+# --- 명단 인증 (선택) ---
+# 승인 요청을 보낼 운영진 채널 ID. 없으면 안내 문구만 표시됩니다.
+ADMIN_CHANNEL_ID=""

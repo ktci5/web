@@ -1,0 +1,31 @@
+# Workers Builds 에 연결된 Worker 이름과 일치해야 합니다 (대시보드 기준: web)
+name = "web"
+main = "src/index.js"
+compatibility_date = "2025-09-01"
+workers_dev = false
+
+# 커스텀 도메인 — ktci5.kr 전체 경로가 이 Worker 로 들어옵니다.
+[[routes]]
+pattern = "ktci5.kr"
+custom_domain = true
+
+# 값이 공개돼도 되는 설정만 여기에 둡니다. 나머지는 wrangler secret put 으로 등록.
+[vars]
+DISCORD_GUILD_ID = "1541782724363427922"
+REDIRECT_URI = "https://ktci5.kr/discord/callback"
+LINKED_ROLE_REDIRECT_URI = "https://ktci5.kr/discord/linked-role/callback"
+BOT_REDIRECT_URI = "https://ktci5.kr/discord/bot/callback"
+DISCORD_INVITE_URL = "https://discord.gg/em3kMhTXz7"
+AUTO_JOIN = "false"
+
+# 명단·인증 기록 저장소 (실명은 저장소가 아닌 KV 에만 둡니다)
+[[kv_namespaces]]
+binding = "ROSTER"
+id = "1cd43df3876249819b8627bb22b1c7a8"
+
+# 15분마다 드라이브 변경을 확인합니다.
+[triggers]
+crons = ["*/15 * * * *"]
+
+[observability]
+enabled = true
