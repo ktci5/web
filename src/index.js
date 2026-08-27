@@ -4,7 +4,8 @@
  *
  * 라우트
  *  GET  /                            안내 랜딩 페이지
- *  GET  /discord/                    디스코드 서버 초대 링크로 이동
+ *  GET  /discord/                    스터디 공간 안내 (디스코드·깃허브·드라이브)
+ *  GET  /discord/join                디스코드 서버 초대 링크로 이동
  *  GET  /discord/verify              디스코드 OAuth2 인증 시작
  *  GET  /discord/callback            OAuth2 콜백 → 5기인증 역할 자동 부여
  *  POST /discord/interactions        인터랙션 엔드포인트 (Ed25519 서명 검증)
@@ -102,6 +103,8 @@ export default {
       case '/':
         return landingPage(env);
       case '/discord':
+        return hubPage(env);
+      case '/discord/join':
         return redirect(inviteUrl(env));
       case '/discord/verify':
         return startVerify(env);
@@ -1773,6 +1776,47 @@ function html(markup, status = 200, extraHeaders = {}) {
   });
 }
 
+// 스터디를 어디서 어떻게 하는지 보여주는 입구입니다.
+// 대화는 디스코드, 정리는 깃허브, 파일은 드라이브 — 셋이 이어져 돌아갑니다.
+function hubPage(env) {
+  const body =
+    '<p>세 곳을 나눠 씁니다. 각자 잘하는 일이 다르고, 서로 이어져 있습니다.</p>' +
+
+    '<div class="pillar">' +
+      '<div class="p-ico">💬</div>' +
+      '<div class="p-b"><div class="p-t">디스코드 — 묻고 답합니다</div>' +
+      '<p>막힌 곳을 그때그때 물어보는 곳입니다. 분야별·지역별로 채널이 나뉘어 있고, ' +
+      '음성 채널에서 화면을 공유하며 같이 볼 수도 있습니다.</p></div></div>' +
+
+    '<div class="pillar">' +
+      '<div class="p-ico">📦</div>' +
+      '<div class="p-b"><div class="p-t">깃허브 — 정리해서 남깁니다</div>' +
+      '<p>대화는 흘러가지만 문서는 남습니다. 정리한 내용을 올려두면 다음 기수도 봅니다. ' +
+      '디스코드에서 <code>/스터디자료</code> 로 바로 열어볼 수 있습니다.</p></div></div>' +
+
+    '<div class="pillar">' +
+      '<div class="p-ico">📂</div>' +
+      '<div class="p-b"><div class="p-t">구글 드라이브 — 파일을 주고받습니다</div>' +
+      '<p>강의 자료, 실습 파일, 정리 노트를 둡니다. <strong>채널마다 같은 이름의 폴더</strong>가 하나씩 있어, ' +
+      '채널에서 <code>/자료함</code> 을 치면 그 폴더가 열립니다.</p></div></div>' +
+
+    '<div class="loop">' +
+      '<span>디스코드에서 묻고</span><i>→</i><span>드라이브에 파일 두고</span><i>→</i><span>깃허브에 정리해 남기고</span>' +
+    '</div>' +
+
+    '<p class="hint">인증을 마치면 세 곳이 모두 열립니다.</p>' +
+    '<a class="btn" href="/discord/join">스터디 서버 참여하기</a>' +
+    '<a class="btn btn-ghost" href="/discord/verify">이미 들어와 있어요 · 인증하기</a>' +
+    '<p class="foot2"><a href="https://github.com/ktci5" target="_blank" rel="noopener">github.com/ktci5</a> · ' +
+    '자료실 링크는 서버의 <strong>#📚-자료공유</strong> 채널에 있습니다</p>';
+
+  return html(renderPage({
+    title: 'KT클라우드 5기 스터디',
+    heading: '🧭 스터디 공간 안내',
+    body,
+  }));
+}
+
 function landingPage(env) {
   return html(renderPage({
     title: 'KT클라우드 5기 인증',
@@ -1780,7 +1824,7 @@ function landingPage(env) {
     body:
       '<p>두 단계면 끝납니다.<br>' +
       '이미 서버에 들어와 계시다면 아래 인증만 눌러주세요.</p>' +
-      '<a class="btn btn-ghost" href="/discord/">1. 스터디 서버 참여하기</a>' +
+      '<a class="btn btn-ghost" href="/discord/join">1. 스터디 서버 참여하기</a>' +
       '<a class="btn" href="/discord/verify">2. 디스코드로 인증하기</a>' +
       `<p class="hint">인증을 마치면 <strong>${ROLE_NAME}</strong> 역할이 부여되어 모든 채널이 열립니다.<br>` +
       '채널 사용 안내는 인증 후에 열립니다.</p>',
