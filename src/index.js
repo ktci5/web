@@ -14,6 +14,8 @@
  *  GET  /discord/bot                 봇 초대(Manage Roles 포함) URL로 이동
  *  GET  /discord/status              설정 상태 헬스체크 (JSON, 값은 노출하지 않음)
  *  GET  /guide                       채널 사용 안내
+ *  GET  /study                       스터디 자료 목차
+ *  GET  /study/linux                 리눅스 CLI 심층 가이드
  *  GET  /terms                       이용 약관
  *  GET  /privacy                     개인정보 보호 정책
  *  GET  /callback                    구 리다이렉트 URI 하위호환
@@ -34,6 +36,8 @@
  *  GOOGLE_SA_EMAIL          구글 서비스 계정 이메일 (일정 기능)
  *  GOOGLE_SA_PRIVATE_KEY_B64 서비스 계정 개인키 PEM 을 base64 한 값
  */
+
+import { LINUX_GUIDE_TITLE, LINUX_GUIDE_CSS, renderLinuxGuide } from './study-linux.js';
 
 const DISCORD_API = 'https://discord.com/api/v10';
 const USER_AGENT = 'DiscordBot (https://ktci5.kr, 1.0)';
@@ -114,6 +118,10 @@ export default {
         return errorPage('이 주소는 디스코드 서버가 POST 로 호출하는 인터랙션 엔드포인트입니다.', 405);
       case '/guide':
         return guardedGuide(request, env);
+      case '/study':
+        return guarded(request, env, studyIndexPage);
+      case '/study/linux':
+        return guarded(request, env, linuxGuidePage);
       case '/terms':
         return termsPage();
       case '/privacy':
@@ -219,16 +227,77 @@ async function verifyPass(request, env) {
 }
 
 // 인증하지 않은 사람은 인증 흐름으로 보냈다가 끝나면 돌아오게 합니다.
-async function guardedGuide(request, env) {
-  if (await verifyPass(request, env)) return guidePage(env);
+async function guarded(request, env, render) {
+  if (await verifyPass(request, env)) return render(env);
+  const next = new URL(request.url).pathname;
   return new Response(null, {
     status: 302,
     headers: {
       location: '/discord/verify',
-      'set-cookie': `${NEXT_COOKIE}=/guide; Path=/; Max-Age=600; HttpOnly; Secure; SameSite=Lax`,
+      'set-cookie': `${NEXT_COOKIE}=${next}; Path=/; Max-Age=600; HttpOnly; Secure; SameSite=Lax`,
       'cache-control': 'no-store',
     },
   });
+}
+
+function guardedGuide(request, env) {
+  return guarded(request, env, guidePage);
+}
+
+/* -------------------------------------------------------------- 스터디 자료 */
+
+const STUDY_MATERIALS = [
+  {
+    href: '/study/linux',
+    name: '리눅스 CLI 심층 가이드',
+    desc: '출력을 읽는 법과 증상별 진단 순서. 명령 목록 다음 단계를 다룹니다.',
+    tag: '읽기',
+  },
+  {
+    href: 'https://github.com/ktci5/study/blob/main/%EC%8A%A4%ED%84%B0%EB%94%94%EC%9E%90%EB%A3%8C/%EB%A6%AC%EB%88%85%EC%8A%A4/linux_cli_interactive_hub.html',
+    name: '명령어 치트 시트 (인터랙티브)',
+    desc: '분야별·난이도별 명령 36개. 검색과 원클릭 복사가 됩니다.',
+    tag: '참조',
+    external: true,
+  },
+  {
+    href: 'https://github.com/ktci5/study',
+    name: 'ktci5/study 저장소',
+    desc: '원본 마크다운·docx 문서와 NotebookLM 마인드맵.',
+    tag: '원본',
+    external: true,
+  },
+];
+
+function studyIndexPage(env) {
+  const items = STUDY_MATERIALS.map((m) =>
+    `<div class="ch"><div class="ch-name">` +
+    `<a href="${escapeHtml(m.href)}"${m.external ? ' target="_blank" rel="noopener"' : ''}>${escapeHtml(m.name)}</a>` +
+    ` <span class="tag">${escapeHtml(m.tag)}</span></div>` +
+    `<div class="ch-desc"><p>${escapeHtml(m.desc)}</p></div></div>`
+  ).join('');
+
+  const body =
+    '<p class="lead">과정에서 정리한 자료를 모아둔 곳입니다. ' +
+    '드라이브 폴더는 <strong>#📚-자료공유</strong> 채널에 있고, 여기에는 읽을거리를 둡니다.</p>' +
+    `<section><h2>리눅스</h2>${items}</section>` +
+    `<section><h2>자료 올리기</h2>
+      <ul class="how">
+        <li>채널마다 같은 이름의 드라이브 폴더가 있습니다. 해당 채널에서 <code>/자료함</code>.</li>
+        <li>파일 이름에 <code>#태그</code> 를 넣어두면 <code>/자료검색</code> 으로 바로 찾힙니다.</li>
+        <li>문서로 정리해 공유하고 싶은 것이 있으면 <strong>#📚-자료공유</strong> 에 알려주세요.</li>
+      </ul></section>`;
+
+  return html(renderDoc({ title: '스터디 자료', heading: '📖 스터디 자료', html: body }));
+}
+
+function linuxGuidePage(env) {
+  return html(renderDoc({
+    title: LINUX_GUIDE_TITLE,
+    heading: '🐧 리눅스 CLI 심층 가이드',
+    html: renderLinuxGuide(escapeHtml),
+    extraCss: LINUX_GUIDE_CSS,
+  }));
 }
 
 // 명단에 없는 계정 — 서버 안의 선택 인증이나 운영진 승인으로 안내합니다.
@@ -1902,6 +1971,10 @@ function guidePage(env) {
       </ul>
     </section>` +
 
+    `<section><h2>스터디 자료</h2>
+      <p class="lead">과정 자료와 정리 문서는 <a href="/study">스터디 자료</a> 에 모아두었습니다.
+      리눅스 CLI 심층 가이드는 명령어 목록 다음 단계 — 출력을 읽는 법과 진단 순서를 다룹니다.</p>
+    </section>` +
     `<section><h2>막히면</h2>
       <ul class="how">
         <li>인증이 안 될 때 → 대기실에서 <strong>목록에 없어요</strong> 를 누르면 운영진에게 요청이 갑니다.</li>
@@ -1994,7 +2067,7 @@ function renderPage({ title, heading, body }) {
     '</div></body></html>';
 }
 
-function renderDoc({ title, heading, sections, html: raw }) {
+function renderDoc({ title, heading, sections, html: raw, extraCss = '' }) {
   const body = raw || sections
     .map(([h, p]) => `<h2>${escapeHtml(h)}</h2><p>${p}</p>`)
     .join('');
@@ -2020,6 +2093,8 @@ function renderDoc({ title, heading, sections, html: raw }) {
     'word-break:break-word;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;}' +
     '.ch-name{line-height:1.45;}' +
     '@media(max-width:520px){.ch{display:block}.ch-name{margin-bottom:4px}}' +
+    '.tag{font-size:11px;color:#6c7488;border:1px solid #39415a;border-radius:4px;padding:1px 5px;margin-left:6px;font-weight:400;}' +
+    extraCss +
     '</style></head><body><div class="doc"><h1>' + escapeHtml(heading) + '</h1>' +
     `<p class="hint">${PLATFORM_NAME} 스터디 디스코드 인증 서비스 (ktci5.kr)</p>` +
     body +

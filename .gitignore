@@ -15,3 +15,8 @@ list.csv
 discord-members-*.csv
 *멤버*.csv
 *members*.csv
+
+# 스터디 자료는 ktci5/study 저장소에서 관리합니다 (로컬에 남아 있어도 여기선 추적 안 함)
+스터디자료/
+index.html
+docs/
