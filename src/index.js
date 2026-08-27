@@ -14,6 +14,7 @@
  *  GET  /discord/bot                 봇 초대(Manage Roles 포함) URL로 이동
  *  GET  /discord/status              설정 상태 헬스체크 (JSON, 값은 노출하지 않음)
  *  GET  /guide                       채널 사용 안내
+ *  GET  /preview                     강사·운영진 미리보기 (PREVIEW_KEY 필요)
  *  GET  /study                       스터디 자료 목차
  *  GET  /study/linux                 리눅스 CLI 심층 가이드
  *  GET  /study/infra                 이 서버는 어떻게 돌아가나
@@ -48,6 +49,8 @@ const LINKED_STATE_COOKIE = 'ktci5_linked_state';
 const PASS_COOKIE = 'ktci5_pass';      // 인증 완료 증표 (서명됨)
 const NEXT_COOKIE = 'ktci5_next';      // 인증 후 돌아갈 경로
 const PASS_TTL = 60 * 60 * 24 * 30;    // 30일
+const PREVIEW_TTL = 60 * 60 * 24 * 14; // 미리보기 통행증 14일
+const PREVIEW_USER = 'preview';
 // 봇 초대 권한: MANAGE_ROLES(필수) + 패널 게시에 쓰이는 최소 권한
 // VIEW_CHANNEL | SEND_MESSAGES | EMBED_LINKS | MANAGE_ROLES | USE_APPLICATION_COMMANDS
 const BOT_PERMISSIONS = '2415938560';
@@ -120,6 +123,8 @@ export default {
         return errorPage('이 주소는 디스코드 서버가 POST 로 호출하는 인터랙션 엔드포인트입니다.', 405);
       case '/guide':
         return guardedGuide(request, env);
+      case '/preview':
+        return handlePreview(request, url, env);
       case '/study':
         return guarded(request, env, studyIndexPage);
       case '/study/linux':
@@ -212,11 +217,11 @@ async function passSignature(env, payload) {
   return b64urlBytes(new Uint8Array(sig));
 }
 
-async function issuePass(env, userId) {
-  const exp = Math.floor(Date.now() / 1000) + PASS_TTL;
+async function issuePass(env, userId, ttl = PASS_TTL) {
+  const exp = Math.floor(Date.now() / 1000) + ttl;
   const payload = `${userId}.${exp}`;
   const value = `${payload}.${await passSignature(env, payload)}`;
-  return `${PASS_COOKIE}=${value}; Path=/; Max-Age=${PASS_TTL}; HttpOnly; Secure; SameSite=Lax`;
+  return `${PASS_COOKIE}=${value}; Path=/; Max-Age=${ttl}; HttpOnly; Secure; SameSite=Lax`;
 }
 
 async function verifyPass(request, env) {
@@ -241,6 +246,32 @@ async function guarded(request, env, render) {
       'set-cookie': `${NEXT_COOKIE}=${next}; Path=/; Max-Age=600; HttpOnly; Secure; SameSite=Lax`,
       'cache-control': 'no-store',
     },
+  });
+}
+
+// 강사·운영진이 디스코드 가입 없이 둘러볼 수 있는 통로입니다.
+// 링크에 담긴 열쇠를 아는 사람만 통과하고, 일반 사용자에게는 열리지 않습니다.
+async function handlePreview(request, url, env) {
+  const key = url.searchParams.get('key') || '';
+  if (!env.PREVIEW_KEY || key.length !== env.PREVIEW_KEY.length || key !== env.PREVIEW_KEY) {
+    return errorPage('유효하지 않은 미리보기 링크입니다. 링크를 다시 확인해주세요.', 403);
+  }
+
+  const body =
+    '<p>KT클라우드 인프라교육 5기 스터디 운영을 위해 만든 사이트입니다.<br>' +
+    '아래 문서는 원래 인증을 마친 수강생만 볼 수 있지만, 이 링크로는 그대로 열립니다.</p>' +
+    '<a class="btn" href="/guide">채널 사용 안내</a>' +
+    '<a class="btn btn-ghost" href="/study/infra">이 서버는 어떻게 돌아가나</a>' +
+    '<a class="btn btn-ghost" href="/study/linux">리눅스 CLI 심층 가이드</a>' +
+    '<p class="hint">14일간 유효합니다. 만료되면 같은 링크로 다시 들어오시면 됩니다.<br>' +
+    '디스코드 가입이나 로그인은 필요 없습니다.</p>';
+
+  return html(renderPage({
+    title: '미리보기',
+    heading: '👋 둘러보기',
+    body,
+  }), 200, {
+    'set-cookie': await issuePass(env, PREVIEW_USER, PREVIEW_TTL),
   });
 }
 
