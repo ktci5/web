@@ -51,6 +51,14 @@ const COMMANDS = [
     dm_permission: false,
   },
   {
+    name: '스터디자료',
+    description: '깃허브 저장소의 스터디 자료를 봅니다.',
+    dm_permission: false,
+    options: [
+      { type: 3, name: '폴더', description: '예: 스터디자료/리눅스 (비우면 저장소 루트)', required: false },
+    ],
+  },
+  {
     name: '자료검색',
     description: '자료실에서 파일을 찾습니다. #태그로도 검색됩니다.',
     dm_permission: false,

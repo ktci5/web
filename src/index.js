@@ -520,7 +520,11 @@ async function handleCommand(interaction, env, ctx) {
     return searchDriveFiles(interaction, env, ctx);
   }
 
-  return ephemeral('알 수 없는 명령입니다. 사용 가능한 명령은 `/인증`, `/일정등록`, `/오늘일정`, `/자료함`, `/자료보기`, `/자료검색` 입니다.');
+  if (name === '스터디자료') {
+    return showStudyRepo(interaction, env, ctx);
+  }
+
+  return ephemeral('알 수 없는 명령입니다. 사용 가능한 명령은 `/인증`, `/일정등록`, `/오늘일정`, `/자료함`, `/자료보기`, `/자료검색`, `/스터디자료` 입니다.');
 }
 
 async function handleComponent(interaction, env) {
@@ -1149,6 +1153,114 @@ async function showDriveFolder(interaction, env, ctx) {
       components: [{
         type: 1,
         components: [{ type: 2, style: 5, label: '이 채널 폴더 열기', url: driveLink(id) }],
+      }],
+    };
+  }, { hidden: true });
+}
+
+/* ------------------------------------------------------------ 깃허브 자료실 */
+
+const STUDY_REPO = 'ktci5/study';
+const STUDY_REPO_URL = `https://github.com/${STUDY_REPO}`;
+const GH_API = 'https://api.github.com';
+const GH_CACHE_TTL = 600; // 초. 인증 없는 깃허브 API 는 시간당 호출 수가 제한됩니다.
+
+// 경로의 각 구간만 인코딩합니다. 한글 폴더명이 있어 필요합니다.
+function encodeRepoPath(path) {
+  return String(path || '')
+    .split('/')
+    .filter(Boolean)
+    .map(encodeURIComponent)
+    .join('/');
+}
+
+async function githubContents(env, path = '') {
+  const key = `gh:${path}`;
+  if (env.ROSTER) {
+    const cached = await env.ROSTER.get(key, 'json');
+    if (cached) return cached;
+  }
+
+  const res = await fetch(`${GH_API}/repos/${STUDY_REPO}/contents/${encodeRepoPath(path)}`, {
+    headers: { 'user-agent': 'ktci5.kr', accept: 'application/vnd.github+json' },
+  });
+
+  if (res.status === 404) throw new Error('그런 폴더가 없습니다. 경로를 다시 확인해주세요.');
+  if (res.status === 403) throw new Error('깃허브 호출 한도에 걸렸습니다. 잠시 후 다시 시도해주세요.');
+  if (!res.ok) throw new Error(`깃허브 요청 실패 (${res.status})`);
+
+  const data = await res.json();
+  if (!Array.isArray(data)) throw new Error('폴더가 아니라 파일입니다. 상위 경로를 지정해주세요.');
+
+  const items = data
+    .filter((f) => !f.name.startsWith('.'))
+    .map((f) => ({
+      name: f.name,
+      type: f.type,
+      size: f.size,
+      path: f.path,
+      url: f.html_url,
+      raw: f.download_url,
+    }))
+    .sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name, 'ko') : a.type === 'dir' ? -1 : 1));
+
+  if (env.ROSTER) {
+    await env.ROSTER.put(key, JSON.stringify(items), { expirationTtl: GH_CACHE_TTL });
+  }
+  return items;
+}
+
+function repoIcon(f) {
+  if (f.type === 'dir') return '📁';
+  const n = f.name.toLowerCase();
+  if (n.endsWith('.md')) return '📝';
+  if (n.endsWith('.html')) return '🌐';
+  if (n.endsWith('.docx') || n.endsWith('.doc')) return '📘';
+  if (n.endsWith('.pdf')) return '📕';
+  if (/\.(png|jpe?g|gif|webp|svg)$/.test(n)) return '🖼️';
+  return '📄';
+}
+
+function repoSize(f) {
+  if (f.type === 'dir' || !f.size) return '';
+  const kb = f.size / 1024;
+  return kb >= 1024 ? ` · ${(kb / 1024).toFixed(1)}MB` : ` · ${Math.max(1, Math.round(kb))}KB`;
+}
+
+async function showStudyRepo(interaction, env, ctx) {
+  const path = (optionValue(interaction, '폴더') || '').replace(/^\/+|\/+$/g, '');
+
+  return deferReply(ctx, interaction, async () => {
+    const items = await githubContents(env, path);
+    const here = path || '저장소 루트';
+
+    if (!items.length) {
+      return { content: `📭 **${escapeMd(here)}** 는 비어 있습니다.` };
+    }
+
+    const lines = items.slice(0, 25).map((f) => {
+      const label = `${repoIcon(f)} [${escapeMd(f.name)}](${f.url})${repoSize(f)}`;
+      return f.type === 'dir' ? `${label}　\`/스터디자료 폴더:${f.path}\`` : label;
+    }).join('\n');
+
+    const browseUrl = path
+      ? `${STUDY_REPO_URL}/tree/main/${encodeRepoPath(path)}`
+      : STUDY_REPO_URL;
+
+    return {
+      embeds: [{
+        title: `📦 ${STUDY_REPO} — ${here}`,
+        color: 0x5865f2,
+        description: lines.slice(0, 4000),
+        footer: {
+          text: items.length > 25
+            ? `외 ${items.length - 25}개 · 폴더는 옆의 명령으로 열어보세요`
+            : '폴더는 옆에 적힌 명령으로 열어보세요',
+        },
+      }],
+      components: [{
+        type: 1,
+        components: [{ type: 2, style: 5, label: '깃허브에서 보기', url: browseUrl }],
       }],
     };
   }, { hidden: true });
@@ -1891,6 +2003,7 @@ const BOT_COMMANDS = [
   ['/자료함', '지금 있는 채널의 드라이브 폴더를 열어줍니다.'],
   ['/자료보기', '그 폴더에 어떤 파일이 있는지 목록으로 보여줍니다.'],
   ['/자료검색', '파일 이름·설명·문서 내용에서 찾습니다. #태그로도 검색됩니다.'],
+  ['/스터디자료', '깃허브 ktci5/study 저장소의 자료를 디스코드에서 바로 봅니다.'],
 ];
 
 // 교육과정에서 공유한 드라이브 폴더.

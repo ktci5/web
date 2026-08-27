@@ -105,11 +105,20 @@ const MESSAGES = [
         '교육과정에서 공유한 구글 드라이브 폴더입니다.\n' +
         '과정에 등록한 구글 계정으로 로그인하면 열립니다.\n' +
         '마지막 **전체 모음**은 위 세 폴더를 한 곳에 모아둔 바로가기함입니다.',
-      fields: DRIVE_FOLDERS.map(([name, id]) => ({
-        name,
-        value: `https://drive.google.com/drive/folders/${id}`,
-      })),
-      footer: { text: '열리지 않으면 과정에 등록한 구글 계정인지 확인해주세요' },
+      fields: [
+        ...DRIVE_FOLDERS.map(([name, id]) => ({
+          name,
+          value: `https://drive.google.com/drive/folders/${id}`,
+        })),
+        {
+          name: '📦 깃허브 스터디 자료',
+          value:
+            '정리 문서와 학습 허브는 깃허브에 있습니다.\n' +
+            '디스코드에서 바로 보려면 `/스터디자료`\n' +
+            'https://github.com/ktci5/study',
+        },
+      ],
+      footer: { text: '드라이브가 열리지 않으면 과정에 등록한 구글 계정인지 확인해주세요' },
     }],
   },
 ];
