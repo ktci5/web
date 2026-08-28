@@ -18,6 +18,7 @@
  *  GET  /preview                     강사·운영진 미리보기 (PREVIEW_KEY 필요)
  *  GET  /study                       스터디 자료 목차
  *  GET  /study/linux                 리눅스 CLI 심층 가이드
+ *  GET  /study/course                ktcloud Linux 기초 강의 자료 (KV, 인증자 전용)
  *  GET  /study/infra                 이 서버는 어떻게 돌아가나
  *  GET  /terms                       이용 약관
  *  GET  /privacy                     개인정보 보호 정책
@@ -43,6 +44,7 @@
 import { LINUX_GUIDE_TITLE, LINUX_GUIDE_CSS, renderLinuxGuide } from './study-linux.js';
 import { INFRA_TITLE, INFRA_CSS, renderInfraGuide } from './study-infra.js';
 import { renderProjectPage } from './projects.js';
+import { loadCourse, renderCourseIndex, renderCourseChapter, COURSE_CSS } from './course.js';
 
 const DISCORD_API = 'https://discord.com/api/v10';
 const USER_AGENT = 'DiscordBot (https://ktci5.kr, 1.0)';
@@ -109,6 +111,12 @@ export default {
       return new Response('Method Not Allowed', { status: 405, headers: { allow: 'GET, POST' } });
     }
 
+    // 강의 자료 장별 페이지 (/study/course/<장>)
+    if (path.startsWith('/study/course/')) {
+      const id = path.slice('/study/course/'.length);
+      return guarded(request, env, (e) => courseChapterPage(e, id));
+    }
+
     switch (path) {
       case '/':
         return landingPage(env);
@@ -144,6 +152,8 @@ export default {
         return guarded(request, env, linuxGuidePage);
       case '/study/infra':
         return guarded(request, env, infraGuidePage);
+      case '/study/course':
+        return guarded(request, env, courseIndexPage);
       case '/terms':
         return termsPage();
       case '/privacy':
@@ -302,6 +312,12 @@ const STUDY_MATERIALS = [
     tag: '읽기',
   },
   {
+    href: '/study/course',
+    name: 'ktcloud Linux 기초 (강의 자료)',
+    desc: '과정 자료를 장별로 나눠 정리했습니다. 슬라이드를 넘기지 않고 필요한 부분만 찾아봅니다.',
+    tag: '강의',
+  },
+  {
     href: '/study/infra',
     name: '이 서버는 어떻게 돌아가나',
     desc: '도메인·Cloudflare·깃허브 연결을 L1 기초부터 L4 마스터까지. 지금 쓰는 시스템이 그대로 교재입니다.',
@@ -351,6 +367,34 @@ function infraGuidePage(env) {
     heading: '🛠 이 서버는 어떻게 돌아가나',
     html: renderInfraGuide(escapeHtml),
     extraCss: INFRA_CSS,
+  }));
+}
+
+async function courseIndexPage(env) {
+  const doc = await loadCourse(env);
+  if (!doc) {
+    return errorPage('강의 자료가 아직 올라오지 않았습니다. 운영진에게 문의해주세요.', 404);
+  }
+  return html(renderDoc({
+    title: doc.title,
+    heading: `📘 ${doc.title}`,
+    html: renderCourseIndex(doc, escapeHtml),
+    extraCss: COURSE_CSS,
+  }));
+}
+
+async function courseChapterPage(env, id) {
+  const doc = await loadCourse(env);
+  if (!doc) return errorPage('강의 자료가 아직 올라오지 않았습니다.', 404);
+
+  const chapter = doc.chapters.find((c) => c.id === id);
+  if (!chapter) return errorPage('그런 장이 없습니다.', 404);
+
+  return html(renderDoc({
+    title: `${chapter.name} · ${doc.title}`,
+    heading: `📘 ${chapter.name}`,
+    html: renderCourseChapter(doc, chapter, escapeHtml),
+    extraCss: COURSE_CSS,
   }));
 }
 
