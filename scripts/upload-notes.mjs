@@ -58,6 +58,7 @@ function parseFrontMatter(text, fallbackId) {
 
 const files = readdirSync(DIR)
   .filter((f) => f.endsWith('.md'))
+  .filter((f) => f !== 'README.md')   // 폴더 설명은 장이 아닙니다
   .filter((f) => !only.length || only.includes(basename(f, '.md')));
 
 if (!files.length) {
