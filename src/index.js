@@ -119,7 +119,7 @@ export default {
 
     switch (path) {
       case '/':
-        return landingPage(env);
+        return landingPage(env, request);
       case '/discord':
         return hubPage(env);
       case '/discord/join':
@@ -306,35 +306,28 @@ function guardedGuide(request, env) {
 
 const STUDY_MATERIALS = [
   {
-    href: '/study/linux',
-    name: '리눅스 CLI 심층 가이드',
-    desc: '출력을 읽는 법과 증상별 진단 순서. 명령 목록 다음 단계를 다룹니다.',
-    tag: '읽기',
+    href: '/study/course',
+    name: 'Linux 기초 — 강의 정리',
+    desc: '과정에서 다루는 내용을 10개 장으로 정리했습니다. 처음이라면 여기부터.',
+    tag: '기초',
   },
   {
-    href: '/study/course',
-    name: 'ktcloud Linux 기초 (강의 자료)',
-    desc: '과정 자료를 장별로 나눠 정리했습니다. 슬라이드를 넘기지 않고 필요한 부분만 찾아봅니다.',
-    tag: '강의',
+    href: '/study/linux',
+    name: '리눅스 CLI 심층 가이드',
+    desc: '명령을 익힌 다음 단계 — 출력을 읽는 법과 증상별 진단 순서.',
+    tag: '심화',
   },
   {
     href: '/study/infra',
     name: '이 서버는 어떻게 돌아가나',
     desc: '도메인·Cloudflare·깃허브 연결을 L1 기초부터 L4 마스터까지. 지금 쓰는 시스템이 그대로 교재입니다.',
-    tag: '읽기',
-  },
-  {
-    href: 'https://github.com/ktci5/study/blob/main/%EC%8A%A4%ED%84%B0%EB%94%94%EC%9E%90%EB%A3%8C/%EB%A6%AC%EB%88%85%EC%8A%A4/linux_cli_interactive_hub.html',
-    name: '명령어 치트 시트 (인터랙티브)',
-    desc: '분야별·난이도별 명령 36개. 검색과 원클릭 복사가 됩니다.',
-    tag: '참조',
-    external: true,
+    tag: '인프라',
   },
   {
     href: 'https://github.com/ktci5/study',
-    name: 'ktci5/study 저장소',
-    desc: '원본 마크다운·docx 문서와 NotebookLM 마인드맵.',
-    tag: '원본',
+    name: '명령어 치트 시트 · 마인드맵',
+    desc: 'ktci5/study 저장소. 인터랙티브 허브(HTML)와 정리 문서가 있습니다.',
+    tag: '참조',
     external: true,
   },
 ];
@@ -348,8 +341,9 @@ function studyIndexPage(env) {
   ).join('');
 
   const body =
-    '<p class="lead">과정에서 정리한 자료를 모아둔 곳입니다. ' +
-    '드라이브 폴더는 <strong>#📚-자료공유</strong> 채널에 있고, 여기에는 읽을거리를 둡니다.</p>' +
+    '<p class="lead">과정 내용을 정리한 자료를 모아둔 곳입니다. ' +
+    '처음이시라면 <strong>강의 정리</strong>부터 보시면 됩니다.<br>' +
+    '파일이 오가는 드라이브 폴더는 <strong>#📚-자료공유</strong> 채널에 있습니다.</p>' +
     `<section><h2>리눅스</h2>${items}</section>` +
     `<section><h2>자료 올리기</h2>
       <ul class="how">
@@ -1873,7 +1867,38 @@ function hubPage(env) {
   }));
 }
 
-function landingPage(env) {
+// 인증을 마친 사람에게 보여줄 곳들. 랜딩과 완료 화면이 함께 씁니다.
+const MEMBER_LINKS = [
+  ['/study', '📖 스터디 자료', '리눅스 강의 정리, 심층 가이드, 인프라 문서'],
+  ['/guide', '📚 채널 사용 안내', '어느 채널에서 무엇을 하는지'],
+];
+
+function memberLinks(env, primary = 0) {
+  return MEMBER_LINKS.map(([href, label], i) =>
+    `<a class="btn${i === primary ? '' : ' btn-ghost'}" href="${href}">${label}</a>`
+  ).join('') +
+  (env.DISCORD_INVITE_URL
+    ? `<a class="btn btn-ghost" href="${escapeHtml(env.DISCORD_INVITE_URL)}">💬 디스코드로 이동</a>`
+    : '');
+}
+
+// 인증한 사람에게는 인증 버튼 대신 갈 곳을 보여줍니다.
+async function landingPage(env, request) {
+  if (request && (await verifyPass(request, env))) {
+    return html(renderPage({
+      title: 'KT클라우드 5기 스터디',
+      heading: '🎫 KT클라우드 인프라교육 5기',
+      body:
+        '<p>인증이 되어 있습니다. 바로 이용하실 수 있어요.</p>' +
+        memberLinks(env) +
+        '<p class="hint">스터디 자료는 과정 내용을 정리한 것으로, ' +
+        '인증한 수강생만 볼 수 있습니다.</p>',
+    }));
+  }
+  return unverifiedLanding(env);
+}
+
+function unverifiedLanding(env) {
   return html(renderPage({
     title: 'KT클라우드 5기 인증',
     heading: '🎫 KT클라우드 인프라교육 5기 인증',
@@ -1882,8 +1907,8 @@ function landingPage(env) {
       '이미 서버에 들어와 계시다면 아래 인증만 눌러주세요.</p>' +
       '<a class="btn btn-ghost" href="/discord/join">1. 스터디 서버 참여하기</a>' +
       '<a class="btn" href="/discord/verify">2. 디스코드로 인증하기</a>' +
-      `<p class="hint">인증을 마치면 <strong>${ROLE_NAME}</strong> 역할이 부여되어 모든 채널이 열립니다.<br>` +
-      '채널 사용 안내는 인증 후에 열립니다.</p>',
+      `<p class="hint">인증을 마치면 <strong>${ROLE_NAME}</strong> 역할이 부여되어 모든 채널이 열리고,<br>` +
+      '스터디 자료와 채널 안내를 볼 수 있습니다.</p>',
   }));
 }
 
@@ -1898,10 +1923,8 @@ function successPage(me, joined, env, extraHeaders = {}) {
     heading: '✅ 인증이 완료되었습니다!',
     body:
       `<p><strong>${name}</strong>님, 환영합니다.<br>${ROLE_NAME} 역할이 부여되었어요.<br>${extra}</p>` +
-      '<a class="btn" href="/guide">채널 사용 안내 보기</a>' +
-      (env.DISCORD_INVITE_URL
-        ? `<a class="btn btn-ghost" href="${escapeHtml(env.DISCORD_INVITE_URL)}">디스코드로 돌아가기</a>`
-        : ''),
+      memberLinks(env) +
+      '<p class="hint">이 주소는 다음에 다시 오셔도 바로 열립니다.</p>',
   }), 200, extraHeaders);
 }
 
@@ -2345,6 +2368,6 @@ function renderDoc({ title, heading, sections, html: raw, extraCss = '' }) {
     '</style></head><body><div class="doc"><h1>' + escapeHtml(heading) + '</h1>' +
     `<p class="hint">${PLATFORM_NAME} 스터디 디스코드 인증 서비스 (ktci5.kr)</p>` +
     body +
-    '<p class="foot"><a href="/">← 인증 페이지로 돌아가기</a></p>' +
+    '<p class="foot"><a href="/">← 처음으로</a></p>' +
     '</div></body></html>';
 }
