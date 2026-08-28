@@ -730,49 +730,9 @@ custom_domain = true
 과정 교육 자료를 장별로 나눠 인증한 수강생만 볼 수 있게 제공합니다.
 
 ```bash
-node scripts/upload-course.mjs <PDF> --dry-run    # 장 구분과 분량 확인
-node scripts/upload-course.mjs <PDF>              # 본문 + 슬라이드 이미지
-node scripts/upload-course.mjs <PDF> --no-images  # 본문만 (문구만 고칠 때)
+node scripts/upload-course.mjs <PDF> --dry-run     # 장 구분과 분량 확인
+node scripts/upload-course.mjs <PDF> --no-images   # 장 구조만 (권장)
 ```
-
-### 슬라이드 이미지
-
-본문 텍스트만으로는 그림·화살표·배치가 사라져 그림 위주 슬라이드는 내용이 비어
-보입니다. 그래서 **원본 화면을 그대로 렌더링해 함께 올립니다.**
-
-| 형식 | 평균 | 전체(123쪽) |
-| --- | --- | --- |
-| **PNG 110dpi** | 91 KB | **11 MB** ← 선택 |
-| JPEG q80 | 141 KB | 17 MB |
-| JPEG q150 | 197 KB | 24 MB |
-
-슬라이드는 색 수가 적어 PNG 가 JPEG 보다 작고 글자도 선명합니다.
-
-화면에는 **슬라이드 이미지를 기본으로 보여주고 텍스트는 접어둡니다.**
-"텍스트로 보기 · 복사하기" 를 펼치면 명령어를 복사할 수 있습니다.
-이미지만 있으면 복사가 안 되고 텍스트만 있으면 그림이 사라지므로 둘 다 둡니다.
-
-이미지도 인증 뒤에 있습니다. `/study/course/slide/<쪽>` 은 통행증이 없으면 403 입니다.
-페이지만 막고 이미지 주소가 열려 있으면 의미가 없습니다.
-
-> KV 쓰기가 쪽당 한 번씩 일어납니다. 123쪽이면 123회이므로, 자료를 여러 개
-> 올린다면 하루에 몰아서 하지 않는 편이 안전합니다.
-
-열람: `https://ktci5.kr/study/course` · 장별은 `/study/course/<장ID>`
-
-### 저작권 때문에 이렇게 했습니다
-
-교육 자료는 과정 제공자의 것입니다. 그래서
-
-| 무엇 | 어디에 |
-| --- | --- |
-| 원본 PDF | `ktci5/data` (비공개) |
-| 추출한 본문 | **KV 에만** — 공개 저장소에 두지 않습니다 |
-| 변환 코드 | `ktci5/web` (공개) — 코드는 공개해도 되지만 내용은 아닙니다 |
-| 열람 | 인증한 수강생만 (`/study/*` 게이트) |
-
-공개 저장소에 커밋하면 삭제해도 히스토리에 남습니다. 명단 때와 같은 이유로
-처음부터 넣지 않습니다.
 
 ### 장 구분 바꾸기
 
@@ -798,16 +758,23 @@ node scripts/upload-course.mjs <PDF> --no-images  # 본문만 (문구만 고칠 
 **학습 문서로 다시 씁니다.** 원문을 옮기는 것보다 저작권 측면에서도 안전합니다.
 
 ```
-course-notes/<장ID>.md   ← 여기에 씁니다
+ktci5/data 의 course-notes/<장ID>.md   ← 여기에 씁니다 (비공개)
         ↓  node scripts/upload-notes.mjs
 KV: course:linux-basic:notes
         ↓
-/study/course/<장ID>     가공본이 본문, 원본 슬라이드는 접어서
+/study/course/<장ID>                  인증한 수강생만
+```
+
+**문서는 공개 저장소에 두지 않습니다.** 과정 내용을 바탕으로 쓴 것이라
+`ktci5/data`(비공개)에서 관리합니다. 이 저장소에는 변환 코드만 있습니다.
+
+```bash
+git clone https://github.com/ktci5/data.git ../ktci5-data   # 최초 1회
 ```
 
 ### 쓰는 법
 
-`course-notes/` 에 장 ID 로 마크다운을 만듭니다. 앞머리에 메타를 둡니다.
+`ktci5/data` 의 `course-notes/` 에 장 ID 로 마크다운을 만듭니다. 앞머리에 메타를 둡니다.
 
 ```markdown
 ---
@@ -821,19 +788,26 @@ lead: 파일을 찾고, 내용을 뒤지고, 묶어서 압축하기.
 ```
 
 ```bash
-node scripts/upload-notes.mjs --dry-run   # 확인
-node scripts/upload-notes.mjs             # 전부 올리기
-node scripts/upload-notes.mjs find        # 한 장만 (나머지는 유지)
+node scripts/upload-notes.mjs --dry-run       # 확인
+node scripts/upload-notes.mjs                 # 전부 올리기
+node scripts/upload-notes.mjs find            # 한 장만 (나머지는 유지)
+node scripts/upload-notes.mjs --dir <경로>     # 문서 위치 지정
 ```
+
+기본 위치는 `../ktci5-data/course-notes` 이고, `COURSE_NOTES_DIR` 환경변수나
+`--dir` 로 바꿀 수 있습니다.
 
 한 장만 올릴 때는 기존 내용을 읽어와 병합하므로 다른 장이 지워지지 않습니다.
 
 ### 화면
 
-| 상태 | 목차 배지 | 장 페이지 |
+| 상태 | 목차 | 장 페이지 |
 | --- | --- | --- |
-| 가공됨 | `정리됨` | 학습 문서가 본문, 원본 슬라이드는 접어 둠 |
-| 아직 | `원본` | 슬라이드 그대로 + "정리 예정" 안내 |
+| 정리됨 | `정리 완료` | 학습 문서 |
+| 아직 | `준비 중` | "곧 올라옵니다" 안내 |
+
+**원본 슬라이드는 웹에 싣지 않습니다.** 이미지도 제공하지 않습니다.
+원본이 필요하면 `ktci5/data` 의 PDF 를 직접 봅니다.
 
 ### 마크다운 지원 범위
 
