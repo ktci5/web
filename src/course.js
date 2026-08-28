@@ -12,6 +12,13 @@ export async function loadCourse(env) {
   return env.ROSTER.get(COURSE_KEY, 'json');
 }
 
+// 슬라이드 원본 이미지. 그림 위주 슬라이드는 텍스트만으로는 내용이 비어
+// 있으므로 화면을 그대로 보여줍니다.
+export async function loadSlideImage(env, page) {
+  if (!env.ROSTER || !Number.isInteger(page) || page < 1) return null;
+  return env.ROSTER.get(`${COURSE_KEY}:img:${page}`, 'arrayBuffer');
+}
+
 // 명령어처럼 보이는 줄을 눈에 띄게 합니다.
 const CMD_HINT = /^\s*(?:[$#]\s|\$?\s*(?:ls|cd|pwd|cat|man|mkdir|rmdir|cp|mv|rm|ln|touch|file|head|tail|less|more|chmod|chown|chgrp|umask|find|grep|egrep|sed|awk|sort|uniq|wc|tar|gzip|gunzip|zip|unzip|ps|top|kill|jobs|fg|bg|nohup|systemctl|dnf|yum|rpm|vi|vim|echo|export|alias|env|set|source|su|sudo|who|whoami|id|date|df|du|mount|ssh|scp)\b)/;
 
@@ -30,7 +37,9 @@ function renderSlide(s, escapeHtml) {
 
   return `<article class="sl">
     <div class="sl-h"><h3>${escapeHtml(s.title)}</h3><span>p.${s.page}</span></div>
-    ${body || '<p class="empty">(그림 위주 슬라이드)</p>'}
+    <img class="sl-img" src="/study/course/slide/${s.page}" alt="${escapeHtml(s.title)} 슬라이드"
+         loading="lazy" decoding="async">
+    ${body ? `<details class="sl-t"><summary>텍스트로 보기 · 복사하기</summary>${body}</details>` : ''}
   </article>`;
 }
 
@@ -90,7 +99,14 @@ export const COURSE_CSS =
   '.sl-h h3{margin:0;font-size:14.5px;color:#e8ecf4;}' +
   '.sl-h span{font-size:11px;color:#6c7488;flex:0 0 auto;}' +
   '.sl p{margin:0 0 6px;font-size:13.5px;line-height:1.65;}' +
-  '.sl p.empty{color:#6c7488;font-size:12.5px;}' +
+  '.sl-img{display:block;width:100%;height:auto;border-radius:8px;border:1px solid #2a3143;' +
+  'background:#fff;margin:0 0 10px;}' +
+  '.sl-t{margin:0;}' +
+  '.sl-t summary{cursor:pointer;font-size:12px;color:#8ea1ff;list-style:none;padding:4px 0;}' +
+  '.sl-t summary::-webkit-details-marker{display:none}' +
+  '.sl-t summary::before{content:"▸ ";}' +
+  '.sl-t[open] summary::before{content:"▾ ";}' +
+  '.sl-t > :not(summary){margin-top:6px;}' +
   'pre.cmd{background:#12151c;border-left:2px solid #5865F2;border-radius:0 6px 6px 0;' +
   'margin:6px 0;padding:8px 10px;font-size:12.5px;color:#c9d3e6;overflow-x:auto;}' +
   'pre.tbl2{background:#1f2430;border-radius:6px;margin:6px 0;padding:8px 10px;' +

@@ -19,6 +19,7 @@
  *  GET  /study                       스터디 자료 목차
  *  GET  /study/linux                 리눅스 CLI 심층 가이드
  *  GET  /study/course                ktcloud Linux 기초 강의 자료 (KV, 인증자 전용)
+ *  GET  /study/course/slide/<쪽>     슬라이드 이미지 (인증자 전용)
  *  GET  /study/infra                 이 서버는 어떻게 돌아가나
  *  GET  /terms                       이용 약관
  *  GET  /privacy                     개인정보 보호 정책
@@ -44,7 +45,7 @@
 import { LINUX_GUIDE_TITLE, LINUX_GUIDE_CSS, renderLinuxGuide } from './study-linux.js';
 import { INFRA_TITLE, INFRA_CSS, renderInfraGuide } from './study-infra.js';
 import { renderProjectPage } from './projects.js';
-import { loadCourse, renderCourseIndex, renderCourseChapter, COURSE_CSS } from './course.js';
+import { loadCourse, loadSlideImage, renderCourseIndex, renderCourseChapter, COURSE_CSS } from './course.js';
 
 const DISCORD_API = 'https://discord.com/api/v10';
 const USER_AGENT = 'DiscordBot (https://ktci5.kr, 1.0)';
@@ -109,6 +110,23 @@ export default {
 
     if (request.method !== 'GET' && request.method !== 'HEAD') {
       return new Response('Method Not Allowed', { status: 405, headers: { allow: 'GET, POST' } });
+    }
+
+    // 슬라이드 이미지 (/study/course/slide/<쪽>) — 인증한 사람에게만
+    if (path.startsWith('/study/course/slide/')) {
+      if (!(await verifyPass(request, env))) {
+        return new Response('unauthorized', { status: 403 });
+      }
+      const page = Number(path.slice('/study/course/slide/'.length));
+      const img = await loadSlideImage(env, page);
+      if (!img) return new Response('not found', { status: 404 });
+      return new Response(img, {
+        headers: {
+          'content-type': 'image/png',
+          // 내용은 바뀌지 않지만 인증 뒤에서만 보이므로 사설 캐시로 둡니다.
+          'cache-control': 'private, max-age=86400',
+        },
+      });
     }
 
     // 강의 자료 장별 페이지 (/study/course/<장>)

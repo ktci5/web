@@ -730,9 +730,33 @@ custom_domain = true
 과정 교육 자료를 장별로 나눠 인증한 수강생만 볼 수 있게 제공합니다.
 
 ```bash
-node scripts/upload-course.mjs <PDF> --dry-run   # 장 구분과 분량 확인
-node scripts/upload-course.mjs <PDF>             # KV 업로드
+node scripts/upload-course.mjs <PDF> --dry-run    # 장 구분과 분량 확인
+node scripts/upload-course.mjs <PDF>              # 본문 + 슬라이드 이미지
+node scripts/upload-course.mjs <PDF> --no-images  # 본문만 (문구만 고칠 때)
 ```
+
+### 슬라이드 이미지
+
+본문 텍스트만으로는 그림·화살표·배치가 사라져 그림 위주 슬라이드는 내용이 비어
+보입니다. 그래서 **원본 화면을 그대로 렌더링해 함께 올립니다.**
+
+| 형식 | 평균 | 전체(123쪽) |
+| --- | --- | --- |
+| **PNG 110dpi** | 91 KB | **11 MB** ← 선택 |
+| JPEG q80 | 141 KB | 17 MB |
+| JPEG q150 | 197 KB | 24 MB |
+
+슬라이드는 색 수가 적어 PNG 가 JPEG 보다 작고 글자도 선명합니다.
+
+화면에는 **슬라이드 이미지를 기본으로 보여주고 텍스트는 접어둡니다.**
+"텍스트로 보기 · 복사하기" 를 펼치면 명령어를 복사할 수 있습니다.
+이미지만 있으면 복사가 안 되고 텍스트만 있으면 그림이 사라지므로 둘 다 둡니다.
+
+이미지도 인증 뒤에 있습니다. `/study/course/slide/<쪽>` 은 통행증이 없으면 403 입니다.
+페이지만 막고 이미지 주소가 열려 있으면 의미가 없습니다.
+
+> KV 쓰기가 쪽당 한 번씩 일어납니다. 123쪽이면 123회이므로, 자료를 여러 개
+> 올린다면 하루에 몰아서 하지 않는 편이 안전합니다.
 
 열람: `https://ktci5.kr/study/course` · 장별은 `/study/course/<장ID>`
 

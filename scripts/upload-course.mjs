@@ -4,13 +4,17 @@
  *
  *   node scripts/upload-course.mjs "~/Downloads/3.ktcloud-Linux-기초.pdf"
  *   node scripts/upload-course.mjs <pdf> --dry-run   구조만 확인
+ *   node scripts/upload-course.mjs <pdf> --no-images 본문만 (이미지 생략)
+ *
+ * 슬라이드 이미지도 함께 올립니다. 그림 위주 슬라이드는 텍스트만으로는
+ * 내용이 비므로, 원본 화면을 그대로 보여주는 편이 학습에 낫습니다.
  *
  * 교육 자료는 저작권이 있으므로 **공개 저장소에 두지 않습니다.**
  * KV 에만 올리고, Worker 가 인증을 확인한 뒤에만 보여줍니다.
  *
  * pdftotext(poppler) 가 필요합니다.  brew install poppler
  */
-import { existsSync, writeFileSync, unlinkSync } from 'node:fs';
+import { existsSync, writeFileSync, unlinkSync, readdirSync, statSync, mkdtempSync, rmSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { resolve, join, basename } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -19,6 +23,7 @@ import { dirname } from 'node:path';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const dryRun = process.argv.includes('--dry-run');
+const noImages = process.argv.includes('--no-images');
 const input = process.argv.slice(2).find((a) => !a.startsWith('--'));
 
 if (!input) {
@@ -118,6 +123,43 @@ try {
   if (r.status !== 0) { console.error('✘ 업로드 실패'); process.exit(1); }
 } finally {
   try { unlinkSync(tmp); } catch {}
+}
+
+/* ------------------------------------------------------- 슬라이드 이미지 */
+
+if (!noImages) {
+  console.log('\n▸ 슬라이드 이미지 렌더링');
+  const dir = mkdtempSync(join(tmpdir(), 'ktci5-slides-'));
+  try {
+    // 슬라이드는 색 수가 적어 PNG 가 JPEG 보다 작고 글자도 선명합니다.
+    execFileSync('pdftoppm', ['-r', '110', '-png', pdf, join(dir, 'p')], { stdio: 'pipe' });
+
+    const files = readdirSync(dir).filter((f) => f.endsWith('.png')).sort();
+    const total = files.reduce((s, f) => s + statSync(join(dir, f)).size, 0);
+    console.log(`  ${files.length}장 · ${(total / 1024 / 1024).toFixed(1)} MB`);
+
+    let done = 0;
+    for (const f of files) {
+      const page = Number(f.match(/(\d+)\.png$/)[1]);
+      const r = spawnSync('npx', [
+        'wrangler', 'kv', 'key', 'put', `course:linux-basic:img:${page}`,
+        '--binding', 'ROSTER', '--remote', '--path', join(dir, f),
+      ], { cwd: ROOT, stdio: 'pipe' });
+      if (r.status !== 0) {
+        console.error(`  ✘ ${page}쪽 업로드 실패`);
+        continue;
+      }
+      done++;
+      if (done % 20 === 0 || done === files.length) {
+        console.log(`  ${done}/${files.length} 올림`);
+      }
+    }
+  } catch (err) {
+    console.error('  ✘ 이미지 처리 실패 —', err.message.split('\n')[0]);
+    console.error('    poppler 가 설치되어 있는지 확인해주세요: brew install poppler');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 console.log(`
