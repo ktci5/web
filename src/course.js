@@ -14,6 +14,12 @@ export async function loadCourse(env) {
 
 // 슬라이드 원본 이미지. 그림 위주 슬라이드는 텍스트만으로는 내용이 비어
 // 있으므로 화면을 그대로 보여줍니다.
+// 가공한 학습 문서. 있으면 슬라이드 대신 이것을 먼저 보여줍니다.
+export async function loadNotes(env) {
+  if (!env.ROSTER) return null;
+  return env.ROSTER.get(`${COURSE_KEY}:notes`, 'json');
+}
+
 export async function loadSlideImage(env, page) {
   if (!env.ROSTER || !Number.isInteger(page) || page < 1) return null;
   return env.ROSTER.get(`${COURSE_KEY}:img:${page}`, 'arrayBuffer');
@@ -24,6 +30,100 @@ const CMD_HINT = /^\s*(?:[$#]\s|\$?\s*(?:ls|cd|pwd|cat|man|mkdir|rmdir|cp|mv|rm|
 
 function isCommand(line) {
   return CMD_HINT.test(line);
+}
+
+/* ------------------------------------------------------------ 마크다운 */
+
+// 학습 문서에 필요한 만큼만 처리하는 작은 변환기입니다.
+// 표 · 코드블록 · 제목 · 목록 · 인라인 코드 · 링크 · 강조.
+export function markdown(src, escapeHtml) {
+  const out = [];
+  const lines = src.split('\n');
+  let i = 0;
+
+  const inline = (t) => {
+    let s = escapeHtml(t);
+    s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
+    s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (m, txt, href) =>
+      /^(https?:|\/)/.test(href) ? `<a href="${href}">${txt}</a>` : m);
+    return s;
+  };
+
+  while (i < lines.length) {
+    const line = lines[i];
+
+    // 코드 블록
+    if (/^```/.test(line)) {
+      const lang = line.slice(3).trim();
+      const buf = [];
+      i++;
+      while (i < lines.length && !/^```/.test(lines[i])) buf.push(lines[i++]);
+      i++;
+      out.push(`<pre class="md-code"${lang ? ` data-lang="${escapeHtml(lang)}"` : ''}>` +
+        escapeHtml(buf.join('\n')) + '</pre>');
+      continue;
+    }
+
+    // 표
+    if (/^\|/.test(line) && /^\|[\s:|-]+\|$/.test(lines[i + 1] || '')) {
+      const cells = (r) => r.replace(/^\||\|$/g, '').split('|').map((c) => c.trim());
+      const head = cells(line);
+      i += 2;
+      const rows = [];
+      while (i < lines.length && /^\|/.test(lines[i])) rows.push(cells(lines[i++]));
+      out.push('<div class="md-tbl"><table><thead><tr>' +
+        head.map((h) => `<th>${inline(h)}</th>`).join('') +
+        '</tr></thead><tbody>' +
+        rows.map((r) => '<tr>' + r.map((c) => `<td>${inline(c)}</td>`).join('') + '</tr>').join('') +
+        '</tbody></table></div>');
+      continue;
+    }
+
+    // 제목
+    const h = line.match(/^(#{2,4})\s+(.*)$/);
+    if (h) {
+      const lv = h[1].length;
+      out.push(`<h${lv} class="md-h${lv}">${inline(h[2])}</h${lv}>`);
+      i++;
+      continue;
+    }
+
+    // 구분선
+    if (/^---+$/.test(line.trim())) { out.push('<hr class="md-hr">'); i++; continue; }
+
+    // 목록
+    if (/^\s*[-*]\s+/.test(line)) {
+      const buf = [];
+      while (i < lines.length && /^\s*[-*]\s+/.test(lines[i])) {
+        buf.push(lines[i].replace(/^\s*[-*]\s+/, ''));
+        i++;
+      }
+      out.push('<ul class="md-ul">' + buf.map((b) => `<li>${inline(b)}</li>`).join('') + '</ul>');
+      continue;
+    }
+
+    // 인용
+    if (/^>\s?/.test(line)) {
+      const buf = [];
+      while (i < lines.length && /^>\s?/.test(lines[i])) buf.push(lines[i++].replace(/^>\s?/, ''));
+      out.push(`<blockquote class="md-q">${inline(buf.join(' '))}</blockquote>`);
+      continue;
+    }
+
+    // 문단
+    if (line.trim()) {
+      const buf = [];
+      while (i < lines.length && lines[i].trim() &&
+             !/^(```|\||#{2,4}\s|>|\s*[-*]\s|---+$)/.test(lines[i])) {
+        buf.push(lines[i++]);
+      }
+      out.push(`<p>${inline(buf.join(' '))}</p>`);
+      continue;
+    }
+    i++;
+  }
+  return out.join('');
 }
 
 function renderSlide(s, escapeHtml) {
@@ -43,14 +143,17 @@ function renderSlide(s, escapeHtml) {
   </article>`;
 }
 
-export function renderCourseIndex(doc, escapeHtml) {
-  const items = doc.chapters.map((c) =>
-    `<a class="chp" href="/study/course/${c.id}">
-      <div class="chp-n">${escapeHtml(c.name)}</div>
-      <div class="chp-d">${escapeHtml(c.summary)}</div>
+export function renderCourseIndex(doc, escapeHtml, notes = {}) {
+  const items = doc.chapters.map((c) => {
+    const n = notes[c.id];
+    return `<a class="chp" href="/study/course/${c.id}">
+      <div class="chp-n">${escapeHtml(c.name)}` +
+      (n ? '<span class="badge">정리됨</span>' : '<span class="badge raw">원본</span>') +
+      `</div>
+      <div class="chp-d">${escapeHtml(n?.lead || c.summary)}</div>
       <div class="chp-m">${c.slides.length}쪽 · p.${c.from}~${c.to}</div>
-    </a>`
-  ).join('');
+    </a>`;
+  }).join('');
 
   return `
 <p class="lead">과정에서 쓰는 <strong>${escapeHtml(doc.title)}</strong> 자료를 장별로 나눠 정리했습니다.
@@ -66,7 +169,7 @@ export function renderCourseIndex(doc, escapeHtml) {
 </section>`;
 }
 
-export function renderCourseChapter(doc, chapter, escapeHtml) {
+export function renderCourseChapter(doc, chapter, escapeHtml, note) {
   const i = doc.chapters.findIndex((c) => c.id === chapter.id);
   const prev = doc.chapters[i - 1];
   const next = doc.chapters[i + 1];
@@ -76,10 +179,20 @@ export function renderCourseChapter(doc, chapter, escapeHtml) {
     next ? `<a href="/study/course/${next.id}">${escapeHtml(next.name)} →</a>` : '<span></span>',
   ].join('');
 
+  const slides = chapter.slides.map((s) => renderSlide(s, escapeHtml)).join('');
+
+  // 가공한 문서가 있으면 그것을 본문으로, 원본 슬라이드는 접어 둡니다.
+  const main = note
+    ? `<p class="lead">${escapeHtml(note.lead || chapter.summary)}</p>` +
+      markdown(note.markdown, escapeHtml) +
+      `<details class="orig"><summary>원본 슬라이드 ${chapter.slides.length}장 보기 · p.${chapter.from}~${chapter.to}</summary>${slides}</details>`
+    : `<p class="lead">${escapeHtml(chapter.summary)} · 원본 p.${chapter.from}~${chapter.to}</p>` +
+      '<div class="notice"><span>정리 예정</span><p>아직 원본 슬라이드 그대로입니다. 읽기 좋은 문서로 다듬는 중입니다.</p></div>' +
+      slides;
+
   return `
-<p class="lead">${escapeHtml(chapter.summary)} · 원본 p.${chapter.from}~${chapter.to}</p>
 <p class="foot"><a href="/study/course">← 목차로</a></p>
-${chapter.slides.map((s) => renderSlide(s, escapeHtml)).join('')}
+${main}
 <div class="pager">${nav}</div>`;
 }
 
@@ -114,4 +227,31 @@ export const COURSE_CSS =
   '.pager{display:flex;justify-content:space-between;gap:10px;margin:28px 0 0;' +
   'padding-top:16px;border-top:1px solid #2a3143;font-size:13px;}' +
   '.pager a{color:#8ea1ff;text-decoration:none;}' +
-  '.pager a:hover{text-decoration:underline;}';
+  '.pager a:hover{text-decoration:underline;}' +
+  '.badge{font-size:10.5px;border-radius:4px;padding:1px 6px;margin-left:6px;' +
+  'background:#20372c;color:#7ee2b8;font-weight:400;vertical-align:middle;}' +
+  '.badge.raw{background:#2d3446;color:#8a93a8;}' +
+  '.orig{margin:34px 0 0;padding-top:16px;border-top:1px solid #2a3143;}' +
+  '.orig summary{cursor:pointer;font-size:12.5px;color:#8ea1ff;list-style:none;padding:4px 0;}' +
+  '.orig summary::-webkit-details-marker{display:none}' +
+  '.orig summary::before{content:"▸ ";}' +
+  '.orig[open] summary::before{content:"▾ ";}' +
+  '.md-h2{font-size:17px;margin:32px 0 10px;color:#e8ecf4;}' +
+  '.md-h3{font-size:14.5px;margin:22px 0 7px;color:#e8ecf4;}' +
+  '.md-h4{font-size:13.5px;margin:18px 0 6px;color:#c9d3e6;}' +
+  '.md-hr{border:none;border-top:1px solid #2a3143;margin:26px 0;}' +
+  '.md-ul{margin:8px 0;padding-left:20px;font-size:13.5px;line-height:1.75;}' +
+  '.md-ul li{margin:0 0 4px;}' +
+  '.md-q{margin:12px 0;border-left:2px solid #5865F2;padding:2px 0 2px 12px;' +
+  'font-size:13px;line-height:1.65;color:#a8b2c8;}' +
+  'pre.md-code{background:#12151c;border:1px solid #2a3143;border-radius:8px;' +
+  'padding:12px 14px;margin:10px 0;font-size:12.5px;line-height:1.7;' +
+  'overflow-x:auto;color:#c9d3e6;position:relative;}' +
+  'pre.md-code[data-lang]::after{content:attr(data-lang);position:absolute;top:6px;right:10px;' +
+  'font-size:10px;color:#4d556b;letter-spacing:.05em;}' +
+  '.md-tbl{overflow-x:auto;margin:12px 0;}' +
+  '.md-tbl table{border-collapse:collapse;width:100%;font-size:13px;min-width:420px;}' +
+  '.md-tbl th{text-align:left;color:#8a93a8;font-weight:600;font-size:11.5px;' +
+  'padding:8px 12px 8px 0;border-bottom:1px solid #2a3143;white-space:nowrap;}' +
+  '.md-tbl td{padding:9px 12px 9px 0;border-bottom:1px solid #232838;' +
+  'vertical-align:top;color:#b7c0d4;line-height:1.6;}';

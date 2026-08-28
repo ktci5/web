@@ -45,7 +45,7 @@
 import { LINUX_GUIDE_TITLE, LINUX_GUIDE_CSS, renderLinuxGuide } from './study-linux.js';
 import { INFRA_TITLE, INFRA_CSS, renderInfraGuide } from './study-infra.js';
 import { renderProjectPage } from './projects.js';
-import { loadCourse, loadSlideImage, renderCourseIndex, renderCourseChapter, COURSE_CSS } from './course.js';
+import { loadCourse, loadNotes, loadSlideImage, renderCourseIndex, renderCourseChapter, COURSE_CSS } from './course.js';
 
 const DISCORD_API = 'https://discord.com/api/v10';
 const USER_AGENT = 'DiscordBot (https://ktci5.kr, 1.0)';
@@ -393,10 +393,11 @@ async function courseIndexPage(env) {
   if (!doc) {
     return errorPage('강의 자료가 아직 올라오지 않았습니다. 운영진에게 문의해주세요.', 404);
   }
+  const notes = (await loadNotes(env)) || {};
   return html(renderDoc({
     title: doc.title,
     heading: `📘 ${doc.title}`,
-    html: renderCourseIndex(doc, escapeHtml),
+    html: renderCourseIndex(doc, escapeHtml, notes),
     extraCss: COURSE_CSS,
   }));
 }
@@ -408,10 +409,11 @@ async function courseChapterPage(env, id) {
   const chapter = doc.chapters.find((c) => c.id === id);
   if (!chapter) return errorPage('그런 장이 없습니다.', 404);
 
+  const notes = (await loadNotes(env)) || {};
   return html(renderDoc({
     title: `${chapter.name} · ${doc.title}`,
-    heading: `📘 ${chapter.name}`,
-    html: renderCourseChapter(doc, chapter, escapeHtml),
+    heading: `📘 ${notes[id]?.title || chapter.name}`,
+    html: renderCourseChapter(doc, chapter, escapeHtml, notes[id]),
     extraCss: COURSE_CSS,
   }));
 }
