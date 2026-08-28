@@ -5,17 +5,22 @@
  * 않습니다. 내용은 KV 에만 있고, 인증한 사람에게만 보여줍니다.
  */
 
-export const COURSE_KEY = 'course:linux-basic';
-
-export async function loadCourse(env) {
+// 과목 목록
+export async function loadCourseIndex(env) {
   if (!env.ROSTER) return null;
-  return env.ROSTER.get(COURSE_KEY, 'json');
+  return env.ROSTER.get('course:index', 'json');
 }
 
-// 정리한 학습 문서. 장별로 담겨 있습니다.
-export async function loadNotes(env) {
-  if (!env.ROSTER) return null;
-  return env.ROSTER.get(`${COURSE_KEY}:notes`, 'json');
+// 한 과목의 장 구조
+export async function loadCourse(env, courseId) {
+  if (!env.ROSTER || !/^[a-z0-9-]+$/.test(courseId || '')) return null;
+  return env.ROSTER.get(`course:${courseId}`, 'json');
+}
+
+// 그 과목의 정리본. 장별로 담겨 있습니다.
+export async function loadNotes(env, courseId) {
+  if (!env.ROSTER || !/^[a-z0-9-]+$/.test(courseId || '')) return null;
+  return env.ROSTER.get(`course:${courseId}:notes`, 'json');
 }
 
 /* ------------------------------------------------------------ 마크다운 */
@@ -112,10 +117,34 @@ export function markdown(src, escapeHtml) {
   return out.join('');
 }
 
+// 과목 목록 — /study/course
+export function renderCourseList(index, escapeHtml) {
+  const items = index.map((c) =>
+    `<a class="chp" href="/study/course/${c.id}">
+      <div class="chp-n">${escapeHtml(c.title)}</div>
+      <div class="chp-d">${escapeHtml(c.subtitle || '')}</div>
+    </a>`
+  ).join('');
+
+  return `
+<p class="lead">과정에서 다루는 내용을 스터디용으로 정리했습니다.
+필요한 부분만 찾아보시면 됩니다.</p>
+<div class="notice"><span>이용 안내</span><p>과정 내용을 정리한 문서입니다.
+<strong>인증한 수강생만</strong> 볼 수 있으니 바깥으로 옮기지 말아주세요.</p></div>
+<section><h2>과목</h2><div class="chps">${items}</div></section>
+<section><h2>함께 보면 좋은 것</h2>
+<div class="ch"><div class="ch-name"><a href="/study/linux">리눅스 CLI 심층 가이드</a></div>
+<div class="ch-desc"><p>명령을 익힌 다음 단계 — 출력을 읽는 법과 증상별 진단 순서.</p></div></div>
+<div class="ch"><div class="ch-name">#💻-리눅스</div>
+<div class="ch-desc"><p>막히는 부분은 채널에 물어보세요.</p></div></div>
+</section>`;
+}
+
+// 한 과목의 장 목록 — /study/course/<과목>
 export function renderCourseIndex(doc, escapeHtml, notes = {}) {
   const items = doc.chapters.map((c) => {
     const n = notes[c.id];
-    return `<a class="chp" href="/study/course/${c.id}">
+    return `<a class="chp" href="/study/course/${doc.id}/${c.id}">
       <div class="chp-n">${escapeHtml(c.name)}` +
       (n ? '' : '<span class="badge raw">준비 중</span>') +
       `</div>
@@ -125,17 +154,9 @@ export function renderCourseIndex(doc, escapeHtml, notes = {}) {
   }).join('');
 
   return `
-<p class="lead">과정에서 다루는 <strong>${escapeHtml(doc.title)}</strong> 내용을 장별로 정리했습니다.
-슬라이드를 넘기지 않고 필요한 부분만 찾아볼 수 있습니다.</p>
-<div class="notice"><span>이용 안내</span><p>과정 내용을 스터디용으로 정리한 문서입니다.
-<strong>인증한 수강생만</strong> 볼 수 있으니 바깥으로 옮기지 말아주세요.</p></div>
-<section><h2>목차</h2><div class="chps">${items}</div></section>
-<section><h2>함께 보면 좋은 것</h2>
-<div class="ch"><div class="ch-name"><a href="/study/linux">리눅스 CLI 심층 가이드</a></div>
-<div class="ch-desc"><p>명령을 아는 다음 단계 — 출력을 읽는 법과 증상별 진단 순서.</p></div></div>
-<div class="ch"><div class="ch-name">#💻-리눅스</div>
-<div class="ch-desc"><p>막히는 부분은 채널에 물어보세요.</p></div></div>
-</section>`;
+<p class="foot"><a href="/study/course">← 과목 목록</a></p>
+<p class="lead">${escapeHtml(doc.subtitle || '')}</p>
+<section><h2>목차</h2><div class="chps">${items}</div></section>`;
 }
 
 export function renderCourseChapter(doc, chapter, escapeHtml, note) {
@@ -144,8 +165,8 @@ export function renderCourseChapter(doc, chapter, escapeHtml, note) {
   const next = doc.chapters[i + 1];
 
   const nav = [
-    prev ? `<a href="/study/course/${prev.id}">← ${escapeHtml(prev.name)}</a>` : '<span></span>',
-    next ? `<a href="/study/course/${next.id}">${escapeHtml(next.name)} →</a>` : '<span></span>',
+    prev ? `<a href="/study/course/${doc.id}/${prev.id}">← ${escapeHtml(prev.name)}</a>` : '<span></span>',
+    next ? `<a href="/study/course/${doc.id}/${next.id}">${escapeHtml(next.name)} →</a>` : '<span></span>',
   ].join('');
 
   // 정리한 학습 문서만 보여줍니다. 원본 슬라이드는 웹에 싣지 않습니다.
@@ -156,7 +177,7 @@ export function renderCourseChapter(doc, chapter, escapeHtml, note) {
       '<div class="notice"><span>준비 중</span><p>아직 정리되지 않은 장입니다. 곧 올라옵니다.</p></div>';
 
   return `
-<p class="foot"><a href="/study/course">← 목차로</a></p>
+<p class="foot"><a href="/study/course/${doc.id}">← ${escapeHtml(doc.title)} 목차</a></p>
 ${main}
 <div class="pager">${nav}</div>`;
 }

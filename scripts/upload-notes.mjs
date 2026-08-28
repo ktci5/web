@@ -2,10 +2,10 @@
 /**
  * 가공한 학습 문서(마크다운)를 KV 에 올립니다.
  *
- *   node scripts/upload-notes.mjs                 전부
- *   node scripts/upload-notes.mjs find shell      특정 장만
- *   node scripts/upload-notes.mjs --dry-run       확인만
- *   node scripts/upload-notes.mjs --dir <경로>     문서 위치 지정
+ *   node scripts/upload-notes.mjs linux              그 과목 전부
+ *   node scripts/upload-notes.mjs bash sed awk       특정 장만
+ *   node scripts/upload-notes.mjs linux --dry-run    확인만
+ *   node scripts/upload-notes.mjs linux --dir <경로>  문서 위치 지정
  *
  * 문서는 공개 저장소에 두지 않습니다. 기본 위치는 ktci5/data 를 받아둔
  * 폴더이고, COURSE_NOTES_DIR 환경변수나 --dir 로 바꿀 수 있습니다.
@@ -28,14 +28,25 @@ import { tmpdir } from 'node:os';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const dirArg = process.argv.indexOf('--dir');
-const DIR = dirArg > -1 ? process.argv[dirArg + 1]
+const NOTES_ROOT = dirArg > -1 ? process.argv[dirArg + 1]
   : process.env.COURSE_NOTES_DIR
   || join(ROOT, '..', 'ktci5-data', 'course-notes');
-const KEY = 'course:linux-basic:notes';
+
 
 const dryRun = process.argv.includes('--dry-run');
-const only = process.argv.slice(2)
+const positional = process.argv.slice(2)
   .filter((a, i, all) => !a.startsWith('--') && all[i - 1] !== '--dir');
+const courseId = positional[0];
+const only = positional.slice(1);
+
+if (!courseId) {
+  console.error('사용법: node scripts/upload-notes.mjs <과목> [장ID...] [--dry-run]');
+  console.error('  예: node scripts/upload-notes.mjs bash');
+  process.exit(1);
+}
+
+const KEY = `course:${courseId}:notes`;
+const DIR = join(NOTES_ROOT, courseId);
 
 if (!existsSync(DIR)) {
   console.error(`✘ 문서 폴더가 없습니다: ${DIR}`);
