@@ -596,8 +596,7 @@ function studyCalendarPage(env) {
             const isToday = today.toDateString() === dayDate.toDateString();
             const filteredEvents = eventsList.filter(ev => {
               if (activeCat !== 'all' && (ev.colorId || '1') !== activeCat) return false;
-              const evStart = ev.start ? ev.start.split('T')[0] : '';
-              return evStart === dateStr;
+              return isEventOnDate(ev, dateStr);
             });
 
             html += '<div class="day-column ' + (isToday ? 'is-today' : '') + '">';
@@ -607,7 +606,7 @@ function studyCalendarPage(env) {
               html += '<div style="font-size:11px; color:#475569; text-align:center; margin-top:20px;">일정 없음</div>';
             } else {
               filteredEvents.forEach(ev => {
-                const timeStr = formatTimeStr(ev.start, ev.end, ev.allDay);
+                const timeStr = formatTimeStr(ev);
                 const catClass = 'cat-' + (ev.colorId || '1');
                 html += '<div class="event-card ' + catClass + '">';
                 html += '<div class="ev-time">' + timeStr + '</div>';
@@ -632,8 +631,7 @@ function studyCalendarPage(env) {
 
           const dayEvents = eventsList.filter(ev => {
             if (activeCat !== 'all' && (ev.colorId || '1') !== activeCat) return false;
-            const evStart = ev.start ? ev.start.split('T')[0] : '';
-            return evStart === dateStr;
+            return isEventOnDate(ev, dateStr);
           });
 
           if (dayEvents.length === 0) {
@@ -643,7 +641,7 @@ function studyCalendarPage(env) {
 
           let html = '<div class="day-timeline">';
           dayEvents.forEach(ev => {
-            const timeStr = formatTimeStr(ev.start, ev.end, ev.allDay);
+            const timeStr = formatTimeStr(ev);
             html += '<div class="agenda-item">';
             html += '<div class="agenda-time">' + timeStr + '</div>';
             html += '<div class="agenda-body">';
@@ -659,22 +657,71 @@ function studyCalendarPage(env) {
           calContainer.innerHTML = html;
         }
 
+        function isEventOnDate(ev, targetDateStr) {
+          if (!ev.start) return false;
+          const startStr = ev.start.includes('T') ? ev.start.split('T')[0] : ev.start;
+          
+          let endStr = startStr;
+          if (ev.end) {
+            endStr = ev.end.includes('T') ? ev.end.split('T')[0] : ev.end;
+            if (ev.allDay && endStr > startStr) {
+              const parts = endStr.split('-');
+              const d = new Date(parts[0], parts[1] - 1, parts[2]);
+              d.setDate(d.getDate() - 1);
+              const pad = n => String(n).padStart(2, '0');
+              endStr = d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+            }
+          }
+
+          return targetDateStr >= startStr && targetDateStr <= endStr;
+        }
+
         function getStartOfWeek(d) {
           const day = d.getDay();
           const diff = d.getDate() - day;
           return new Date(d.getFullYear(), d.getMonth(), diff);
         }
 
-        function formatTimeStr(start, end, allDay) {
-          if (allDay) return '종일';
+        function formatTimeStr(ev) {
+          const { start, end, allDay } = ev;
           if (!start) return '';
+          
+          const startStr = start.includes('T') ? start.split('T')[0] : start;
+          let endStr = startStr;
+          if (end) {
+            endStr = end.includes('T') ? end.split('T')[0] : end;
+            if (allDay && endStr > startStr) {
+              const parts = endStr.split('-');
+              const d = new Date(parts[0], parts[1] - 1, parts[2]);
+              d.setDate(d.getDate() - 1);
+              const pad = n => String(n).padStart(2, '0');
+              endStr = d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+            }
+          }
+
+          const isMultiDay = startStr !== endStr;
+
+          if (allDay) {
+            if (isMultiDay) {
+              return startStr.slice(5).replace('-', '/') + ' ~ ' + endStr.slice(5).replace('-', '/') + ' (연속)';
+            }
+            return '종일';
+          }
+
           const s = new Date(start);
           const e = end ? new Date(end) : null;
           const pad = n => String(n).padStart(2, '0');
-          const sStr = pad(s.getHours()) + ':' + pad(s.getMinutes());
-          if (!e) return sStr;
-          const eStr = pad(e.getHours()) + ':' + pad(e.getMinutes());
-          return sStr + ' ~ ' + eStr;
+          const sTime = pad(s.getHours()) + ':' + pad(s.getMinutes());
+          
+          if (!e) return sTime;
+          
+          const eTime = pad(e.getHours()) + ':' + pad(e.getMinutes());
+
+          if (isMultiDay) {
+            return (s.getMonth() + 1) + '/' + s.getDate() + ' ' + sTime + ' ~ ' + (e.getMonth() + 1) + '/' + e.getDate() + ' ' + eTime + ' (연속)';
+          }
+
+          return sTime + ' ~ ' + eTime;
         }
 
         function escapeHtml(str) {
