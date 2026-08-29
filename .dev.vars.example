@@ -16,3 +16,8 @@ GOOGLE_CALENDAR_ID=""
 # --- 명단 인증 (선택) ---
 # 승인 요청을 보낼 운영진 채널 ID. 없으면 안내 문구만 표시됩니다.
 ADMIN_CHANNEL_ID=""
+
+# --- 운영진 미리보기 및 알림 ---
+PREVIEW_KEY=""
+DRIVE_NOTIFY_CHANNEL_ID=""
+
