@@ -150,6 +150,10 @@ export default {
         return handlePreview(request, url, env);
       case '/study':
         return guarded(request, env, studyIndexPage);
+      case '/study/calendar':
+        return guarded(request, env, studyCalendarPage);
+      case '/api/calendar/events':
+        return guarded(request, env, (e) => apiCalendarEvents(request, url, e));
       case '/study/linux':
         return guarded(request, env, linuxGuidePage);
       case '/study/infra':
@@ -314,6 +318,12 @@ const STUDY_MATERIALS = [
     tag: '기초',
   },
   {
+    href: '/study/calendar',
+    name: '스터디 & 미팅 캘린더',
+    desc: '주간 및 일간 스터디 일정, 미팅 공지 및 구글 캘린더 연동 현황을 시각적으로 확인합니다 (인증 필요).',
+    tag: '일정',
+  },
+  {
     href: '/study/linux',
     name: '리눅스 CLI 심층 가이드',
     desc: '명령을 익힌 다음 단계 — 출력을 읽는 법과 증상별 진단 순서.',
@@ -355,6 +365,319 @@ function studyIndexPage(env) {
       </ul></section>`;
 
   return html(renderDoc({ title: '스터디 자료', heading: '📖 스터디 자료', html: body }));
+}
+
+/* -------------------------------------------------------------- 스터디 & 미팅 캘린더 (디스코드 인증 필요) */
+
+async function apiCalendarEvents(request, url, env) {
+  if (!calendarReady(env)) {
+    return new Response(JSON.stringify({ ok: false, error: '구글 캘린더 연동 설정이 완료되지 않았습니다.', events: [] }), {
+      status: 503,
+      headers: { 'content-type': 'application/json; charset=UTF-8' }
+    });
+  }
+
+  const timeMin = url.searchParams.get('timeMin') || new Date(new Date().setDate(new Date().getDate() - 30)).toISOString();
+  const timeMax = url.searchParams.get('timeMax') || new Date(new Date().setDate(new Date().getDate() + 60)).toISOString();
+
+  try {
+    const params = new URLSearchParams({
+      timeMin,
+      timeMax,
+      singleEvents: 'true',
+      orderBy: 'startTime',
+      maxResults: '250',
+    });
+    const data = await calendarFetch(env, '/events?' + params.toString());
+
+    const events = (data.items || []).map((e) => ({
+      id: e.id,
+      title: e.summary || '(제목 없음)',
+      description: e.description || '',
+      location: e.location || '',
+      start: e.start?.dateTime || e.start?.date,
+      end: e.end?.dateTime || e.end?.date,
+      allDay: !e.start?.dateTime,
+      colorId: e.colorId || '1',
+      link: e.htmlLink || '',
+    }));
+
+    return new Response(JSON.stringify({ ok: true, events }), {
+      headers: {
+        'content-type': 'application/json; charset=UTF-8',
+        'cache-control': 'private, no-cache, no-store'
+      }
+    });
+  } catch (err) {
+    return new Response(JSON.stringify({ ok: false, error: err.message, events: [] }), {
+      status: 500,
+      headers: { 'content-type': 'application/json; charset=UTF-8' }
+    });
+  }
+}
+
+function studyCalendarPage(env) {
+  const isReady = calendarReady(env);
+  const statusHtml = isReady
+    ? '<span class="cal-badge active">🟢 구글 캘린더 실시간 연동됨 (디스코드 인증 완료)</span>'
+    : '<span class="cal-badge warning">🟡 캘린더 연동 설정 대기 중</span>';
+
+  const calendarCss = `
+    .cal-badge { display: inline-block; font-size: 12px; padding: 4px 10px; border-radius: 20px; font-weight: 600; margin-bottom: 12px; }
+    .cal-badge.active { background: rgba(16,185,129,0.15); color: #10b981; border: 1px solid rgba(16,185,129,0.3); }
+    .cal-badge.warning { background: rgba(245,158,11,0.15); color: #f59e0b; border: 1px solid rgba(245,158,11,0.3); }
+    .cal-controls { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin: 16px 0; background: #1a2234; padding: 12px 16px; border-radius: 10px; border: 1px solid #2a3143; }
+    .cal-group { display: flex; align-items: center; gap: 8px; }
+    .btn-cal, .btn-mode, .pill-cat { background: #242d42; border: 1px solid #39415a; color: #cbd5e1; font-size: 13px; padding: 6px 14px; border-radius: 6px; cursor: pointer; transition: all 0.15s ease; }
+    .btn-cal:hover, .btn-mode:hover, .pill-cat:hover { background: #334155; color: #fff; }
+    .btn-mode.active, .pill-cat.active { background: #6366f1; border-color: #818cf8; color: #fff; font-weight: 600; }
+    .cal-title-text { font-size: 16px; font-weight: 700; color: #f8fafc; margin-left: 6px; }
+    
+    .week-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 8px; margin-top: 12px; }
+    .day-column { background: #161e2e; border: 1px solid #263044; border-radius: 8px; padding: 10px; min-height: 320px; display: flex; flex-direction: column; gap: 8px; }
+    .day-column.is-today { border-color: #6366f1; background: rgba(99,102,241,0.06); }
+    .day-header { text-align: center; font-size: 13px; font-weight: 700; color: #cbd5e1; padding-bottom: 6px; border-bottom: 1px solid #263044; }
+    .day-header span { font-size: 11px; color: #64748b; font-weight: 400; display: block; margin-top: 2px; }
+    .day-column.is-today .day-header { color: #818cf8; }
+    
+    .event-card { background: #202b3d; border-left: 3px solid #3b82f6; border-radius: 4px; padding: 8px; font-size: 12px; color: #f1f5f9; display: flex; flex-direction: column; gap: 4px; }
+    .event-card.cat-2 { border-left-color: #a855f7; }
+    .event-card.cat-3 { border-left-color: #10b981; }
+    .ev-time { font-size: 11px; font-weight: 600; color: #38bdf8; }
+    .ev-title { font-weight: 600; line-height: 1.35; color: #f8fafc; }
+    .ev-loc { font-size: 11px; color: #94a3b8; display: flex; align-items: center; gap: 4px; }
+    .ev-desc { font-size: 11px; color: #a1a1aa; line-height: 1.4; margin-top: 2px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+
+    .day-timeline { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
+    .agenda-item { background: #161e2e; border: 1px solid #263044; border-radius: 8px; padding: 14px 18px; display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; transition: border-color 0.2s; }
+    .agenda-item:hover { border-color: #4f46e5; }
+    .agenda-time { min-width: 140px; font-size: 13px; font-weight: 700; color: #38bdf8; }
+    .agenda-body { flex: 1; }
+    .agenda-title { font-size: 15px; font-weight: 700; color: #f8fafc; margin-bottom: 4px; }
+    .agenda-meta { font-size: 12px; color: #94a3b8; display: flex; gap: 12px; flex-wrap: wrap; }
+    .agenda-desc { font-size: 13px; color: #cbd5e1; margin-top: 6px; line-height: 1.5; background: rgba(0,0,0,0.2); padding: 8px 12px; border-radius: 6px; }
+
+    @media (max-width: 768px) {
+      .week-grid { grid-template-columns: 1fr; }
+      .day-column { min-height: auto; }
+      .agenda-item { flex-direction: column; }
+    }
+  `;
+
+  const htmlContent = `
+    <p class="lead">KT클라우드 인프라교육 5기 주간/일간 스터디 미팅 및 공지 일정입니다.<br>
+    디스코드 인증된 수강생에게만 실시간으로 안전하게 공개됩니다.</p>
+    
+    ${statusHtml}
+
+    <div class="cal-controls">
+      <div class="cal-group">
+        <button id="btnToday" class="btn-cal">오늘</button>
+        <button id="btnPrev" class="btn-cal">&lt;</button>
+        <button id="btnNext" class="btn-cal">&gt;</button>
+        <span id="calTitle" class="cal-title-text">2026년 8월</span>
+      </div>
+
+      <div class="cal-group">
+        <button class="btn-mode active" data-mode="week">주간 뷰 (Weekly)</button>
+        <button class="btn-mode" data-mode="day">일간 뷰 (Daily)</button>
+      </div>
+
+      <div class="cal-group">
+        <button class="pill-cat active" data-cat="all">전체</button>
+        <button class="pill-cat" data-cat="1">🔵 미팅/회의</button>
+        <button class="pill-cat" data-cat="2">🟣 스터디/강의</button>
+        <button class="pill-cat" data-cat="3">🟢 공지/행사</button>
+      </div>
+    </div>
+
+    <div id="calContainer">
+      <div style="padding:40px; text-align:center; color:#94a3b8;">일정을 동기화하는 중입니다...</div>
+    </div>
+
+    <script>
+      (function() {
+        let currentDate = new Date();
+        let viewMode = 'week';
+        let activeCat = 'all';
+        let eventsList = [];
+
+        const calContainer = document.getElementById('calContainer');
+        const calTitle = document.getElementById('calTitle');
+        const btnToday = document.getElementById('btnToday');
+        const btnPrev = document.getElementById('btnPrev');
+        const btnNext = document.getElementById('btnNext');
+
+        document.querySelectorAll('.btn-mode').forEach(btn => {
+          btn.addEventListener('click', (e) => {
+            document.querySelectorAll('.btn-mode').forEach(b => b.classList.remove('active'));
+            e.target.classList.add('active');
+            viewMode = e.target.dataset.mode;
+            render();
+          });
+        });
+
+        document.querySelectorAll('.pill-cat').forEach(btn => {
+          btn.addEventListener('click', (e) => {
+            document.querySelectorAll('.pill-cat').forEach(b => b.classList.remove('active'));
+            e.target.classList.add('active');
+            activeCat = e.target.dataset.cat;
+            render();
+          });
+        });
+
+        btnToday.addEventListener('click', () => {
+          currentDate = new Date();
+          loadEvents();
+        });
+
+        btnPrev.addEventListener('click', () => {
+          if (viewMode === 'week') currentDate.setDate(currentDate.getDate() - 7);
+          else currentDate.setDate(currentDate.getDate() - 1);
+          render();
+        });
+
+        btnNext.addEventListener('click', () => {
+          if (viewMode === 'week') currentDate.setDate(currentDate.getDate() + 7);
+          else currentDate.setDate(currentDate.getDate() + 1);
+          render();
+        });
+
+        async function loadEvents() {
+          calContainer.innerHTML = '<div style="padding:40px; text-align:center; color:#94a3b8;">구글 캘린더 일정 동기화 중...</div>';
+          try {
+            const res = await fetch('/api/calendar/events');
+            const data = await res.json();
+            if (data.ok) {
+              eventsList = data.events || [];
+            }
+          } catch (err) {
+            console.error(err);
+          }
+          render();
+        }
+
+        function render() {
+          if (viewMode === 'week') renderWeekView();
+          else renderDayView();
+        }
+
+        function renderWeekView() {
+          const startOfWeek = getStartOfWeek(currentDate);
+          const endOfWeek = new Date(startOfWeek);
+          endOfWeek.setDate(endOfWeek.getDate() + 6);
+
+          calTitle.textContent = startOfWeek.getFullYear() + '년 ' + (startOfWeek.getMonth() + 1) + '월 ' + startOfWeek.getDate() + '일 ~ ' + endOfWeek.getDate() + '일';
+
+          const days = ['일', '월', '화', '수', '목', '금', '토'];
+          const today = new Date();
+          let html = '<div class="week-grid">';
+
+          for (let i = 0; i < 7; i++) {
+            const dayDate = new Date(startOfWeek);
+            dayDate.setDate(dayDate.getDate() + i);
+            const dateStr = dayDate.toISOString().split('T')[0];
+
+            const isToday = today.toDateString() === dayDate.toDateString();
+            const filteredEvents = eventsList.filter(ev => {
+              if (activeCat !== 'all' && (ev.colorId || '1') !== activeCat) return false;
+              const evStart = ev.start ? ev.start.split('T')[0] : '';
+              return evStart === dateStr;
+            });
+
+            html += '<div class="day-column ' + (isToday ? 'is-today' : '') + '">';
+            html += '<div class="day-header">' + days[i] + '요일 <span>' + (dayDate.getMonth() + 1) + '.' + dayDate.getDate() + '</span></div>';
+
+            if (filteredEvents.length === 0) {
+              html += '<div style="font-size:11px; color:#475569; text-align:center; margin-top:20px;">일정 없음</div>';
+            } else {
+              filteredEvents.forEach(ev => {
+                const timeStr = formatTimeStr(ev.start, ev.end, ev.allDay);
+                const catClass = 'cat-' + (ev.colorId || '1');
+                html += '<div class="event-card ' + catClass + '">';
+                html += '<div class="ev-time">' + timeStr + '</div>';
+                html += '<div class="ev-title">' + escapeHtml(ev.title) + '</div>';
+                if (ev.location) html += '<div class="ev-loc">📍 ' + escapeHtml(ev.location) + '</div>';
+                if (ev.description) html += '<div class="ev-desc">' + escapeHtml(ev.description) + '</div>';
+                html += '</div>';
+              });
+            }
+
+            html += '</div>';
+          }
+
+          html += '</div>';
+          calContainer.innerHTML = html;
+        }
+
+        function renderDayView() {
+          const dateStr = currentDate.toISOString().split('T')[0];
+          const days = ['일', '월', '화', '수', '목', '금', '토'];
+          calTitle.textContent = currentDate.getFullYear() + '년 ' + (currentDate.getMonth() + 1) + '월 ' + currentDate.getDate() + '일 (' + days[currentDate.getDay()] + '요일)';
+
+          const dayEvents = eventsList.filter(ev => {
+            if (activeCat !== 'all' && (ev.colorId || '1') !== activeCat) return false;
+            const evStart = ev.start ? ev.start.split('T')[0] : '';
+            return evStart === dateStr;
+          });
+
+          if (dayEvents.length === 0) {
+            calContainer.innerHTML = '<div style="padding:40px; text-align:center; color:#94a3b8; background:#161e2e; border-radius:8px;">이 날짜에 예정된 미팅 또는 스터디 일정이 없습니다.</div>';
+            return;
+          }
+
+          let html = '<div class="day-timeline">';
+          dayEvents.forEach(ev => {
+            const timeStr = formatTimeStr(ev.start, ev.end, ev.allDay);
+            html += '<div class="agenda-item">';
+            html += '<div class="agenda-time">' + timeStr + '</div>';
+            html += '<div class="agenda-body">';
+            html += '<div class="agenda-title">' + escapeHtml(ev.title) + '</div>';
+            html += '<div class="agenda-meta">';
+            if (ev.location) html += '<span>📍 장소: ' + escapeHtml(ev.location) + '</span>';
+            html += '</div>';
+            if (ev.description) html += '<div class="agenda-desc">' + escapeHtml(ev.description) + '</div>';
+            html += '</div></div>';
+          });
+          html += '</div>';
+
+          calContainer.innerHTML = html;
+        }
+
+        function getStartOfWeek(d) {
+          const day = d.getDay();
+          const diff = d.getDate() - day;
+          return new Date(d.getFullYear(), d.getMonth(), diff);
+        }
+
+        function formatTimeStr(start, end, allDay) {
+          if (allDay) return '종일';
+          if (!start) return '';
+          const s = new Date(start);
+          const e = end ? new Date(end) : null;
+          const pad = n => String(n).padStart(2, '0');
+          const sStr = pad(s.getHours()) + ':' + pad(s.getMinutes());
+          if (!e) return sStr;
+          const eStr = pad(e.getHours()) + ':' + pad(e.getMinutes());
+          return sStr + ' ~ ' + eStr;
+        }
+
+        function escapeHtml(str) {
+          if (!str) return '';
+          return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        }
+
+        loadEvents();
+      })();
+    </script>
+  `;
+
+  return html(renderDoc({
+    title: '스터디 & 미팅 캘린더',
+    heading: '🗓️ 스터디 & 미팅 캘린더',
+    html: htmlContent,
+    extraCss: calendarCss,
+  }));
 }
 
 function infraGuidePage(env) {
