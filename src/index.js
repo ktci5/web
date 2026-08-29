@@ -390,17 +390,32 @@ async function apiCalendarEvents(request, url, env) {
     });
     const data = await calendarFetch(env, '/events?' + params.toString());
 
-    const events = (data.items || []).map((e) => ({
-      id: e.id,
-      title: e.summary || '(제목 없음)',
-      description: e.description || '',
-      location: e.location || '',
-      start: e.start?.dateTime || e.start?.date,
-      end: e.end?.dateTime || e.end?.date,
-      allDay: !e.start?.dateTime,
-      colorId: e.colorId || '1',
-      link: e.htmlLink || '',
-    }));
+    const events = (data.items || []).map((e) => {
+      const title = e.summary || '(제목 없음)';
+      const desc = e.description || '';
+      const fullText = (title + ' ' + desc).toLowerCase();
+      
+      let cat = e.colorId || '1';
+      if (fullText.includes('스터디') || fullText.includes('강의') || fullText.includes('수업') || fullText.includes('[스터디]') || fullText.includes('[강의]')) {
+        cat = '2';
+      } else if (fullText.includes('공지') || fullText.includes('행사') || fullText.includes('모임') || fullText.includes('[공지]') || fullText.includes('[행사]')) {
+        cat = '3';
+      } else if (fullText.includes('미팅') || fullText.includes('회의') || fullText.includes('[미팅]') || fullText.includes('[회의]')) {
+        cat = '1';
+      }
+
+      return {
+        id: e.id,
+        title,
+        description: desc,
+        location: e.location || '',
+        start: e.start?.dateTime || e.start?.date,
+        end: e.end?.dateTime || e.end?.date,
+        allDay: !e.start?.dateTime,
+        colorId: cat,
+        link: e.htmlLink || '',
+      };
+    });
 
     return new Response(JSON.stringify({ ok: true, events }), {
       headers: {
