@@ -438,6 +438,7 @@ function studyCalendarPage(env) {
     : '<span class="cal-badge warning">🟡 캘린더 연동 설정 대기 중</span>';
 
   const calendarCss = `
+    .doc { max-width: 1400px !important; padding: 24px 20px 64px !important; }
     .cal-badge { display: inline-block; font-size: 12px; padding: 4px 10px; border-radius: 20px; font-weight: 600; margin-bottom: 12px; }
     .cal-badge.active { background: rgba(16,185,129,0.15); color: #10b981; border: 1px solid rgba(16,185,129,0.3); }
     .cal-badge.warning { background: rgba(245,158,11,0.15); color: #f59e0b; border: 1px solid rgba(245,158,11,0.3); }
