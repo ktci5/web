@@ -114,3 +114,36 @@ try {
 }
 
 console.log('\n✅ 업로드 완료 — https://ktci5.kr/study/course');
+
+// --notify 플래그가 붙어있으면 디스코드 채널에 이어서 자동 공지 발송
+if (process.argv.includes('--notify')) {
+  try {
+    const { loadEnv, discord } = await import('./_env.mjs');
+    const env = loadEnv(['DISCORD_BOT_TOKEN', 'DISCORD_GUILD_ID']);
+    const channels = await discord(env, `/guilds/${env.DISCORD_GUILD_ID}/channels`);
+    const noticeChannel = channels.find((c) => c.name === '📢-공지사항' || c.name === '📚-자료공유');
+
+    if (noticeChannel) {
+      const updatedList = Object.values(notes).map((n) => `• **${n.title}**: ${n.lead || ''}`).join('\n');
+      const embed = {
+        title: `📚 [강의 정리] ${courseId.toUpperCase()} 과목 업데이트`,
+        color: 0x5865f2,
+        description: `새로운 학습 정리본이 웹사이트에 업데이트되었습니다.\n\n${updatedList}`,
+        fields: [
+          { name: '📖 웹에서 보기', value: `https://ktci5.kr/study/course/${courseId}` },
+          { name: '🗓️ 스터디 캘린더', value: 'https://ktci5.kr/study/calendar' }
+        ],
+        footer: { text: 'KT클라우드 인프라교육 5기 스터디' },
+        timestamp: new Date().toISOString()
+      };
+
+      await discord(env, `/channels/${noticeChannel.id}/messages`, {
+        method: 'POST',
+        body: JSON.stringify({ embeds: [embed] })
+      });
+      console.log('📢 디스코드 채널에 성공적으로 이어지는 알림글을 게시했습니다!');
+    }
+  } catch (err) {
+    console.warn('⚠️ 디스코드 알림 게시 경고:', err.message);
+  }
+}
