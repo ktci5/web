@@ -591,7 +591,7 @@ function studyCalendarPage(env) {
           for (let i = 0; i < 7; i++) {
             const dayDate = new Date(startOfWeek);
             dayDate.setDate(dayDate.getDate() + i);
-            const dateStr = dayDate.toISOString().split('T')[0];
+            const dateStr = formatLocalDateStr(dayDate);
 
             const isToday = today.toDateString() === dayDate.toDateString();
             const filteredEvents = eventsList.filter(ev => {
@@ -625,7 +625,7 @@ function studyCalendarPage(env) {
         }
 
         function renderDayView() {
-          const dateStr = currentDate.toISOString().split('T')[0];
+          const dateStr = formatLocalDateStr(currentDate);
           const days = ['일', '월', '화', '수', '목', '금', '토'];
           calTitle.textContent = currentDate.getFullYear() + '년 ' + (currentDate.getMonth() + 1) + '월 ' + currentDate.getDate() + '일 (' + days[currentDate.getDay()] + '요일)';
 
@@ -657,19 +657,31 @@ function studyCalendarPage(env) {
           calContainer.innerHTML = html;
         }
 
+        function formatLocalDateStr(d) {
+          const pad = n => String(n).padStart(2, '0');
+          return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+        }
+
+        function getEventDateStr(dateInput) {
+          if (!dateInput) return '';
+          if (typeof dateInput === 'string' && dateInput.length === 10) return dateInput;
+          const d = new Date(dateInput);
+          if (isNaN(d.getTime())) return '';
+          return formatLocalDateStr(d);
+        }
+
         function isEventOnDate(ev, targetDateStr) {
           if (!ev.start) return false;
-          const startStr = ev.start.includes('T') ? ev.start.split('T')[0] : ev.start;
+          const startStr = getEventDateStr(ev.start);
           
           let endStr = startStr;
           if (ev.end) {
-            endStr = ev.end.includes('T') ? ev.end.split('T')[0] : ev.end;
+            endStr = getEventDateStr(ev.end);
             if (ev.allDay && endStr > startStr) {
               const parts = endStr.split('-');
               const d = new Date(parts[0], parts[1] - 1, parts[2]);
               d.setDate(d.getDate() - 1);
-              const pad = n => String(n).padStart(2, '0');
-              endStr = d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+              endStr = formatLocalDateStr(d);
             }
           }
 
@@ -686,16 +698,15 @@ function studyCalendarPage(env) {
           const { start, end, allDay } = ev;
           if (!start) return '';
           
-          const startStr = start.includes('T') ? start.split('T')[0] : start;
+          const startStr = getEventDateStr(start);
           let endStr = startStr;
           if (end) {
-            endStr = end.includes('T') ? end.split('T')[0] : end;
+            endStr = getEventDateStr(end);
             if (allDay && endStr > startStr) {
               const parts = endStr.split('-');
               const d = new Date(parts[0], parts[1] - 1, parts[2]);
               d.setDate(d.getDate() - 1);
-              const pad = n => String(n).padStart(2, '0');
-              endStr = d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+              endStr = formatLocalDateStr(d);
             }
           }
 
