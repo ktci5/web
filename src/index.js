@@ -2753,11 +2753,56 @@ function renderDoc({ title, heading, sections, html: raw, extraCss = '' }) {
     .map(([h, p]) => `<h2>${escapeHtml(h)}</h2><p>${p}</p>`)
     .join('');
 
+  const stickyHeader = `
+    <header class="top-sticky-bar">
+      <div class="top-bar-inner">
+        <a href="/study" class="top-logo">📖 KT-CI5 스터디 Hub</a>
+        <nav class="top-nav">
+          <a href="/study/course" class="nav-item">📘 강의 정리</a>
+          <a href="/study/calendar" class="nav-item">🗓️ 캘린더</a>
+          <a href="/study/linux" class="nav-item">🐧 리눅스 가이드</a>
+          <a href="/study/infra" class="nav-item">🛠️ 인프라 가이드</a>
+          <a href="/guide" class="nav-item">💬 채널 가이드</a>
+        </nav>
+      </div>
+    </header>
+  `;
+
+  const bottomNav = `
+    <div class="bottom-nav-bar">
+      <a href="/study" class="bnav-btn">← 스터디 Hub</a>
+      <a href="/study/course" class="bnav-btn">📘 강의 정리</a>
+      <a href="/study/calendar" class="bnav-btn highlight">🗓️ 스터디 캘린더</a>
+      <a href="/guide" class="bnav-btn">💬 채널 가이드 →</a>
+    </div>
+  `;
+
+  const docCss = `
+    .top-sticky-bar { position: sticky; top: 0; z-index: 999; backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); background: rgba(15, 23, 42, 0.92); border-bottom: 1px solid #2a3143; width: 100%; margin-bottom: 16px; }
+    .top-bar-inner { max-width: 1320px; margin: 0 auto; padding: 10px 20px; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+    .top-logo { font-size: 15px; font-weight: 700; color: #f8fafc; text-decoration: none; display: flex; align-items: center; gap: 8px; }
+    .top-logo:hover { color: #818cf8; }
+    .top-nav { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    .nav-item { font-size: 13px; font-weight: 500; color: #cbd5e1; text-decoration: none; padding: 5px 11px; border-radius: 6px; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.07); transition: all 0.15s ease; }
+    .nav-item:hover { background: rgba(99, 102, 241, 0.2); border-color: #6366f1; color: #fff; }
+    
+    .bottom-nav-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 48px; padding-top: 20px; border-top: 1px solid #2a3143; flex-wrap: wrap; }
+    .bnav-btn { font-size: 13.5px; font-weight: 600; color: #94a3b8; text-decoration: none; padding: 8px 16px; border-radius: 8px; background: #1a2234; border: 1px solid #2a3143; transition: all 0.15s ease; display: inline-flex; align-items: center; gap: 6px; }
+    .bnav-btn:hover { background: #242d42; color: #fff; border-color: #6366f1; transform: translateY(-1px); }
+    .bnav-btn.highlight { background: linear-gradient(135deg, #4f46e5 0%, #6366f1 100%); color: #fff; border-color: #818cf8; }
+
+    @media (max-width: 640px) {
+      .top-bar-inner { flex-direction: column; align-items: flex-start; }
+      .bottom-nav-bar { flex-direction: column; align-items: stretch; }
+      .bnav-btn { justify-content: center; }
+    }
+  `;
+
   return '<!doctype html><html lang="ko"><head><meta charset="UTF-8">' +
     '<meta name="viewport" content="width=device-width, initial-scale=1">' +
     '<title>' + escapeHtml(title) + ' · ktci5.kr</title>' +
     '<style>' + BASE_CSS +
-    '.doc{max-width:640px;margin:0 auto;padding:32px 0 64px;}' +
+    '.doc{max-width:1320px;margin:0 auto;padding:24px 20px 64px;width:94%;}' +
     'h2{font-size:16px;margin:28px 0 8px;color:#e8ecf4;}' +
     '.lead{font-size:14px;color:#9aa4bb;}' +
     'section{margin:0 0 4px;}' +
@@ -2775,10 +2820,14 @@ function renderDoc({ title, heading, sections, html: raw, extraCss = '' }) {
     '.ch-name{line-height:1.45;}' +
     '@media(max-width:520px){.ch{display:block}.ch-name{margin-bottom:4px}}' +
     '.tag{font-size:11px;color:#6c7488;border:1px solid #39415a;border-radius:4px;padding:1px 5px;margin-left:6px;font-weight:400;}' +
+    docCss +
     extraCss +
-    '</style></head><body><div class="doc"><h1>' + escapeHtml(heading) + '</h1>' +
+    '</style></head><body>' +
+    stickyHeader +
+    '<div class="doc"><h1>' + escapeHtml(heading) + '</h1>' +
     `<p class="hint">${PLATFORM_NAME} 스터디 디스코드 인증 서비스 (ktci5.kr)</p>` +
     body +
-    '<p class="foot"><a href="/">← 처음으로</a></p>' +
+    bottomNav +
+    '<p class="foot" style="margin-top:20px;"><a href="/">← 처음으로</a></p>' +
     '</div></body></html>';
 }
