@@ -115,33 +115,52 @@ try {
 
 console.log('\n✅ 업로드 완료 — https://ktci5.kr/study/course');
 
-// --notify 플래그가 붙어있으면 디스코드 채널에 이어서 자동 공지 발송
+// --notify 플래그가 붙어있으면 해당되는 디스코드 주제 채널을 자동으로 찾아 알림글 게시
 if (process.argv.includes('--notify')) {
   try {
     const { loadEnv, discord } = await import('./_env.mjs');
     const env = loadEnv(['DISCORD_BOT_TOKEN', 'DISCORD_GUILD_ID']);
     const channels = await discord(env, `/guilds/${env.DISCORD_GUILD_ID}/channels`);
-    const noticeChannel = channels.find((c) => c.name === '📢-공지사항' || c.name === '📚-자료공유');
 
-    if (noticeChannel) {
+    const COURSE_CHANNEL_MAP = {
+      linux: ['💻-리눅스', '🐧-리눅스-자격증'],
+      bash: ['💻-리눅스', '🐧-리눅스-자격증'],
+      network: ['🌐-네트워크', '🌐-네트워크-자격증'],
+      cloud: ['☁️-클라우드', '☁️-aws-자격증'],
+      aws: ['☁️-aws-자격증', '☁️-클라우드'],
+      container: ['🐳-컨테이너-쿠버네티스', '⎈-쿠버네티스-자격증'],
+      k8s: ['🐳-컨테이너-쿠버네티스', '⎈-쿠버네티스-자격증'],
+      database: ['🗄️-데이터베이스', '🗄️-sqld-자격증'],
+      sqld: ['🗄️-sqld-자격증', '🗄️-데이터베이스'],
+    };
+
+    const candidates = COURSE_CHANNEL_MAP[courseId.toLowerCase()] || [];
+    let targetChannel = channels.find((c) => candidates.includes(c.name));
+    if (!targetChannel) {
+      targetChannel = channels.find((c) => c.name === '📚-자료공유' || c.name === '📢-공지사항');
+    }
+
+    if (targetChannel) {
       const updatedList = Object.values(notes).map((n) => `• **${n.title}**: ${n.lead || ''}`).join('\n');
       const embed = {
-        title: `📚 [강의 정리] ${courseId.toUpperCase()} 과목 업데이트`,
+        title: `📘 [강의 정리] ${courseId.toUpperCase()} 과목 학습 자료가 업로드되었습니다`,
         color: 0x5865f2,
-        description: `새로운 학습 정리본이 웹사이트에 업데이트되었습니다.\n\n${updatedList}`,
+        description: `해당 분야 스터디 정리 문서 작성이 완료되었습니다.\n아래 링크에서 내용을 확인하실 수 있습니다.\n\n${updatedList}`,
         fields: [
           { name: '📖 웹에서 보기', value: `https://ktci5.kr/study/course/${courseId}` },
           { name: '🗓️ 스터디 캘린더', value: 'https://ktci5.kr/study/calendar' }
         ],
-        footer: { text: 'KT클라우드 인프라교육 5기 스터디' },
+        footer: { text: `KT클라우드 인프라교육 5기 · #${targetChannel.name}` },
         timestamp: new Date().toISOString()
       };
 
-      await discord(env, `/channels/${noticeChannel.id}/messages`, {
+      await discord(env, `/channels/${targetChannel.id}/messages`, {
         method: 'POST',
         body: JSON.stringify({ embeds: [embed] })
       });
-      console.log('📢 디스코드 채널에 성공적으로 이어지는 알림글을 게시했습니다!');
+      console.log(`📢 #${targetChannel.name} 채널에 과목 공지글을 성공적으로 게시했습니다!`);
+    } else {
+      console.warn('⚠️ 적절한 디스코드 공지 채널을 찾지 못했습니다.');
     }
   } catch (err) {
     console.warn('⚠️ 디스코드 알림 게시 경고:', err.message);
