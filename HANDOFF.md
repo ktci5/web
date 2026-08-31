@@ -203,6 +203,15 @@ PDF 를 웹 학습 자료로 만드는 절차입니다. **원본 슬라이드는
 ① PDF 목차 파악
    pdftotext -layout -f <시작> -l <끝> "파일.pdf" -
 
+   ─ 텍스트가 거의 안 나오면 슬라이드가 스크린샷입니다.
+     그때는 Read 도구로 쪽을 이미지로 읽습니다 (한 번에 최대 20쪽).
+     쪽별 글자 수로 미리 확인할 수 있습니다:
+       for p in $(seq 1 N); do
+         pdftotext -f $p -l $p "파일.pdf" - | tr -d '[:space:]' | wc -c
+       done
+
+   ─ 파일이 나뉘어 있으면 먼저 합칩니다:  pdfunite a.pdf b.pdf out.pdf
+
 ② scripts/upload-course.mjs 의 COURSES 에 과목·장 등록
    { id, name, from: <시작 페이지>, summary }
 
@@ -248,6 +257,7 @@ lead: if · case · test 로 갈래를 나눕니다.
 | --- | --- | --- | --- |
 | `linux` | Linux 기초 | 10 | ✅ 완료 |
 | `bash` | Shell Programming | 8 | ✅ 완료 |
+| `admin` | Linux 관리자 | 19 | ✅ 완료 |
 
 ---
 

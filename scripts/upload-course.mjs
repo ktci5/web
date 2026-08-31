@@ -56,6 +56,32 @@ const COURSES = {
       { id: 'flow',   name: '흐름 제어와 함수',      from: 90, summary: 'break · continue · here document · 함수' },
     ],
   },
+  admin: {
+    title: 'Linux 관리자',
+    subtitle: '서버를 맡아 운영하는 데 필요한 것들',
+    order: 3,
+    chapters: [
+      { id: 'install',  name: '실습 환경과 설치',      from: 3,   summary: 'Rocky Linux 설치와 실습 환경 구성' },
+      { id: 'users',    name: '사용자와 권한 관리',     from: 7,   summary: '계정, 그룹, 암호 정책, sudo, 접속 기록' },
+      { id: 'pkg',      name: '패키지 관리',           from: 29,  summary: 'dnf 와 rpm, 저장소 다루기' },
+      { id: 'service',  name: '서비스와 데몬 제어',     from: 44,  summary: 'systemd 로 서비스를 켜고 끄고 진단하기' },
+      { id: 'cron',     name: '작업 스케줄링과 시간',   from: 54,  summary: 'cron, at, 그리고 시간 동기화(NTP)' },
+      { id: 'disk',     name: '디스크와 파티션',       from: 67,  summary: 'fdisk, parted 로 디스크 나누기' },
+      { id: 'fs',       name: '파일 시스템 관리',       from: 79,  summary: '포맷, 마운트, fstab, 용량 관리' },
+      { id: 'lvm',      name: '논리 볼륨 관리',        from: 98,  summary: 'LVM 으로 유연하게 용량 늘리기' },
+      { id: 'raid',     name: 'RAID',                from: 107, summary: '디스크를 묶어 안정성과 성능 얻기' },
+      { id: 'swap',     name: '메모리와 스왑',         from: 119, summary: '메모리 상태 읽기와 스왑 구성' },
+      { id: 'boot',     name: '시스템 시작과 종료',     from: 129, summary: '부팅 과정, GRUB2, 커널, 복구 모드' },
+      { id: 'backup',   name: '백업과 복구',           from: 152, summary: 'tar, rsync, dump 로 지키고 되돌리기' },
+      { id: 'log',      name: '로그 관리',             from: 167, summary: 'journald, rsyslog, 로그 순환' },
+      { id: 'firewall', name: '방화벽 관리',           from: 185, summary: 'firewalld 존과 서비스 규칙' },
+      { id: 'selinux',  name: 'SELinux 관리',         from: 199, summary: '모드, 컨텍스트, 불리언 다루기' },
+      { id: 'network',  name: '네트워크 관리',         from: 214, summary: 'nmcli 로 주소와 경로 설정하기' },
+      { id: 'ssh',      name: 'SSH 원격 접속',         from: 239, summary: '키 인증과 안전한 접속 설정' },
+      { id: 'nfs',      name: 'Teaming 과 NFS',       from: 247, summary: '네트워크 이중화와 파일 공유' },
+      { id: 'trouble',  name: '문제 해결',             from: 259, summary: '증상별로 원인을 좁혀 가는 순서' },
+    ],
+  },
 };
 
 /* ------------------------------------------------------------------ 실행 */
