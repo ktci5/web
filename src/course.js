@@ -23,11 +23,37 @@ export async function loadNotes(env, courseId) {
   return env.ROSTER.get(`course:${courseId}:notes`, 'json');
 }
 
+// 모든 과목의 장 구조 + 정리본. 검색과 상호 링크에 씁니다.
+export async function loadAll(env) {
+  const index = (await loadCourseIndex(env)) || [];
+  const out = [];
+  for (const c of index) {
+    const [doc, notes] = await Promise.all([loadCourse(env, c.id), loadNotes(env, c.id)]);
+    if (doc) out.push({ ...c, chapters: doc.chapters, notes: notes || {} });
+  }
+  return out;
+}
+
+// [[과목/장]] 또는 [[장]] 을 실제 링크로 바꾸는 함수를 만듭니다.
+// 같은 과목 안에서는 과목을 생략할 수 있습니다.
+export function linkResolver(all, courseId) {
+  return (ref) => {
+    const [a, b] = ref.split('/');
+    const cid = b ? a : courseId;
+    const chid = b || a;
+    const course = all.find((c) => c.id === cid);
+    const ch = course?.chapters.find((x) => x.id === chid);
+    if (!ch) return null;
+    const name = course.notes[chid]?.title || ch.name;
+    return { href: `/study/course/${cid}/${chid}`, name, sameCourse: cid === courseId };
+  };
+}
+
 /* ------------------------------------------------------------ 마크다운 */
 
 // 학습 문서에 필요한 만큼만 처리하는 작은 변환기입니다.
 // 표 · 코드블록 · 제목 · 목록 · 인라인 코드 · 링크 · 강조.
-export function markdown(src, escapeHtml) {
+export function markdown(src, escapeHtml, resolve = null) {
   const out = [];
   const lines = src.split('\n');
   let i = 0;
@@ -38,6 +64,13 @@ export function markdown(src, escapeHtml) {
     s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
     s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (m, txt, href) =>
       /^(https?:|\/)/.test(href) ? `<a href="${href}">${txt}</a>` : m);
+    // [[과목/장]] · [[장]] — 정리본끼리의 상호 참조
+    s = s.replace(/\[\[([a-z0-9\/-]+)\]\]/g, (m, ref) => {
+      const t = resolve && resolve(ref);
+      if (!t) return m;
+      const tag = t.sameCourse ? '' : '<span class="xc">다른 과목</span>';
+      return `<a class="xref" href="${t.href}">${escapeHtml(t.name)}${tag}</a>`;
+    });
     return s;
   };
 
@@ -123,6 +156,7 @@ export function renderCourseList(index, escapeHtml) {
     `<a class="chp" href="/study/course/${c.id}">
       <div class="chp-n">${escapeHtml(c.title)}</div>
       <div class="chp-d">${escapeHtml(c.subtitle || '')}</div>
+      ${c.chapters ? `<div class="chp-m">${c.chapters}개 장</div>` : ''}
     </a>`
   ).join('');
 
@@ -131,6 +165,9 @@ export function renderCourseList(index, escapeHtml) {
 필요한 부분만 찾아보시면 됩니다.</p>
 <div class="notice"><span>이용 안내</span><p>과정 내용을 정리한 문서입니다.
 <strong>인증한 수강생만</strong> 볼 수 있으니 바깥으로 옮기지 말아주세요.</p></div>
+<form class="sf" method="get" action="/study/search">
+  <input name="q" placeholder="모든 과목에서 찾기 (예: SELinux, 스왑, awk)">
+  <button type="submit">찾기</button></form>
 <section><h2>과목</h2><div class="chps">${items}</div></section>
 <section><h2>함께 보면 좋은 것</h2>
 <div class="ch"><div class="ch-name"><a href="/study/linux">리눅스 CLI 심층 가이드</a></div>
@@ -159,7 +196,7 @@ export function renderCourseIndex(doc, escapeHtml, notes = {}) {
 <section><h2>목차</h2><div class="chps">${items}</div></section>`;
 }
 
-export function renderCourseChapter(doc, chapter, escapeHtml, note) {
+export function renderCourseChapter(doc, chapter, escapeHtml, note, resolve = null) {
   const i = doc.chapters.findIndex((c) => c.id === chapter.id);
   const prev = doc.chapters[i - 1];
   const next = doc.chapters[i + 1];
@@ -172,17 +209,100 @@ export function renderCourseChapter(doc, chapter, escapeHtml, note) {
   // 정리한 학습 문서만 보여줍니다. 원본 슬라이드는 웹에 싣지 않습니다.
   const main = note
     ? `<p class="lead">${escapeHtml(note.lead || chapter.summary)}</p>` +
-      markdown(note.markdown, escapeHtml)
+      markdown(note.markdown, escapeHtml, resolve)
     : `<p class="lead">${escapeHtml(chapter.summary)}</p>` +
       '<div class="notice"><span>준비 중</span><p>아직 정리되지 않은 장입니다. 곧 올라옵니다.</p></div>';
+
+  const see = (note?.see || []).map((ref) => {
+    const t = resolve && resolve(ref);
+    return t ? `<a class="chp" href="${t.href}"><div class="chp-n">${escapeHtml(t.name)}</div></a>` : '';
+  }).join('');
+
+  const stamp = note?.updated
+    ? `<p class="stamp">마지막 갱신 ${escapeHtml(note.updated)} · 고칠 곳이 보이면 <a href="${DISCORD_ASK}">#❓-질문답변</a> 에 알려주세요.</p>`
+    : '';
 
   return `
 <p class="foot"><a href="/study/course/${doc.id}">← ${escapeHtml(doc.title)} 목차</a></p>
 ${main}
+${see ? `<section><h2>함께 보기</h2><div class="chps">${see}</div></section>` : ''}
+${stamp}
 <div class="pager">${nav}</div>`;
 }
 
+const DISCORD_ASK = 'https://discord.gg/em3kMhTXz7';
+
+// 검색 결과 — /study/search?q=
+export function renderSearch(all, q, escapeHtml) {
+  const form = `<form class="sf" method="get" action="/study/search">
+    <input name="q" value="${escapeHtml(q || '')}" placeholder="찾을 말 (예: SELinux, 스왑, awk)" autofocus>
+    <button type="submit">찾기</button></form>`;
+
+  if (!q) {
+    return `<p class="foot"><a href="/study/course">← 과목 목록</a></p>
+<p class="lead">정리한 모든 과목에서 한 번에 찾습니다.</p>${form}`;
+  }
+
+  const needle = q.toLowerCase();
+  const hits = [];
+  for (const c of all) {
+    for (const ch of c.chapters) {
+      const n = c.notes[ch.id];
+      if (!n) continue;
+      const hay = `${n.title}\n${n.lead || ''}\n${n.markdown}`;
+      const lower = hay.toLowerCase();
+      if (!lower.includes(needle)) continue;
+
+      // 문맥 몇 줄만 보여줍니다.
+      const lines = n.markdown.split('\n')
+        .filter((l) => l.toLowerCase().includes(needle) && l.trim())
+        .slice(0, 3)
+        .map((l) => {
+          const t = l.replace(/^[#>|\s*-]+/, '').slice(0, 160);
+          const i = t.toLowerCase().indexOf(needle);
+          if (i < 0) return escapeHtml(t);
+          return escapeHtml(t.slice(0, i)) + '<mark>' + escapeHtml(t.slice(i, i + q.length)) +
+                 '</mark>' + escapeHtml(t.slice(i + q.length));
+        });
+      const count = lower.split(needle).length - 1;
+      hits.push({ course: c, ch, note: n, lines, count });
+    }
+  }
+  hits.sort((a, b) => b.count - a.count);
+
+  if (!hits.length) {
+    return `<p class="foot"><a href="/study/course">← 과목 목록</a></p>${form}
+<div class="notice"><span>결과 없음</span><p><strong>${escapeHtml(q)}</strong> 를 찾지 못했습니다.
+아직 정리되지 않은 주제라면 <a href="${DISCORD_ASK}">#❓-질문답변</a> 에 남겨주세요.</p></div>`;
+  }
+
+  const items = hits.map((h) =>
+    `<a class="chp" href="/study/course/${h.course.id}/${h.ch.id}">
+      <div class="chp-n">${escapeHtml(h.note.title)}<span class="xc">${escapeHtml(h.course.title)}</span></div>
+      <div class="chp-d">${h.lines.join('<br>')}</div>
+      <div class="chp-m">${h.count}회 언급</div>
+    </a>`).join('');
+
+  return `<p class="foot"><a href="/study/course">← 과목 목록</a></p>${form}
+<section><h2>${hits.length}개 장에서 찾았습니다</h2><div class="chps">${items}</div></section>`;
+}
+
 export const COURSE_CSS =
+  '.xref{color:#8ea1ff;text-decoration:none;border-bottom:1px dotted #5865F2;}' +
+  '.xref:hover{border-bottom-style:solid;}' +
+  '.xc{font-size:10.5px;color:#8a93a8;background:#2d3446;border-radius:4px;' +
+  'padding:1px 5px;margin-left:6px;font-weight:400;vertical-align:middle;}' +
+  '.sf{display:flex;gap:8px;margin:0 0 20px;}' +
+  '.sf input{flex:1;background:#232838;border:1px solid #2a3143;border-radius:8px;' +
+  'padding:10px 12px;color:#e8ecf4;font-size:14px;font-family:inherit;}' +
+  '.sf input:focus{outline:none;border-color:#5865F2;}' +
+  '.sf button{background:#5865F2;color:#fff;border:none;border-radius:8px;' +
+  'padding:10px 18px;font-size:14px;font-weight:600;cursor:pointer;font-family:inherit;}' +
+  '.sf button:hover{background:#4752c4;}' +
+  'mark{background:#3d4a7a;color:#fff;border-radius:3px;padding:0 2px;}' +
+  '.stamp{font-size:12px;color:#6c7488;margin:24px 0 0;padding-top:14px;' +
+  'border-top:1px solid #2a3143;}' +
+  '.stamp a{color:#8ea1ff;}' +
   '.chps{display:grid;gap:8px;}' +
   '.chp{display:block;text-decoration:none;background:#232838;border:1px solid #2a3143;' +
   'border-radius:9px;padding:12px 14px;}' +

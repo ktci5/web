@@ -20,6 +20,7 @@
  *  GET  /study/linux                 리눅스 CLI 심층 가이드
  *  GET  /study/course                강의 정리 — 과목 목록 (인증자 전용)
  *  GET  /study/course/<과목>[/<장>]   과목 목차 · 장 내용
+ *  GET  /study/search?q=             정리본 전체 검색 (인증자 전용)
  *  GET  /study/infra                 이 서버는 어떻게 돌아가나
  *  GET  /terms                       이용 약관
  *  GET  /privacy                     개인정보 보호 정책
@@ -45,7 +46,7 @@
 import { LINUX_GUIDE_TITLE, LINUX_GUIDE_CSS, renderLinuxGuide } from './study-linux.js';
 import { INFRA_TITLE, INFRA_CSS, renderInfraGuide } from './study-infra.js';
 import { renderProjectPage } from './projects.js';
-import { loadCourseIndex, loadCourse, loadNotes, renderCourseList, renderCourseIndex, renderCourseChapter, COURSE_CSS } from './course.js';
+import { loadCourseIndex, loadCourse, loadNotes, loadAll, linkResolver, renderCourseList, renderCourseIndex, renderCourseChapter, renderSearch, COURSE_CSS } from './course.js';
 
 const DISCORD_API = 'https://discord.com/api/v10';
 const USER_AGENT = 'DiscordBot (https://ktci5.kr, 1.0)';
@@ -160,6 +161,8 @@ export default {
         return guarded(request, env, infraGuidePage);
       case '/study/course':
         return guarded(request, env, courseListPage);
+      case '/study/search':
+        return guarded(request, env, (e) => courseSearchPage(e, url.searchParams.get('q') || ''));
       case '/terms':
         return termsPage();
       case '/privacy':
@@ -763,8 +766,19 @@ function infraGuidePage(env) {
   }));
 }
 
+async function courseSearchPage(env, q) {
+  const all = await loadAll(env);
+  return html(renderDoc({
+    title: '강의 정리 검색',
+    heading: '🔎 강의 정리 검색',
+    html: renderSearch(all, q.slice(0, 60), escapeHtml),
+    extraCss: COURSE_CSS,
+  }));
+}
+
 async function courseListPage(env) {
-  const index = await loadCourseIndex(env);
+  const all = await loadAll(env);
+  const index = all.map((c) => ({ ...c, chapters: c.chapters.length }));
   if (!index?.length) {
     return errorPage('강의 정리가 아직 올라오지 않았습니다. 운영진에게 문의해주세요.', 404);
   }
@@ -796,11 +810,13 @@ async function courseChapterPage(env, courseId, chapterId) {
   const chapter = doc.chapters.find((c) => c.id === chapterId);
   if (!chapter) return errorPage('그런 장이 없습니다.', 404);
 
-  const notes = (await loadNotes(env, courseId)) || {};
+  const all = await loadAll(env);
+  const notes = all.find((c) => c.id === courseId)?.notes || {};
   return html(renderDoc({
     title: `${chapter.name} · ${doc.title}`,
     heading: `📘 ${notes[chapterId]?.title || chapter.name}`,
-    html: renderCourseChapter(doc, chapter, escapeHtml, notes[chapterId]),
+    html: renderCourseChapter(doc, chapter, escapeHtml, notes[chapterId],
+                              linkResolver(all, courseId)),
     extraCss: COURSE_CSS,
   }));
 }

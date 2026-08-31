@@ -77,29 +77,59 @@ if (!files.length) {
   process.exit(1);
 }
 
+// 지금 올라가 있는 내용. 무엇이 바뀌었는지 비교하는 데 씁니다.
+let existing = {};
+if (!dryRun || true) {
+  const r = spawnSync('npx', ['wrangler', 'kv', 'key', 'get', KEY, '--binding', 'ROSTER', '--remote'],
+    { cwd: ROOT, encoding: 'utf8' });
+  if (r.status === 0 && r.stdout.trim().startsWith('{')) {
+    try { existing = JSON.parse(r.stdout); } catch {}
+  }
+}
+
+const today = new Date().toISOString().slice(0, 10);
+let touched = 0;
+
 const notes = {};
 for (const f of files) {
   const raw = readFileSync(join(DIR, f), 'utf8');
   const { meta, body } = parseFrontMatter(raw, basename(f, '.md'));
-  notes[meta.id] = { title: meta.title, lead: meta.lead, markdown: body.trim() };
-  console.log(`  ${meta.id.padEnd(9)} ${meta.title.padEnd(22)} ${body.trim().length.toLocaleString()}자`);
+  const text = body.trim();
+  const prev = existing[meta.id];
+  const next = {
+    title: meta.title,
+    lead: meta.lead,
+    markdown: text,
+    // see: 함께 볼 장. 쉼표로 나열합니다.  see: admin/lvm, admin/raid
+    ...(meta.see ? { see: meta.see.split(',').map((x) => x.trim()).filter(Boolean) } : {}),
+  };
+
+  // updated 를 뺀 나머지가 하나라도 다르면 바뀐 것으로 봅니다.
+  const same = (a, b) => JSON.stringify({ ...a, updated: 0 }) === JSON.stringify({ ...b, updated: 0 });
+  const changed = !prev || !same(prev, next);
+
+  // 내용이 바뀐 것만 날짜를 새로 찍습니다.
+  notes[meta.id] = { ...next, updated: changed ? today : (prev.updated || today) };
+
+  const mark = !prev ? '신규' : changed ? '수정' : '  · ';
+  console.log(`  ${mark} ${meta.id.padEnd(9)} ${meta.title.padEnd(22)} ${text.length.toLocaleString()}자`);
+  if (changed) touched++;
 }
 
 // 일부만 올릴 때 기존 것을 지우지 않도록 병합합니다.
-let merged = notes;
-if (only.length && !dryRun) {
-  const r = spawnSync('npx', ['wrangler', 'kv', 'key', 'get', KEY, '--binding', 'ROSTER', '--remote'],
-    { cwd: ROOT, encoding: 'utf8' });
-  if (r.status === 0 && r.stdout.trim().startsWith('{')) {
-    try { merged = { ...JSON.parse(r.stdout), ...notes }; } catch {}
-  }
-}
+const merged = only.length ? { ...existing, ...notes } : notes;
 
 const payload = JSON.stringify(merged);
-console.log(`\n총 ${Object.keys(merged).length}개 장, ${(payload.length / 1024).toFixed(0)} KB`);
+console.log(`\n총 ${Object.keys(merged).length}개 장, ${(payload.length / 1024).toFixed(0)} KB` +
+  (touched ? ` · 이번에 바뀐 장 ${touched}개` : ' · 바뀐 내용 없음'));
 
 if (dryRun) {
   console.log('\n확인만 했습니다. 올리려면 --dry-run 을 빼고 실행하세요.');
+  process.exit(0);
+}
+
+if (!touched && !process.argv.includes('--force')) {
+  console.log('\n올릴 것이 없습니다. 그래도 올리려면 --force 를 붙이세요.');
   process.exit(0);
 }
 
