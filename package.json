@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "wrangler dev",
     "build": "wrangler deploy --dry-run --outdir dist",
-    "check": "node --check src/index.js && node --check scripts/_env.mjs && node --check scripts/register-commands.mjs && node --check scripts/register-role-metadata.mjs && node --check scripts/register-app-urls.mjs && node --check scripts/setup-google.mjs && node --check scripts/post-messages.mjs && node --check scripts/upload-roster.mjs && node --check scripts/set-channel-topics.mjs && node --check scripts/create-channels.mjs && node --check scripts/create-drive-folders.mjs && node --check scripts/post-channel-intros.mjs",
+    "check": "node --check src/index.js && node --check scripts/_env.mjs && node --check scripts/register-commands.mjs && node --check scripts/register-role-metadata.mjs && node --check scripts/register-app-urls.mjs && node --check scripts/setup-google.mjs && node --check scripts/post-messages.mjs && node --check scripts/upload-roster.mjs && node --check scripts/set-channel-topics.mjs && node --check scripts/create-channels.mjs && node --check scripts/create-drive-folders.mjs && node --check scripts/post-channel-intros.mjs && node --check scripts/post-updates.mjs",
     "deploy": "wrangler deploy",
     "tail": "wrangler tail",
     "secrets": "bash scripts/setup-secrets.sh",
@@ -21,7 +21,8 @@
     "topics": "node scripts/set-channel-topics.mjs",
     "channels": "node scripts/create-channels.mjs",
     "drive": "node scripts/create-drive-folders.mjs",
-    "intros": "node scripts/post-channel-intros.mjs"
+    "intros": "node scripts/post-channel-intros.mjs",
+    "updates": "node scripts/post-updates.mjs"
   },
   "devDependencies": {
     "wrangler": "^4.42.0"

@@ -46,7 +46,7 @@
 import { LINUX_GUIDE_TITLE, LINUX_GUIDE_CSS, renderLinuxGuide } from './study-linux.js';
 import { INFRA_TITLE, INFRA_CSS, renderInfraGuide } from './study-infra.js';
 import { renderProjectPage } from './projects.js';
-import { loadCourseIndex, loadCourse, loadNotes, loadAll, linkResolver, renderCourseList, renderCourseIndex, renderCourseChapter, renderSearch, COURSE_CSS } from './course.js';
+import { loadCourseIndex, loadCourse, loadNotes, loadAll, linkResolver, markdown, renderCourseList, renderCourseIndex, renderCourseChapter, renderSearch, COURSE_CSS } from './course.js';
 
 const DISCORD_API = 'https://discord.com/api/v10';
 const USER_AGENT = 'DiscordBot (https://ktci5.kr, 1.0)';
@@ -149,6 +149,9 @@ export default {
         return guardedGuide(request, env);
       case '/preview':
         return handlePreview(request, url, env);
+      case '/updates':
+      case '/study/updates':
+        return guarded(request, env, updatesPage);
       case '/study':
         return guarded(request, env, studyIndexPage);
       case '/study/calendar':
@@ -314,6 +317,12 @@ function guardedGuide(request, env) {
 /* -------------------------------------------------------------- 스터디 자료 */
 
 const STUDY_MATERIALS = [
+  {
+    href: '/updates',
+    name: '업데이트 내역',
+    desc: '무엇이 언제 새로 올라왔는지 날짜순으로 봅니다. 오랜만에 들어왔다면 여기부터.',
+    tag: '소식',
+  },
   {
     href: '/study/course',
     name: '강의 정리',
@@ -1062,6 +1071,32 @@ async function courseSearchPage(env, q) {
     title: '강의 정리 검색',
     heading: '🔎 강의 정리 검색',
     html: renderSearch(all, q.slice(0, 60), escapeHtml),
+    extraCss: COURSE_CSS,
+  }));
+}
+
+/* ------------------------------------------------------------ 업데이트 내역 */
+
+// 원본은 저장소의 CHANGELOG.md 입니다. scripts/post-updates.mjs 가 KV 에 올리고,
+// 같은 내용으로 디스코드 고정 공지도 갱신합니다.
+async function updatesPage(env) {
+  const md = await env.ROSTER.get('site:updates');
+  if (!md) {
+    return errorPage('업데이트 내역이 아직 올라오지 않았습니다. `npm run updates` 를 실행해주세요.', 404);
+  }
+  // 파일 맨 앞의 제목과 운영진용 실행 안내는 페이지에서 뺍니다.
+  const body = md
+    .replace(/^#\s+.*\n/, '')
+    .replace(/```bash[\s\S]*?```\n/, '')
+    .replace(/^사이트에 무엇이[\s\S]*?만들어집니다\.\n/m, '')
+    .replace(/^적는 방법은[\s\S]*?봐주세요\.\n/m, '')
+    .replace(/\n---\n\n## 쓰는 규칙[\s\S]*$/, '\n');
+
+  return html(renderDoc({
+    title: '업데이트 내역',
+    heading: '📌 업데이트 내역',
+    html: '<p class="lead">사이트에 무엇이 언제 올라왔는지 날짜순으로 정리한 것입니다.</p>'
+      + markdown(body, escapeHtml),
     extraCss: COURSE_CSS,
   }));
 }
