@@ -476,6 +476,36 @@ function studyCalendarPage(env) {
 
     .day-unit { font-size: 10px; font-weight: 700; color: #818cf8; background: rgba(99,102,241,0.12); border-radius: 4px; padding: 1px 5px; display: inline-block; margin-top: 3px; }
 
+    /* 월간 뷰. 단위기간이 홀/짝으로 번갈아 칠해져 경계가 눈에 들어옵니다. */
+    .month-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; margin-top: 12px; }
+    .month-dow { text-align: center; font-size: 12px; font-weight: 700; color: #94a3b8; padding: 4px 0; }
+    .month-dow.sun { color: #f87171; }
+    .month-dow.sat { color: #60a5fa; }
+    .mcell { min-height: 112px; background: #161e2e; border: 1px solid #263044; border-left: 3px solid #263044; border-radius: 8px; padding: 6px 7px; display: flex; flex-direction: column; gap: 3px; overflow: hidden; }
+    .mcell.u-odd { border-left-color: #4f46e5; background: rgba(79,70,229,0.05); }
+    .mcell.u-even { border-left-color: #0ea5e9; background: rgba(14,165,233,0.05); }
+    .mcell.u-start { border-left-width: 6px; }
+    .mcell.other { opacity: 0.3; }
+    .mcell.is-today { border-color: #6366f1; box-shadow: inset 0 0 0 1px #6366f1; }
+    .mcell.is-off { background: #131a27; }
+    .mday { display: flex; align-items: baseline; justify-content: space-between; gap: 4px; font-size: 12px; font-weight: 700; color: #cbd5e1; }
+    .mday .sun { color: #f87171; }
+    .mday .sat { color: #60a5fa; }
+    .mday .utag { font-size: 9px; font-weight: 700; color: #818cf8; font-variant-numeric: tabular-nums; }
+    .mday .utag.dim { color: #64748b; font-weight: 400; }
+    .mev { font-size: 10px; line-height: 1.35; color: #e2e8f0; border-left: 2px solid #3b82f6; padding-left: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .mev.cat-2 { border-left-color: #a855f7; }
+    .mev.cat-3 { border-left-color: #10b981; }
+    .mev.off { color: #94a3b8; border-left-color: #64748b; }
+    .mmore { font-size: 10px; color: #64748b; }
+    .month-legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 11px; color: #64748b; margin-top: 10px; }
+    .month-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+
+    @media (max-width: 768px) {
+      .mcell { min-height: 78px; padding: 4px; }
+      .mev, .mmore { font-size: 9px; }
+    }
+
     .week-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 8px; margin-top: 12px; }
     .day-column { background: #161e2e; border: 1px solid #263044; border-radius: 8px; padding: 10px; min-height: 320px; display: flex; flex-direction: column; gap: 8px; }
     .day-column.is-today { border-color: #6366f1; background: rgba(99,102,241,0.06); }
@@ -522,6 +552,7 @@ function studyCalendarPage(env) {
       </div>
 
       <div class="cal-group">
+        <button class="btn-mode" data-mode="month">월간 뷰 (Monthly)</button>
         <button class="btn-mode active" data-mode="week">주간 뷰 (Weekly)</button>
         <button class="btn-mode" data-mode="day">일간 뷰 (Daily)</button>
       </div>
@@ -595,17 +626,21 @@ function studyCalendarPage(env) {
           loadEvents();
         });
 
-        btnPrev.addEventListener('click', () => {
-          if (viewMode === 'week') currentDate.setDate(currentDate.getDate() - 7);
-          else currentDate.setDate(currentDate.getDate() - 1);
+        // 월 이동은 날짜를 1일로 내린 뒤 옮깁니다. 31일에서 그냥 한 달을 더하면
+        // 짧은 달을 건너뛰어 3월 3일 같은 곳에 떨어집니다.
+        function shift(step) {
+          if (viewMode === 'month') {
+            currentDate = new Date(currentDate.getFullYear(), currentDate.getMonth() + step, 1);
+          } else if (viewMode === 'week') {
+            currentDate.setDate(currentDate.getDate() + step * 7);
+          } else {
+            currentDate.setDate(currentDate.getDate() + step);
+          }
           render();
-        });
+        }
 
-        btnNext.addEventListener('click', () => {
-          if (viewMode === 'week') currentDate.setDate(currentDate.getDate() + 7);
-          else currentDate.setDate(currentDate.getDate() + 1);
-          render();
-        });
+        btnPrev.addEventListener('click', () => shift(-1));
+        btnNext.addEventListener('click', () => shift(1));
 
         async function loadEvents() {
           calContainer.innerHTML = '<div style="padding:40px; text-align:center; color:#94a3b8;">구글 캘린더 일정 동기화 중...</div>';
@@ -627,8 +662,10 @@ function studyCalendarPage(env) {
         }
 
         function render() {
+          buildSessions();
           renderUnitBar();
-          if (viewMode === 'week') renderWeekView();
+          if (viewMode === 'month') renderMonthView();
+          else if (viewMode === 'week') renderWeekView();
           else renderDayView();
         }
 
@@ -657,11 +694,38 @@ function studyCalendarPage(env) {
           return { total, used, left: Math.max(total - used, 0), days };
         }
 
+        // 단위기간의 수업일과 KT 수업 시간은 1:1 입니다. 그래서 수업일마다
+        // 그 단위기간 안에서 몇 번째인지 회차를 매겨 03/18 처럼 보여줍니다.
+        let sessionMap = {};
+        function buildSessions() {
+          sessionMap = {};
+          UNITS.forEach(u => {
+            const days = trainingDaysIn(u);
+            const total = days.length || u.days;
+            days.forEach((d, i) => {
+              sessionMap[d] = { unit: u.no, seq: i + 1, total };
+            });
+          });
+        }
+
+        function pad2(n) { return String(n).padStart(2, '0'); }
+
+        function sessionLabel(dateStr) {
+          const s = sessionMap[dateStr];
+          return s ? pad2(s.seq) + '/' + pad2(s.total) : '';
+        }
+
         function renderUnitBar() {
-          // 주간 뷰는 그 주의 월요일을, 일간 뷰는 그 날짜를 기준으로 잡습니다.
+          // 주간 뷰는 그 주의 월요일, 일간 뷰는 그 날짜, 월간 뷰는 그 달에 오늘이
+          // 들어 있으면 오늘 / 아니면 1일을 기준으로 잡습니다.
+          const now = new Date();
           const basis = viewMode === 'week'
             ? (() => { const d = getStartOfWeek(currentDate); d.setDate(d.getDate() + 1); return d; })()
-            : currentDate;
+            : viewMode === 'month'
+              ? (now.getFullYear() === currentDate.getFullYear() && now.getMonth() === currentDate.getMonth()
+                  ? now
+                  : new Date(currentDate.getFullYear(), currentDate.getMonth(), 1))
+              : currentDate;
           const dateStr = formatLocalDateStr(basis);
           const unit = unitOf(dateStr);
           const todayStr = formatLocalDateStr(new Date());
@@ -686,7 +750,11 @@ function studyCalendarPage(env) {
               + '<span class="unit-stat">KT 수업일 <b>' + p.total + '일</b> 중 '
               + '<b>' + p.used + '일</b> 지남 · 남은 <b>' + p.left + '일</b></span>'
               + '<span class="unit-count">' + state
-              + (nextDay && todayStr <= unit.end ? ' · 다음 수업 ' + nextDay.slice(5) : '') + '</span>'
+              + (sessionMap[todayStr] && sessionMap[todayStr].unit === unit.no
+                  ? ' · 오늘 ' + sessionLabel(todayStr) + '회차'
+                  : nextDay && todayStr <= unit.end
+                    ? ' · 다음 수업 ' + nextDay.slice(5) + ' (' + sessionLabel(nextDay) + '회차)'
+                    : '') + '</span>'
               + '<span class="unit-progress"><i style="width:' + pct + '%"></i></span>'
               + '<span class="unit-note">※ ' + UNIT_NOTE + '</span>';
           }
@@ -706,6 +774,83 @@ function studyCalendarPage(env) {
               render();
             });
           });
+        }
+
+        function renderMonthView() {
+          const year = currentDate.getFullYear();
+          const month = currentDate.getMonth();
+          calTitle.textContent = year + '년 ' + (month + 1) + '월';
+
+          const first = new Date(year, month, 1);
+          const gridStart = getStartOfWeek(first);
+          const todayStr = formatLocalDateStr(new Date());
+          const dows = ['일', '월', '화', '수', '목', '금', '토'];
+
+          let html = '<div class="month-grid">';
+          dows.forEach((d, i) => {
+            const cls = i === 0 ? ' sun' : i === 6 ? ' sat' : '';
+            html += '<div class="month-dow' + cls + '">' + d + '</div>';
+          });
+
+          // 6주면 어떤 달이든 덮습니다. 이미 다음 달로 넘어간 줄은 그리지 않습니다.
+          const lastOfMonth = new Date(year, month + 1, 0);
+          for (let week = 0; week < 6; week++) {
+            const weekStart = new Date(gridStart);
+            weekStart.setDate(weekStart.getDate() + week * 7);
+            if (week > 0 && weekStart > lastOfMonth) break;
+
+            for (let i = 0; i < 7; i++) {
+              const cell = new Date(weekStart);
+              cell.setDate(cell.getDate() + i);
+              const dateStr = formatLocalDateStr(cell);
+              const inMonth = cell.getMonth() === month;
+              const unit = unitOf(dateStr);
+
+              const evs = eventsList.filter(ev => {
+                if (isUnitEvent(ev)) return false;
+                if (activeCat !== 'all' && (ev.colorId || '1') !== activeCat) return false;
+                return isEventOnDate(ev, dateStr);
+              });
+              const hasClass = evs.some(ev => !ev.allDay);
+
+              const cls = ['mcell'];
+              if (!inMonth) cls.push('other');
+              if (dateStr === todayStr) cls.push('is-today');
+              if (unit) cls.push(unit.no % 2 ? 'u-odd' : 'u-even');
+              if (unit && dateStr === unit.start) cls.push('u-start');
+              if (unit && !hasClass) cls.push('is-off');
+
+              html += '<div class="' + cls.join(' ') + '">';
+              const dcls = i === 0 ? ' class="sun"' : i === 6 ? ' class="sat"' : '';
+              html += '<div class="mday"><span' + dcls + '>' + cell.getDate() + '</span>';
+              if (unit && inMonth) {
+                const label = sessionLabel(dateStr);
+                html += label
+                  ? '<span class="utag">' + label + '</span>'
+                  : '<span class="utag dim">' + (dateStr === unit.start ? unit.no + '단위 시작' : unit.no + '단위') + '</span>';
+              }
+              html += '</div>';
+
+              evs.slice(0, 3).forEach(ev => {
+                const c = 'mev cat-' + (ev.colorId || '1') + (ev.allDay ? ' off' : '');
+                html += '<div class="' + c + '" title="' + escapeHtml(ev.title) + '">'
+                  + escapeHtml(ev.title.replace(/^\[KT[^\]]*\]\s*/, '')) + '</div>';
+              });
+              if (evs.length > 3) html += '<div class="mmore">+' + (evs.length - 3) + '건</div>';
+
+              html += '</div>';
+            }
+          }
+          html += '</div>';
+
+          html += '<div class="month-legend">'
+            + '<span><i style="background:#4f46e5"></i>홀수 단위기간</span>'
+            + '<span><i style="background:#0ea5e9"></i>짝수 단위기간</span>'
+            + '<span><i style="background:#131a27;border:1px solid #263044"></i>수업 없는 날 (휴강·공휴일)</span>'
+            + '<span>테두리가 두꺼운 칸이 단위기간 시작일입니다.</span>'
+            + '</div>';
+
+          calContainer.innerHTML = html;
         }
 
         function renderWeekView() {
@@ -735,7 +880,11 @@ function studyCalendarPage(env) {
 
             html += '<div class="day-column ' + (isToday ? 'is-today' : '') + '">';
             html += '<div class="day-header">' + days[i] + '요일 <span>' + (dayDate.getMonth() + 1) + '.' + dayDate.getDate() + '</span>';
-            if (dayUnit) html += '<span class="day-unit">' + dayUnit.no + '단위</span>';
+            if (dayUnit) {
+              const label = sessionLabel(dateStr);
+              html += '<span class="day-unit">' + dayUnit.no + '단위'
+                + (label ? ' · ' + label + '회차' : '') + '</span>';
+            }
             html += '</div>';
 
             if (filteredEvents.length === 0) {
@@ -763,7 +912,9 @@ function studyCalendarPage(env) {
         function renderDayView() {
           const dateStr = formatLocalDateStr(currentDate);
           const days = ['일', '월', '화', '수', '목', '금', '토'];
-          calTitle.textContent = currentDate.getFullYear() + '년 ' + (currentDate.getMonth() + 1) + '월 ' + currentDate.getDate() + '일 (' + days[currentDate.getDay()] + '요일)';
+          const sess = sessionMap[dateStr];
+          calTitle.textContent = currentDate.getFullYear() + '년 ' + (currentDate.getMonth() + 1) + '월 ' + currentDate.getDate() + '일 (' + days[currentDate.getDay()] + '요일)'
+            + (sess ? ' · ' + sess.unit + '단위기간 ' + sessionLabel(dateStr) + '회차' : '');
 
           const dayEvents = eventsList.filter(ev => {
             if (isUnitEvent(ev)) return false;
