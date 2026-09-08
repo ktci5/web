@@ -37,8 +37,20 @@ const COMMANDS = [
   },
   {
     name: '오늘일정',
-    description: '오늘 잡힌 스터디 일정을 확인합니다.',
+    description: '오늘 일정과 오늘이 몇 회차인지 확인합니다.',
     dm_permission: false,
+  },
+  {
+    name: '주간일정',
+    description: '이번 주 일정을 요일별로 봅니다.',
+    dm_permission: false,
+    options: [
+      {
+        type: 4, name: '주',
+        description: '0 이번 주, 1 다음 주, -1 지난주 (기본 0)',
+        required: false, min_value: -12, max_value: 12,
+      },
+    ],
   },
   {
     name: '자료함',

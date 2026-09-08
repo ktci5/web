@@ -9,7 +9,7 @@
  *  GET  /discord/verify              디스코드 OAuth2 인증 시작
  *  GET  /discord/callback            OAuth2 콜백 → 5기인증 역할 자동 부여
  *  POST /discord/interactions        인터랙션 엔드포인트 (Ed25519 서명 검증)
- *                                    명령: /인증 /인증패널 /일정등록 /오늘일정
+ *                                    명령: /인증 /인증패널 /일정등록 /오늘일정 /주간일정
  *  GET  /discord/linked-role         연결된 역할 인증 시작
  *  GET  /discord/linked-role/callback  연결된 역할 메타데이터 기록
  *  GET  /discord/bot                 봇 초대(Manage Roles 포함) URL로 이동
@@ -1363,6 +1363,10 @@ async function handleCommand(interaction, env, ctx) {
     return scheduleToday(interaction, env, ctx);
   }
 
+  if (name === '주간일정') {
+    return scheduleWeek(interaction, env, ctx);
+  }
+
   if (name === '자료함') {
     return showDriveFolder(interaction, env, ctx);
   }
@@ -1379,7 +1383,7 @@ async function handleCommand(interaction, env, ctx) {
     return showStudyRepo(interaction, env, ctx);
   }
 
-  return ephemeral('알 수 없는 명령입니다. 사용 가능한 명령은 `/인증`, `/일정등록`, `/오늘일정`, `/자료함`, `/자료보기`, `/자료검색`, `/스터디자료` 입니다.');
+  return ephemeral('알 수 없는 명령입니다. 사용 가능한 명령은 `/인증`, `/일정등록`, `/오늘일정`, `/주간일정`, `/자료함`, `/자료보기`, `/자료검색`, `/스터디자료` 입니다.');
 }
 
 async function handleComponent(interaction, env) {
@@ -1773,29 +1777,81 @@ async function calendarCreate(env, { title, start, end, location, description })
   });
 }
 
-async function calendarToday(env) {
+const pad2 = (n) => String(n).padStart(2, '0');
+
+function kstDateStr(offsetDays = 0) {
   const { y, m, d } = todayKst();
-  const pad = (n) => String(n).padStart(2, '0');
-  const date = `${y}-${pad(m)}-${pad(d)}`;
+  const base = new Date(Date.UTC(y, m - 1, d));
+  base.setUTCDate(base.getUTCDate() + offsetDays);
+  return base.toISOString().slice(0, 10);
+}
+
+// 훈련 시간표의 단위기간. 출석률과 훈련수당을 따지는 구간입니다.
+// 캘린더 페이지(studyCalendarPage) 의 UNITS 와 같은 표입니다.
+const TRAINING_UNITS = [
+  { no: 1, start: '2026-08-19', end: '2026-09-18', days: 18 },
+  { no: 2, start: '2026-09-19', end: '2026-10-18', days: 16 },
+  { no: 3, start: '2026-10-19', end: '2026-11-18', days: 22 },
+  { no: 4, start: '2026-11-19', end: '2026-12-18', days: 21 },
+  { no: 5, start: '2026-12-19', end: '2027-01-18', days: 17 },
+  { no: 6, start: '2027-01-19', end: '2027-02-18', days: 20 },
+  { no: 7, start: '2027-02-19', end: '2027-03-17', days: 18 },
+];
+
+function unitOfDate(dateStr) {
+  return TRAINING_UNITS.find((u) => dateStr >= u.start && dateStr <= u.end) || null;
+}
+
+function mapEvents(items) {
+  return (items || []).map((e) => ({
+    title: e.summary || '(제목 없음)',
+    start: e.start?.dateTime || e.start?.date,
+    end: e.end?.dateTime || e.end?.date,
+    allDay: !e.start?.dateTime,
+    location: e.location || '',
+    link: e.htmlLink || '',
+  }));
+}
+
+async function calendarRange(env, fromDate, toDate) {
   const params = new URLSearchParams({
-    timeMin: `${date}T00:00:00+09:00`,
-    timeMax: `${date}T23:59:59+09:00`,
+    timeMin: `${fromDate}T00:00:00+09:00`,
+    timeMax: `${toDate}T23:59:59+09:00`,
     singleEvents: 'true',
     orderBy: 'startTime',
-    maxResults: '50',
+    maxResults: '250',
   });
   const data = await calendarFetch(env, '/events?' + params.toString());
-  return {
-    date,
-    events: (data.items || []).map((e) => ({
-      title: e.summary || '(제목 없음)',
-      start: e.start?.dateTime || e.start?.date,
-      end: e.end?.dateTime || e.end?.date,
-      allDay: !e.start?.dateTime,
-      location: e.location || '',
-      link: e.htmlLink || '',
-    })),
-  };
+  return mapEvents(data.items);
+}
+
+// 그날이 단위기간 안에서 몇 번째 수업인지. 수업이 있는 날만 세므로
+// 휴강·공휴일·주말은 빠집니다. 종일 일정이 그 셋을 나타냅니다.
+async function sessionOfDate(env, dateStr) {
+  const unit = unitOfDate(dateStr);
+  if (!unit) return null;
+  try {
+    const events = await calendarRange(env, unit.start, dateStr);
+    const days = [...new Set(events.filter((e) => !e.allDay)
+      .map((e) => e.start.slice(0, 10)))].sort();
+    const idx = days.indexOf(dateStr);
+    return { unit, seq: idx >= 0 ? idx + 1 : 0, total: unit.days, passed: days.length };
+  } catch {
+    return { unit, seq: 0, total: unit.days, passed: 0 };
+  }
+}
+
+function unitLine(info) {
+  if (!info) return '';
+  const { unit, seq, total } = info;
+  return seq
+    ? `🎓 ${unit.no}단위기간 · ${pad2(seq)}/${pad2(total)}회차`
+    : `🎓 ${unit.no}단위기간 (${unit.start} ~ ${unit.end})`;
+}
+
+async function calendarToday(env) {
+  const date = kstDateStr();
+  return { date, events: await calendarRange(env, date, date) };
 }
 
 function optionValue(interaction, name) {
@@ -1928,23 +1984,112 @@ async function scheduleToday(interaction, env, ctx) {
 
   return deferReply(ctx, interaction, async () => {
     const result = await calendarToday(env);
+    const info = await sessionOfDate(env, result.date);
+    const head = unitLine(info);
 
     if (!result.events?.length) {
-      return { content: `📭 오늘(${result.date}) 등록된 일정이 없습니다.` };
+      return {
+        content: `📭 오늘(${result.date}) 등록된 일정이 없습니다.`
+          + (head ? `\n${head}` : ''),
+      };
     }
 
     return {
       embeds: [{
-        title: `📅 오늘의 일정 — ${result.date}`,
+        title: `📅 오늘의 일정 — ${result.date} (${weekdayKo(result.date)})`,
         color: 0x5865f2,
+        description: [head, `전체 보기 → ${SITE_CALENDAR}`].filter(Boolean).join('\n'),
         fields: result.events.slice(0, 25).map((e) => ({
-          name: e.title || '(제목 없음)',
+          name: cleanTitle(e.title),
           value: [
             e.allDay ? '종일' : `${fmtKst(e.start, false)} – ${fmtKst(e.end, false)}`,
             e.location ? `📍 ${e.location}` : '',
           ].filter(Boolean).join('\n'),
         })),
         footer: result.events.length > 25 ? { text: `외 ${result.events.length - 25}건` } : undefined,
+      }],
+    };
+  }, { hidden: true });
+}
+
+const SITE_CALENDAR = 'https://ktci5.kr/study/calendar';
+
+// 훈련 일정은 제목이 전부 "[KT] " 로 시작합니다. 목록에서는 군더더기라 뗍니다.
+function cleanTitle(title) {
+  return (title || '(제목 없음)').replace(/^\[KT[^\]]*\]\s*/, '') || '(제목 없음)';
+}
+
+function weekdayKo(dateStr) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  return ['일', '월', '화', '수', '목', '금', '토'][new Date(Date.UTC(y, m - 1, d)).getUTCDay()];
+}
+
+// 이번 주 월요일. 일요일이면 그 주의 시작은 엿새 전입니다.
+function weekStartKst(offsetWeeks = 0) {
+  const today = kstDateStr();
+  const [y, m, d] = today.split('-').map(Number);
+  const dow = new Date(Date.UTC(y, m - 1, d)).getUTCDay();
+  return kstDateStr(-((dow + 6) % 7) + offsetWeeks * 7);
+}
+
+async function scheduleWeek(interaction, env, ctx) {
+  if (!calendarReady(env)) {
+    return ephemeral('구글 캘린더 연동이 아직 설정되지 않았습니다. 운영진에게 문의해주세요.');
+  }
+
+  const opts = interaction.data?.options || [];
+  const shift = Number(opts.find((o) => o.name === '주')?.value || 0);
+
+  return deferReply(ctx, interaction, async () => {
+    const from = weekStartKst(shift);
+    const [fy, fm, fd] = from.split('-').map(Number);
+    const to = new Date(Date.UTC(fy, fm - 1, fd + 6)).toISOString().slice(0, 10);
+
+    const events = await calendarRange(env, from, to);
+    const today = kstDateStr();
+
+    // 여러 날에 걸친 종일 일정은 걸치는 날마다 보이게 폅니다.
+    const byDay = new Map();
+    for (let i = 0; i < 7; i++) {
+      byDay.set(new Date(Date.UTC(fy, fm - 1, fd + i)).toISOString().slice(0, 10), []);
+    }
+    for (const e of events) {
+      const s = e.start.slice(0, 10);
+      let last = s;
+      if (e.allDay && e.end) {
+        const [ey, em, ed] = e.end.slice(0, 10).split('-').map(Number);
+        last = new Date(Date.UTC(ey, em - 1, ed - 1)).toISOString().slice(0, 10);
+      }
+      for (const [day, list] of byDay) {
+        if (day >= s && day <= last) list.push(e);
+      }
+    }
+
+    const info = await sessionOfDate(env, today);
+    const fields = [];
+    for (const [day, list] of byDay) {
+      const mark = day === today ? ' ◀ 오늘' : '';
+      const label = `${Number(day.slice(5, 7))}/${Number(day.slice(8, 10))} (${weekdayKo(day)})${mark}`;
+      const body = list.length
+        ? list.slice(0, 6).map((e) => {
+            const when = e.allDay ? '종일' : fmtKst(e.start, false);
+            return `\`${when}\` ${cleanTitle(e.title)}`;
+          }).join('\n') + (list.length > 6 ? `\n…외 ${list.length - 6}건` : '')
+        : '—';
+      fields.push({ name: label, value: body.slice(0, 1024), inline: false });
+    }
+
+    const when = shift === 0 ? '이번 주' : shift < 0 ? `${-shift}주 전` : `${shift}주 뒤`;
+    return {
+      embeds: [{
+        title: `🗓️ ${when} 일정 — ${from} ~ ${to}`,
+        color: 0x5865f2,
+        description: [
+          shift === 0 && info ? unitLine(info) : '',
+          `전체 보기 → ${SITE_CALENDAR}`,
+        ].filter(Boolean).join('\n'),
+        fields,
+        footer: { text: '휴강·공휴일은 종일로 표시됩니다 · /주간일정 주:1 로 다음 주를 봅니다' },
       }],
     };
   }, { hidden: true });
@@ -2780,7 +2925,7 @@ const CHANNEL_GUIDE = [
           '<code>/일정등록</code> 을 입력하고 항목을 채웁니다.',
           '날짜는 <code>9/10</code>, <code>9월 10일</code>, <code>2026-09-10</code> 모두 됩니다.',
           '시각은 <code>22시</code> 또는 <code>22:00</code>. 진행시간을 비우면 2시간으로 잡힙니다.',
-          '오늘 뭐가 있는지 궁금하면 <code>/오늘일정</code>.',
+          '오늘 뭐가 있는지 궁금하면 <code>/오늘일정</code>, 이번 주 전체는 <code>/주간일정</code>.',
         ],
         example: '/일정등록 제목:쿠버네티스 3회차 날짜:9/10 시작시각:22시 진행시간:2 장소:온라인 온라인:켬',
       },
@@ -2924,7 +3069,8 @@ const CHANNEL_GUIDE = [
 const BOT_COMMANDS = [
   ['/인증', '5기 인증을 마치고 모든 채널을 엽니다. 명단에 있으면 누르는 즉시 끝납니다.'],
   ['/일정등록', '스터디 일정을 구글 캘린더에 올리고 채널에 공지합니다.'],
-  ['/오늘일정', '오늘 잡힌 일정을 확인합니다. 나만 볼 수 있습니다.'],
+  ['/오늘일정', '오늘 잡힌 일정과 오늘이 몇 회차인지 확인합니다. 나만 볼 수 있습니다.'],
+  ['/주간일정', '이번 주 일정을 요일별로 봅니다. `주:1` 로 다음 주. 나만 볼 수 있습니다.'],
   ['/자료함', '지금 있는 채널의 드라이브 폴더를 열어줍니다.'],
   ['/자료보기', '그 폴더에 어떤 파일이 있는지 목록으로 보여줍니다.'],
   ['/자료검색', '파일 이름·설명·문서 내용에서 찾습니다. #태그로도 검색됩니다.'],
