@@ -389,7 +389,8 @@ async function apiCalendarEvents(request, url, env) {
       timeMax,
       singleEvents: 'true',
       orderBy: 'startTime',
-      maxResults: '250',
+      // 훈련 시간표만 132일치라 250 으로는 한 기수를 한 번에 못 담습니다.
+      maxResults: '2500',
     });
     const data = await calendarFetch(env, '/events?' + params.toString());
 
@@ -451,7 +452,30 @@ function studyCalendarPage(env) {
     .btn-cal:hover, .btn-mode:hover, .pill-cat:hover { background: #334155; color: #fff; }
     .btn-mode.active, .pill-cat.active { background: #6366f1; border-color: #818cf8; color: #fff; font-weight: 600; }
     .cal-title-text { font-size: 16px; font-weight: 700; color: #f8fafc; margin-left: 6px; }
-    
+
+    /* 단위기간 = 출석률과 훈련수당을 따지는 구간. 지금 보는 날짜가 어디에 드는지 보여줍니다. */
+    .unit-bar { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; background: linear-gradient(90deg, rgba(99,102,241,0.14), rgba(99,102,241,0.03)); border: 1px solid #39415a; border-left: 4px solid #6366f1; border-radius: 10px; padding: 12px 16px; margin-top: 14px; }
+    .unit-bar.is-off { background: #1a2234; border-left-color: #475569; }
+    .unit-no { font-size: 15px; font-weight: 700; color: #a5b4fc; white-space: nowrap; }
+    .unit-bar.is-off .unit-no { color: #94a3b8; }
+    .unit-range { font-size: 13px; color: #cbd5e1; }
+    .unit-stat { font-size: 12px; color: #94a3b8; }
+    .unit-stat b { color: #f8fafc; font-weight: 700; }
+    .unit-count { font-size: 12px; font-weight: 700; color: #a5b4fc; }
+    .unit-progress { flex-basis: 100%; height: 5px; border-radius: 3px; background: #0f172a; overflow: hidden; margin-top: 2px; }
+    .unit-progress i { display: block; height: 100%; background: linear-gradient(90deg, #6366f1, #818cf8); }
+    .unit-note { flex-basis: 100%; font-size: 11px; color: #64748b; line-height: 1.6; margin-top: 2px; }
+
+    .unit-legend { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+    .unit-chip { font-size: 11px; padding: 5px 10px; border-radius: 6px; background: #1a2234; border: 1px solid #2a3143; color: #94a3b8; cursor: pointer; transition: all 0.15s ease; }
+    .unit-chip:hover { border-color: #4f46e5; color: #cbd5e1; }
+    .unit-chip.current { background: #312e81; border-color: #6366f1; color: #e0e7ff; font-weight: 700; }
+    .unit-chip.done { opacity: 0.5; }
+    .unit-chip span { color: #64748b; }
+    .unit-chip.current span { color: #a5b4fc; }
+
+    .day-unit { font-size: 10px; font-weight: 700; color: #818cf8; background: rgba(99,102,241,0.12); border-radius: 4px; padding: 1px 5px; display: inline-block; margin-top: 3px; }
+
     .week-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 8px; margin-top: 12px; }
     .day-column { background: #161e2e; border: 1px solid #263044; border-radius: 8px; padding: 10px; min-height: 320px; display: flex; flex-direction: column; gap: 8px; }
     .day-column.is-today { border-color: #6366f1; background: rgba(99,102,241,0.06); }
@@ -510,6 +534,9 @@ function studyCalendarPage(env) {
       </div>
     </div>
 
+    <div id="unitBar" class="unit-bar is-off"><span class="unit-no">단위기간 확인 중…</span></div>
+    <div id="unitLegend" class="unit-legend"></div>
+
     <div id="calContainer">
       <div style="padding:40px; text-align:center; color:#94a3b8;">일정을 동기화하는 중입니다...</div>
     </div>
@@ -521,6 +548,24 @@ function studyCalendarPage(env) {
         let activeCat = 'all';
         let eventsList = [];
 
+        // 출석률·훈련수당을 따지는 단위기간. 훈련 시간표의 [단위기간 확인] 표 그대로입니다.
+        const UNITS = [
+          { no: 1, start: '2026-08-19', end: '2026-09-18', days: 18 },
+          { no: 2, start: '2026-09-19', end: '2026-10-18', days: 16 },
+          { no: 3, start: '2026-10-19', end: '2026-11-18', days: 22 },
+          { no: 4, start: '2026-11-19', end: '2026-12-18', days: 21 },
+          { no: 5, start: '2026-12-19', end: '2027-01-18', days: 17 },
+          { no: 6, start: '2027-01-19', end: '2027-02-18', days: 20 },
+          { no: 7, start: '2027-02-19', end: '2027-03-17', days: 18 },
+        ];
+        const COURSE_START = UNITS[0].start;
+        const COURSE_END = UNITS[UNITS.length - 1].end;
+        const UNIT_NOTE = '단위기간의 일수는 KT 수업이 있는 날만 셉니다 (월~금 기준, 휴강·공휴일·주말 제외). '
+          + '출석률이 80% 미만인 단위기간은 훈련수당이 지급되지 않습니다. '
+          + '휴가 사유 출석인정은 단위기간마다 1회 생기고, 모아서 쓸 수는 있어도 쪼개 쓸 수는 없습니다 (훈련 후반부 사용 권장).';
+
+        const unitBar = document.getElementById('unitBar');
+        const unitLegend = document.getElementById('unitLegend');
         const calContainer = document.getElementById('calContainer');
         const calTitle = document.getElementById('calTitle');
         const btnToday = document.getElementById('btnToday');
@@ -565,7 +610,12 @@ function studyCalendarPage(env) {
         async function loadEvents() {
           calContainer.innerHTML = '<div style="padding:40px; text-align:center; color:#94a3b8;">구글 캘린더 일정 동기화 중...</div>';
           try {
-            const res = await fetch('/api/calendar/events');
+            // 기본 창(-30일~+60일)은 훈련기간 전체를 덮지 못해 뒷달이 비어 보입니다.
+            const params = new URLSearchParams({
+              timeMin: COURSE_START + 'T00:00:00+09:00',
+              timeMax: COURSE_END + 'T23:59:59+09:00',
+            });
+            const res = await fetch('/api/calendar/events?' + params.toString());
             const data = await res.json();
             if (data.ok) {
               eventsList = data.events || [];
@@ -577,8 +627,85 @@ function studyCalendarPage(env) {
         }
 
         function render() {
+          renderUnitBar();
           if (viewMode === 'week') renderWeekView();
           else renderDayView();
+        }
+
+        // 날짜 문자열(YYYY-MM-DD)이 속한 단위기간을 찾습니다. 훈련기간 밖이면 null.
+        function unitOf(dateStr) {
+          return UNITS.find(u => dateStr >= u.start && dateStr <= u.end) || null;
+        }
+
+        // 훈련일만 셉니다. 휴강·공휴일은 종일 일정이라 여기서 자연히 빠지고,
+        // 주말도 시간 일정이 없으니 빠집니다. 즉 실제 수업이 있는 월~금만 남습니다.
+        function trainingDaysIn(unit) {
+          const seen = new Set();
+          eventsList.forEach(ev => {
+            if (ev.allDay || !ev.start) return;
+            const d = getEventDateStr(ev.start);
+            if (d >= unit.start && d <= unit.end) seen.add(d);
+          });
+          return [...seen].sort();
+        }
+
+        // 수업이 있었던 날만 하루씩 차감합니다. 오늘은 아직 안 지난 것으로 봅니다.
+        function unitProgress(unit, todayStr) {
+          const days = trainingDaysIn(unit);
+          const total = days.length || unit.days;
+          const used = days.filter(d => d < todayStr).length;
+          return { total, used, left: Math.max(total - used, 0), days };
+        }
+
+        function renderUnitBar() {
+          // 주간 뷰는 그 주의 월요일을, 일간 뷰는 그 날짜를 기준으로 잡습니다.
+          const basis = viewMode === 'week'
+            ? (() => { const d = getStartOfWeek(currentDate); d.setDate(d.getDate() + 1); return d; })()
+            : currentDate;
+          const dateStr = formatLocalDateStr(basis);
+          const unit = unitOf(dateStr);
+          const todayStr = formatLocalDateStr(new Date());
+
+          if (!unit) {
+            unitBar.className = 'unit-bar is-off';
+            const before = dateStr < COURSE_START;
+            unitBar.innerHTML = '<span class="unit-no">훈련기간 밖</span>'
+              + '<span class="unit-range">전체 훈련기간 ' + COURSE_START + ' ~ ' + COURSE_END + ' (총 132일)</span>'
+              + '<span class="unit-stat">' + (before ? '아직 개강 전입니다.' : '수료 이후입니다.') + '</span>';
+          } else {
+            const p = unitProgress(unit, todayStr);
+            const pct = p.total ? Math.round((p.used / p.total) * 100) : 0;
+            const state = todayStr < unit.start ? '아직 시작 전'
+              : todayStr > unit.end ? '종료된 구간'
+              : '진행 중';
+            const nextDay = p.days.find(d => d >= todayStr);
+
+            unitBar.className = 'unit-bar';
+            unitBar.innerHTML = '<span class="unit-no">' + unit.no + '단위기간</span>'
+              + '<span class="unit-range">' + unit.start + ' ~ ' + unit.end + '</span>'
+              + '<span class="unit-stat">KT 수업일 <b>' + p.total + '일</b> 중 '
+              + '<b>' + p.used + '일</b> 지남 · 남은 <b>' + p.left + '일</b></span>'
+              + '<span class="unit-count">' + state
+              + (nextDay && todayStr <= unit.end ? ' · 다음 수업 ' + nextDay.slice(5) : '') + '</span>'
+              + '<span class="unit-progress"><i style="width:' + pct + '%"></i></span>'
+              + '<span class="unit-note">※ ' + UNIT_NOTE + '</span>';
+          }
+
+          unitLegend.innerHTML = UNITS.map(u => {
+            const cls = unit && u.no === unit.no ? 'current' : (todayStr > u.end ? 'done' : '');
+            const p = unitProgress(u, todayStr);
+            const tail = todayStr > u.end ? '완료' : '남은 ' + p.left + '일';
+            return '<button class="unit-chip ' + cls + '" data-start="' + u.start + '">'
+              + u.no + '단위 <span>' + u.start.slice(5) + '~' + u.end.slice(5)
+              + ' · ' + p.total + '일 · ' + tail + '</span></button>';
+          }).join('');
+          unitLegend.querySelectorAll('.unit-chip').forEach(chip => {
+            chip.addEventListener('click', () => {
+              const parts = chip.dataset.start.split('-');
+              currentDate = new Date(parts[0], parts[1] - 1, parts[2]);
+              render();
+            });
+          });
         }
 
         function renderWeekView() {
@@ -599,12 +726,17 @@ function studyCalendarPage(env) {
 
             const isToday = today.toDateString() === dayDate.toDateString();
             const filteredEvents = eventsList.filter(ev => {
+              if (isUnitEvent(ev)) return false;
               if (activeCat !== 'all' && (ev.colorId || '1') !== activeCat) return false;
               return isEventOnDate(ev, dateStr);
             });
 
+            const dayUnit = unitOf(dateStr);
+
             html += '<div class="day-column ' + (isToday ? 'is-today' : '') + '">';
-            html += '<div class="day-header">' + days[i] + '요일 <span>' + (dayDate.getMonth() + 1) + '.' + dayDate.getDate() + '</span></div>';
+            html += '<div class="day-header">' + days[i] + '요일 <span>' + (dayDate.getMonth() + 1) + '.' + dayDate.getDate() + '</span>';
+            if (dayUnit) html += '<span class="day-unit">' + dayUnit.no + '단위</span>';
+            html += '</div>';
 
             if (filteredEvents.length === 0) {
               html += '<div style="font-size:11px; color:#475569; text-align:center; margin-top:20px;">일정 없음</div>';
@@ -634,6 +766,7 @@ function studyCalendarPage(env) {
           calTitle.textContent = currentDate.getFullYear() + '년 ' + (currentDate.getMonth() + 1) + '월 ' + currentDate.getDate() + '일 (' + days[currentDate.getDay()] + '요일)';
 
           const dayEvents = eventsList.filter(ev => {
+            if (isUnitEvent(ev)) return false;
             if (activeCat !== 'all' && (ev.colorId || '1') !== activeCat) return false;
             return isEventOnDate(ev, dateStr);
           });
@@ -659,6 +792,12 @@ function studyCalendarPage(env) {
           html += '</div>';
 
           calContainer.innerHTML = html;
+        }
+
+        // 단위기간 일정은 한 달 내내 걸쳐 있어 날짜 칸에 넣으면 가리기만 합니다.
+        // 위쪽 단위기간 표시줄이 대신 보여주므로 목록에서는 뺍니다.
+        function isUnitEvent(ev) {
+          return typeof ev.title === 'string' && ev.title.indexOf('단위기간') !== -1;
         }
 
         function formatLocalDateStr(d) {
