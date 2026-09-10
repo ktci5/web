@@ -26,8 +26,6 @@ npm run updates -- --dry   # 확인만
 - `ping` · `ip route` · `ip route get` · `ss -tunlp` 출력을 읽는 법
 - 안 될 때 에러 문구로 막힌 단계를 좁히는 표 (`refused` 와 `timed out` 의 차이)
 
-요약은 디스코드 **#🌐-네트워크** 에도 올렸습니다.
-
 ---
 
 ## 2026-09-08
