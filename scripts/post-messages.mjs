@@ -27,6 +27,60 @@ const DRIVE_FOLDERS = [
 
 const MESSAGES = [
   {
+    key: 'network-flow',
+    channel: '🌐-네트워크',
+    embeds: [{
+      title: '🌐 IP · DNS · 포트 · 게이트웨이 · 라우팅 — 한 흐름으로 보기',
+      color: BLUE,
+      description:
+        '브라우저에 `www.google.com` 을 치면 무슨 일이 일어나는지, 다섯 개념이 맞물리는 순서로 정리했습니다.\n' +
+        '아래는 요약이고, **ARP · NAT · 최장 접두어 일치 · TCP/TLS · 막혔을 때 진단**까지 붙인 전체 글은 사이트에 있습니다.\n' +
+        `${SITE}/study/course/network/flow`,
+      fields: [
+        {
+          name: '① 실생활 비유',
+          value:
+            '**IP 주소** — 건물의 상세 주소. 장치를 가리키는 번호\n' +
+            '**DNS** — 전화번호부. `google.com` 을 IP 로 바꿔 줌\n' +
+            '**포트** — 건물 안의 방 번호. 어느 프로그램에 줄지 (HTTPS 443, SSH 22)\n' +
+            '**게이트웨이** — 아파트 정문. 우리 네트워크를 벗어날 때 거치는 출구 라우터\n' +
+            '**라우팅 테이블** — 이정표. 이 목적지는 어느 길로, 누구에게 넘길지',
+        },
+        {
+          name: '② www.google.com 을 입력하면',
+          value:
+            '**1. DNS 조회** — `/etc/hosts` → 캐시 → DNS 서버 순으로 IP 를 알아냄\n' +
+            '**2. 목적지 결정** — `142.250.206.206:443` · 출발지 포트는 OS 가 임시 번호로\n' +
+            '**3. 라우팅 테이블** — 같은 네트워크가 아니면 `default via 게이트웨이`\n' +
+            '**4. 게이트웨이로** — 목적지 IP 는 그대로, 공유기 **MAC** 을 ARP 로 알아내 전달\n' +
+            '**5. 인터넷** — 공유기가 **NAT** 로 공인 IP 로 바꾸고, 라우터마다 한 칸씩 릴레이\n' +
+            '**6. 서버 도착** — 443 에서 **LISTEN** 중인 웹 서버가 받음 (없으면 `Connection refused`)',
+        },
+        {
+          name: '③ 실습 화면에서',
+          value:
+            '`ping www.google.com` — 첫 줄 괄호 안 IP 가 DNS 결과. ping 은 ICMP 라 **포트가 없습니다**\n' +
+            '`ip route` — `default via 192.168.100.2 dev ens160` = 모르는 목적지는 전부 게이트웨이로\n' +
+            '`ip route get 8.8.8.8` — 이 목적지가 **실제로 어느 길**을 타는지\n' +
+            '`ss -tunlp` — 어떤 포트(방)를 열고 기다리는지. `127.0.0.1` 에만 열려 있으면 외부 접속 불가',
+        },
+        {
+          name: '④ 막혔을 때 한 줄씩',
+          value:
+            '`ip a` → `ip route` → `ping 게이트웨이` → `ping 8.8.8.8` → `ping www.google.com` → `curl -I https://www.google.com`\n' +
+            '**처음 실패한 곳이 막힌 단계**입니다. `8.8.8.8` 은 되는데 이름으로 안 되면 DNS 문제입니다.',
+        },
+        {
+          name: '📚 이어서 보기',
+          value:
+            `네트워크 설정(nmcli) — ${SITE}/study/course/admin/network\n` +
+            `방화벽(firewalld) — ${SITE}/study/course/admin/firewall`,
+        },
+      ],
+      footer: { text: '인증한 분만 열립니다 · 틀린 곳이나 헷갈리는 곳은 #❓-질문답변 에 알려주세요' },
+    }],
+  },
+  {
     key: 'linux-course',
     channel: '💻-리눅스',
     embeds: [{

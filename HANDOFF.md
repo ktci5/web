@@ -278,6 +278,7 @@ see: bash/loop, admin/cron        # 함께 보기 (선택)
 | `linux` | Linux 기초 | 10 | ✅ 완료 |
 | `bash` | Shell Programming | 8 | ✅ 완료 |
 | `admin` | Linux 관리자 | 19 | ✅ 완료 |
+| `network` | 네트워크 기초 | 1 | 진행 중 — PDF 없이 직접 쓴 과목 (`from` 없음 → `upload-course.mjs network`) |
 
 ---
 

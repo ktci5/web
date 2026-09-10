@@ -4,6 +4,7 @@
  *
  *   node scripts/upload-course.mjs linux <pdf>            장 구조 업로드
  *   node scripts/upload-course.mjs bash <pdf> --dry-run   확인만
+ *   node scripts/upload-course.mjs network                PDF 없이 직접 쓴 과목
  *
  * 여기서 올리는 것은 **장 구분과 원본 쪽 범위**뿐입니다.
  * 화면에 보이는 본문은 scripts/upload-notes.mjs 로 올리는 정리본입니다.
@@ -82,6 +83,15 @@ const COURSES = {
       { id: 'trouble',  name: '문제 해결',             from: 259, summary: '증상별로 원인을 좁혀 가는 순서' },
     ],
   },
+  // 강의 PDF 없이 직접 쓴 과목입니다. from 을 두지 않으면 PDF 없이 올립니다.
+  network: {
+    title: '네트워크 기초',
+    subtitle: '주소 · 이름 · 포트 · 경로 — 패킷이 목적지까지 가는 길',
+    order: 4,
+    chapters: [
+      { id: 'flow', name: 'IP · DNS · 포트 · 게이트웨이 · 라우팅', summary: '브라우저에 주소를 치면 일어나는 일을 순서대로' },
+    ],
+  },
 };
 
 /* ------------------------------------------------------------------ 실행 */
@@ -96,48 +106,53 @@ if (!courseId || !COURSES[courseId]) {
   console.error(`  과목: ${Object.keys(COURSES).join(', ')}`);
   process.exit(1);
 }
-if (!pdfPath) {
+const course = COURSES[courseId];
+const fromPdf = course.chapters.some((c) => c.from);
+
+if (fromPdf && !pdfPath) {
   console.error('✘ PDF 경로가 필요합니다.');
   process.exit(1);
 }
 
-const pdf = resolve(pdfPath.replace(/^~/, process.env.HOME || '~'));
-if (!existsSync(pdf)) {
-  console.error(`✘ 파일이 없습니다: ${pdf}`);
-  process.exit(1);
+let pdf = null;
+let pages = null;
+if (fromPdf) {
+  pdf = resolve(pdfPath.replace(/^~/, process.env.HOME || '~'));
+  if (!existsSync(pdf)) {
+    console.error(`✘ 파일이 없습니다: ${pdf}`);
+    process.exit(1);
+  }
+  try {
+    pages = execFileSync('pdftotext', ['-layout', pdf, '-'], {
+      encoding: 'utf8', maxBuffer: 64 * 1024 * 1024,
+    }).split('\f');
+  } catch {
+    console.error('✘ pdftotext 실패. poppler 가 설치되어 있나요?  brew install poppler');
+    process.exit(1);
+  }
 }
 
-const course = COURSES[courseId];
-
-let pages;
-try {
-  pages = execFileSync('pdftotext', ['-layout', pdf, '-'], {
-    encoding: 'utf8', maxBuffer: 64 * 1024 * 1024,
-  }).split('\f');
-} catch {
-  console.error('✘ pdftotext 실패. poppler 가 설치되어 있나요?  brew install poppler');
-  process.exit(1);
-}
-
-const chapters = course.chapters.map((c, i) => {
-  const to = (course.chapters[i + 1]?.from ?? pages.length + 1) - 1;
-  return { ...c, to };
-});
+const chapters = fromPdf
+  ? course.chapters.map((c, i) => {
+    const to = (course.chapters[i + 1]?.from ?? pages.length + 1) - 1;
+    return { ...c, to };
+  })
+  : course.chapters;
 
 const doc = {
   id: courseId,
   title: course.title,
   subtitle: course.subtitle,
   order: course.order,
-  source: basename(pdf),
-  pages: pages.length,
+  ...(fromPdf && { source: basename(pdf), pages: pages.length }),
   updatedAt: new Date().toISOString(),
   chapters,
 };
 
-console.log(`▸ ${course.title} — ${doc.source} (${doc.pages}쪽)\n`);
+console.log(`▸ ${course.title} — ${fromPdf ? `${doc.source} (${doc.pages}쪽)` : '직접 작성 (PDF 없음)'}\n`);
 for (const c of chapters) {
-  console.log(`  ${c.id.padEnd(9)} ${c.name.padEnd(20)} p.${String(c.from).padStart(3)}~${String(c.to).padEnd(3)}  ${c.summary}`);
+  const range = fromPdf ? `p.${String(c.from).padStart(3)}~${String(c.to).padEnd(3)}  ` : '';
+  console.log(`  ${c.id.padEnd(9)} ${c.name.padEnd(20)} ${range}${c.summary}`);
 }
 
 if (dryRun) {
