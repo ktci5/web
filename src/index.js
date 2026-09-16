@@ -2971,7 +2971,8 @@ const MEMBER_LINKS = [
 
 function memberLinks(env, primary = 0) {
   const zepBtn = '<a class="btn" href="https://zep.us/@ktcloudinfra05" target="_blank" rel="noopener" style="background:linear-gradient(135deg,#059669 0%,#10b981 100%);color:#fff;font-weight:700;">🏫 ZEP 강의실 입장 바로가기</a>';
-  return zepBtn +
+  const qrBtn = '<a class="btn" href="https://discord.com/channels/1536983492301160448/1537623379476222012" target="_blank" rel="noopener" style="background:linear-gradient(135deg,#4f46e5 0%,#7c3aed 100%);color:#fff;font-weight:700;">📱 QR 출석하기</a>';
+  return zepBtn + qrBtn +
     MEMBER_LINKS.map(([href, label], i) =>
       `<a class="btn${i === primary ? '' : ' btn-ghost'}" href="${href}">${label}</a>`
     ).join('') +
