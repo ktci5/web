@@ -190,13 +190,13 @@ export function renderLinuxGuide(escapeHtml) {
 <div class="cs-bridge-banner">
   <div class="csb-text">
     <span class="csb-badge">⚡ 연계 학습 치트시트</span>
-    <h3>실무 명령어 & 용어 뜻 풀이 사전 (Rocky Linux · LVM · Docker 82선)</h3>
+    <h3>실무 명령어 & 용어 뜻 풀이 사전 (Rocky Linux · LVM · Docker 114선)</h3>
     <p>명령어 영문 어원과 한글 뜻, 원리와 실행 목적을 쉽게 풀어쓴 원클릭 실행 구문</p>
   </div>
   <a href="/study/cheatsheet" class="csb-btn">⚡ 실무 치트시트 바로가기 ➔</a>
 </div>
 
-<p class="lead">분야별·난이도별 전체 실무 명령어 및 용어 뜻 설명은 <a href="/study/cheatsheet" class="cs-text-link"><strong>⚡ 실무 명령어 치트시트 (82개 항목)</strong></a>에 정리되어 있습니다. 이 문서는 그 다음을 다룹니다 —
+<p class="lead">분야별·난이도별 전체 실무 명령어 및 용어 뜻 설명은 <a href="/study/cheatsheet" class="cs-text-link"><strong>⚡ 실무 명령어 치트시트 (114개 항목)</strong></a>에 정리되어 있습니다. 이 문서는 그 다음을 다룹니다 —
 <strong>출력을 어떻게 읽고, 증상이 있을 때 무엇부터 확인하는지</strong>.
 외울 내용이 아니라 막혔을 때 돌아와 찾아보는 문서로 만들었습니다.</p>
 
@@ -240,7 +240,7 @@ ${flows}</section>
 ${safety}</section>
 
 <section><h2>더 보기 & 연계 학습</h2>
-<div class="ch"><div class="ch-name"><a href="/study/cheatsheet">⚡ 실무 명령어 치트시트 (82개 명령어 & 용어 설명 사전)</a></div>
+<div class="ch"><div class="ch-name"><a href="/study/cheatsheet">⚡ 실무 명령어 치트시트 (114개 명령어 & 용어 설명 사전)</a></div>
 <div class="ch-desc"><p>Rocky Linux 10, parted/LVM 스토리지, Docker 컨테이너 등 전 분야 실무 명령 및 영문 어원·용어 뜻 풀이 사전. 실시간 검색과 원클릭 복사를 지원합니다.</p></div></div>
 <div class="ch"><div class="ch-name"><a href="/study/infra">🛠️ 인프라 가이드 (서버 아키텍처)</a></div>
 <div class="ch-desc"><p>이 서버가 실제로 어떻게 구축되고 배포되었는지 단계별 인프라 설계도.</p></div></div>
