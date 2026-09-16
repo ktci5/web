@@ -3463,8 +3463,9 @@ function renderDoc({ title, heading, sections, html: raw, extraCss = '' }) {
     <div class="bottom-nav-bar">
       <a href="/study" class="bnav-btn">← 스터디 Hub</a>
       <a href="/study/course" class="bnav-btn">📘 강의 정리</a>
-      <a href="/study/calendar" class="bnav-btn highlight">🗓️ 스터디 캘린더</a>
       <a href="/study/cheatsheet" class="bnav-btn">⚡ 치트시트</a>
+      <a href="/study/linux" class="bnav-btn">🐧 리눅스 가이드</a>
+      <a href="/study/calendar" class="bnav-btn highlight">🗓️ 스터디 캘린더</a>
       <a href="/guide" class="bnav-btn">💬 채널 가이드 →</a>
     </div>
   `;

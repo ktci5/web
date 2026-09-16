@@ -187,7 +187,16 @@ export function renderLinuxGuide(escapeHtml) {
   ).join('');
 
   return `
-<p class="lead">명령어 목록은 <a href="/study">치트 시트</a>에 있습니다. 이 문서는 그 다음을 다룹니다 —
+<div class="cs-bridge-banner">
+  <div class="csb-text">
+    <span class="csb-badge">⚡ 연계 학습 치트시트</span>
+    <h3>실무 명령어 & 단축어 해설 사전 (Rocky Linux · LVM · Docker 82선)</h3>
+    <p>명령어 단축어(Full Name/Origin) 영문 어원 & 한글 번역, 복사 가능한 원클릭 실행 구문</p>
+  </div>
+  <a href="/study/cheatsheet" class="csb-btn">⚡ 실무 치트시트 바로가기 ➔</a>
+</div>
+
+<p class="lead">분야별·난이도별 전체 실무 명령어 및 단축어 해설은 <a href="/study/cheatsheet" class="cs-text-link"><strong>⚡ 실무 명령어 치트시트 (82개 항목)</strong></a>에 정리되어 있습니다. 이 문서는 그 다음을 다룹니다 —
 <strong>출력을 어떻게 읽고, 증상이 있을 때 무엇부터 확인하는지</strong>.
 외울 내용이 아니라 막혔을 때 돌아와 찾아보는 문서로 만들었습니다.</p>
 
@@ -199,10 +208,10 @@ export function renderLinuxGuide(escapeHtml) {
 처음 보는 명령도 <code>--help</code> 만으로 조립할 수 있습니다.</p></section>
 
 <section><h2>다섯 단계, 무엇이 달라지는가</h2>
-<p class="lead">레벨은 아는 명령의 개수가 아니라 <strong>문제를 보는 방식</strong>으로 나뉩니다.</p>
+<p class="lead">레벨은 아는 명령의 개수가 아니라 <strong>문제를 보는 방식</strong>으로 나뉩니다. 각 단계별 상세 실행 구문은 <a href="/study/cheatsheet" class="cs-text-link">치트시트 난이도 필터(L1~L5)</a>에서 바로 복사할 수 있습니다.</p>
 ${levels}</section>
 
-<section><h2>파이프라인 해부</h2>
+<section id="pipeline"><h2>파이프라인 해부</h2>
 <p class="lead">L4 예제를 토큰 단위로 뜯어봅니다. 이 한 줄이 읽히면 대부분의 파이프라인이 읽힙니다.</p>
 <pre class="hero">awk '$9 &gt;= 500 {print $1, $7, $9}' access.log | sort | uniq -c | sort -nr | head -10</pre>
 <p class="lead">서버 에러(5xx)를 가장 많이 낸 URL 열 개를 뽑는 명령입니다.</p>
@@ -211,17 +220,17 @@ ${anatomy}
 결과가 조용히 틀립니다. 에러가 나지 않고 <strong>숫자만 잘못 나오므로</strong> 알아채기 어렵습니다.</p></div>
 </section>
 
-<section><h2>출력 읽는 법</h2>
+<section id="reading"><h2>출력 읽는 법</h2>
 <p class="lead">명령을 아는 것과 결과를 읽는 것은 다른 일입니다.
-여기 있는 여섯 가지가 실무에서 가장 자주 오독되는 출력입니다.</p>
+여기 있는 여섯 가지가 실무에서 가장 자주 오독되는 출력입니다. 각 명령어의 세부 옵션과 단축어 어원은 <a href="/study/cheatsheet" class="cs-text-link">치트시트</a>에서 검색할 수 있습니다.</p>
 ${reading}</section>
 
-<section><h2>증상별 진단 순서</h2>
+<section id="flows"><h2>증상별 진단 순서</h2>
 <p class="lead">막혔을 때 아무 명령이나 치지 않으려면 순서가 필요합니다.
-<strong>넓게 시작해서 좁혀 들어가는</strong> 흐름입니다.</p>
+<strong>넓게 시작해서 좁혀 들어가는</strong> 흐름입니다. 진단 파이프라인 전체 명령 구문은 <a href="/study/cheatsheet" class="cs-text-link">치트시트 실무 시나리오</a>에 수록되어 있습니다.</p>
 ${flows}</section>
 
-<section><h2>레거시에서 현대 도구로</h2>
+<section id="modern"><h2>레거시에서 현대 도구로</h2>
 <p class="lead">오래된 문서를 보고 배우면 이미 대체된 도구를 익히게 됩니다.</p>
 <div class="tbl"><table><thead><tr><th>예전</th><th>지금</th><th>왜</th></tr></thead>
 <tbody>${modern}</tbody></table></div></section>
@@ -230,17 +239,30 @@ ${flows}</section>
 <p class="lead">아래 다섯 가지는 실제로 서비스를 멈추게 한 적이 있는 패턴입니다.</p>
 ${safety}</section>
 
-<section><h2>더 보기</h2>
-<div class="ch"><div class="ch-name"><a href="/study">명령어 치트 시트</a></div>
-<div class="ch-desc"><p>분야별·난이도별 명령 목록. 검색과 복사가 됩니다.</p></div></div>
+<section><h2>더 보기 & 연계 학습</h2>
+<div class="ch"><div class="ch-name"><a href="/study/cheatsheet">⚡ 실무 명령어 치트시트 (82개 명령어 & 단축어 사전)</a></div>
+<div class="ch-desc"><p>Rocky Linux 10, parted/LVM 스토리지, Docker 컨테이너 등 전 분야 실무 명령 및 단축어 어원 번역 사전. 실시간 검색과 원클릭 복사를 지원합니다.</p></div></div>
+<div class="ch"><div class="ch-name"><a href="/study/infra">🛠️ 인프라 가이드 (서버 아키텍처)</a></div>
+<div class="ch-desc"><p>이 서버가 실제로 어떻게 구축되고 배포되었는지 단계별 인프라 설계도.</p></div></div>
+<div class="ch"><div class="ch-name"><a href="/study/course">📘 과목별 강의 정리</a></div>
+<div class="ch-desc"><p>리눅스 기초, 시스템 관리자, 쉘 프로그래밍, 네트워크, 도커 컨테이너 강의노트.</p></div></div>
 <div class="ch"><div class="ch-name"><a href="https://github.com/ktci5/study" target="_blank" rel="noopener">ktci5/study 저장소</a></div>
 <div class="ch-desc"><p>원본 문서(마크다운·docx)와 마인드맵.</p></div></div>
-<div class="ch"><div class="ch-name">#💻-리눅스</div>
-<div class="ch-desc"><p>막히는 부분은 채널에 물어보세요. 터미널 출력을 함께 올려주시면 답이 빠릅니다.</p></div></div>
+<div class="ch"><div class="ch-name">#💻-리눅스 · #🐳-도커-컨테이너</div>
+<div class="ch-desc"><p>막히는 부분은 디스코드 해당 채널에 물어보세요. 터미널 출력을 함께 올려주시면 답이 빠릅니다.</p></div></div>
 </section>`;
 }
 
 export const LINUX_GUIDE_CSS =
+  '.cs-bridge-banner{background:linear-gradient(135deg,rgba(30,41,59,0.9) 0%,rgba(15,23,42,0.95) 100%);border:1px solid #3b82f6;border-radius:12px;padding:16px 20px;margin:0 0 24px;display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;}' +
+  '.csb-text{flex:1;min-width:240px;}' +
+  '.csb-badge{display:inline-block;background:#3b82f6;color:#fff;font-size:11px;font-weight:700;padding:2px 8px;border-radius:4px;margin-bottom:6px;}' +
+  '.csb-text h3{margin:0 0 4px;font-size:15px;color:#f8fafc;font-weight:700;}' +
+  '.csb-text p{margin:0;font-size:13px;color:#94a3b8;line-height:1.5;}' +
+  '.csb-btn{background:linear-gradient(135deg,#2563eb 0%,#3b82f6 100%);color:#fff!important;text-decoration:none;font-size:13px;font-weight:700;padding:10px 18px;border-radius:8px;transition:all 0.15s ease;white-space:nowrap;display:inline-flex;align-items:center;}' +
+  '.csb-btn:hover{background:#1d4ed8;transform:translateY(-1px);color:#fff!important;}' +
+  '.cs-text-link{color:#8ea1ff;font-weight:600;text-decoration:underline;}' +
+  '.cs-text-link:hover{color:#b3c2ff;}' +
   '.lv{display:flex;gap:14px;padding:14px 0;border-top:1px solid #2a3143;}' +
   '.lv-tag{flex:0 0 34px;height:34px;border-radius:8px;background:#2d3446;color:#8ea1ff;' +
   'font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center;}' +
