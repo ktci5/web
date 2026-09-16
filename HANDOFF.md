@@ -279,6 +279,7 @@ see: bash/loop, admin/cron        # 함께 보기 (선택)
 | `bash` | Shell Programming | 8 | ✅ 완료 |
 | `admin` | Linux 관리자 | 19 | ✅ 완료 |
 | `network` | 네트워크 기초 | 1 | 진행 중 — PDF 없이 직접 쓴 과목 (`from` 없음 → `upload-course.mjs network`) |
+| `docker` | Docker 컨테이너 기초 | 8 | ✅ 완료 — PDF 및 실습노트 기반 (`7.ktcloud-Docker.pdf`) |
 
 ---
 

@@ -1445,11 +1445,15 @@ async function loadClaims(env) {
   return (await env.ROSTER.get('claims', 'json')) || {};
 }
 
-// 디스코드 계정이 명단에 있는지 — ID 우선, 없으면 사용자명으로
+// 디스코드 계정이 명단에 있는지 — ID 로 찾고, ID 를 모르는 항목만 사용자명으로.
+//
+// 사용자명 대조를 ID 가 있는 항목까지 넓히면 안 됩니다. 명단에 있는 사람이
+// 핸들을 바꾸면 옛 핸들이 풀리고, 그것을 선점한 다른 계정이 통과합니다.
+// ID 가 적힌 항목은 ID 로만 확인합니다.
 function matchMember(roster, user) {
   const uname = String(user.username || '').toLowerCase();
   return roster.members.find((m) => m.id && m.id === user.id)
-    || roster.members.find((m) => m.username && m.username.toLowerCase() === uname)
+    || roster.members.find((m) => !m.id && m.username && m.username.toLowerCase() === uname)
     || null;
 }
 

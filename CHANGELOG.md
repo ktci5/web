@@ -10,6 +10,24 @@ npm run updates -- --dry   # 확인만
 
 적는 방법은 아래 [규칙](#쓰는-규칙) 을 봐주세요.
 
+## 2026-09-16
+
+### Docker 컨테이너 기초 과목 개설 (8개 장)
+
+[Docker 컨테이너 기초](https://ktci5.kr/study/course/docker) 과목을 새로 열고 8개 장 전체를 공개했습니다.
+슬라이드와 강의노트의 핵심 실습을 동작 원리와 함께 수록했습니다.
+
+- 가상화 비교 — Type 1/2 하이퍼바이저, 전가상화/반가상화 vs 리눅스 컨테이너(cgroups · namespaces)
+- 도커 구조와 권한 — C/S 데몬 구조, 일반 사용자 소켓 권한(`usermod -aG docker`, `newgrp`), 원격 데몬 바인딩(`-H tcp://0.0.0.0:2375`)과 `rdocker` 별칭
+- 컨테이너 격리 — 호스트명, 사설 IP, Overlay2 마운트, PID 1 프로세스 분리와 `docker exec` 운영 진단
+- Dockerfile 빌드와 **포그라운드 `daemon off;` 원리** — 백그라운드 실행 시 PID 1 종료로 컨테이너가 꺼지는 원인과 해결
+- 볼륨과 영속성 — Named Volume, 바인드 마운트(`:ro`), tmpfs 로 컨테이너 삭제 시 데이터 유실 방지
+- 이미지 배포 — Docker Hub 태그 달기, 브라우저/CLI 로그인, `docker push` 및 타 노드 배포 검증, 사설 Registry 구축
+- 컨테이너 네트워크 — `docker0` 브릿지, veth 페어, iptables NAT 포트 포워딩(`-p 81:80`), 사용자 정의 네트워크 내장 DNS
+- 다중 컨테이너 제어 — `docker-compose.yml` 선언적 일괄 배포, Swarm 과 Kubernetes 클러스터 기초
+
+요약은 디스코드 **#🐳-컨테이너-쿠버네티스** 에도 올렸습니다.
+
 ---
 
 ## 2026-09-10

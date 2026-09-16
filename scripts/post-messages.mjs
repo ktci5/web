@@ -81,6 +81,56 @@ const MESSAGES = [
     }],
   },
   {
+    key: 'docker-course',
+    channel: '🐳-컨테이너-쿠버네티스',
+    embeds: [{
+      title: '🐳 Docker 컨테이너 기초 강의 정리 (총 8개 장) 공개',
+      color: BLUE,
+      description:
+        '수업에서 다룬 도커 기초와 실습 내용을 **웹에서 읽을 수 있게 심층 정리**했습니다.\n' +
+        '슬라이드와 강의노트의 핵심 실습(원격 데몬 -H 바인딩, 일반 사용자 소켓 권한, Dockerfile 포그라운드 daemon off, Docker Hub 이미지 배포)을 상세한 동작 원리와 함께 수록했습니다.\n\n' +
+        `${SITE}/study/course/docker`,
+      fields: [
+        {
+          name: '① 가상화와 도커 아키텍처 (intro · install)',
+          value:
+            '• 하이퍼바이저(Type 1/2) vs 컨테이너 격리(cgroups · namespaces)\n' +
+            '• Client-Server 데몬 구조와 소켓 권한 (`usermod -aG docker`, `newgrp`)\n' +
+            '• 원격 데몬 TCP 바인딩 (`-H tcp://0.0.0.0:2375`)과 `rdocker` 별칭 설정',
+        },
+        {
+          name: '② 컨테이너 생명주기와 격리 (container)',
+          value:
+            '• `run` · `start` · `stop` · `exec` 라이프사이클 흐름\n' +
+            '• 격리 환경 검증: 호스트명, 172.17.0.x IP, Overlay2 마운트, PID 1 분리\n' +
+            '• `docker attach` vs `docker exec` (운영 시 왜 exec 를 써야 하는가)',
+        },
+        {
+          name: '③ Dockerfile 과 이미지 빌드 (dockerfile)',
+          value:
+            '• **왜 `daemon off;` 가 필수인가**: 백그라운드 데몬 실행 시 PID 1 종료로 컨테이너가 꺼지는 원리\n' +
+            '• `FROM` · `RUN` · `COPY` · `CMD` vs `ENTRYPOINT` 핵심 차이\n' +
+            '• 이미지 빌드(`docker build -t`)와 레이어 캐시 최적화 기법',
+        },
+        {
+          name: '④ 데이터 영속성과 네트워크 (volume · network)',
+          value:
+            '• 컨테이너 삭제 시 데이터 보존: 볼륨(Volume) · 바인드 마운트(`:ro`) · tmpfs\n' +
+            '• `docker0` 브릿지와 veth 페어, iptables NAT 포트 포워딩 (`-p 81:80`)\n' +
+            '• 사용자 정의 네트워크(User-defined bridge)와 내장 DNS 이름 해석',
+        },
+        {
+          name: '⑤ 배포와 다중 컨테이너 제어 (registry · compose)',
+          value:
+            '• Docker Hub 태그 달기(`docker tag`), 브라우저/CLI 로그인, `docker push`\n' +
+            '• 원격 노드에서 `docker run` 배포 및 웹 접속 검증, 사설 Registry 서버 구축\n' +
+            '• `docker-compose.yml` 서비스 정의와 Swarm / Kubernetes 클러스터 기초',
+        },
+      ],
+      footer: { text: '인증한 분만 열립니다 · 질문이나 보강할 내용은 #❓-질문답변 에 남겨주세요' },
+    }],
+  },
+  {
     key: 'linux-course',
     channel: '💻-리눅스',
     embeds: [{

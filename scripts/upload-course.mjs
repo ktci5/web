@@ -92,6 +92,21 @@ const COURSES = {
       { id: 'flow', name: 'IP · DNS · 포트 · 게이트웨이 · 라우팅', summary: '브라우저에 주소를 치면 일어나는 일을 순서대로' },
     ],
   },
+  docker: {
+    title: 'Docker 컨테이너 기초',
+    subtitle: '가상화 이해부터 Dockerfile 빌드, 컨테이너 운영, 배포까지',
+    order: 5,
+    chapters: [
+      { id: 'intro',      name: '가상화와 컨테이너',      from: 2,   summary: '하이퍼바이저(Type1/2) vs 컨테이너, QEMU/KVM과 cgroups/namespaces' },
+      { id: 'install',    name: '도커 구조와 설치',       from: 32,  summary: 'Client/Server 데몬 구조, 원격 데몬 접속(-H tcp), 비루트 권한' },
+      { id: 'container',  name: '컨테이너 실행과 관리',    from: 55,  summary: 'run·start·stop·exec, 오버레이 파일시스템, 호스트 격리와 디버깅' },
+      { id: 'dockerfile', name: 'Dockerfile 과 이미지 빌드', from: 63, summary: 'FROM·RUN·CMD·ENTRYPOINT 차이, 포그라운드(daemon off) 원리, 레이어 최적화' },
+      { id: 'volume',     name: '볼륨과 데이터 관리',      from: 87,  summary: 'Volume·Bind Mount·tmpfs 차이, 데이터 영속성과 컨테이너 간 공유' },
+      { id: 'registry',   name: 'Docker Hub 와 이미지 배포', from: 99, summary: 'docker login·tag·push, 사설 Registry 서버 구축과 배포 검증' },
+      { id: 'network',    name: '컨테이너 네트워크',       from: 103, summary: 'bridge·host·none 드라이버, iptables 포트포워딩과 컨테이너 통신' },
+      { id: 'compose',    name: 'Docker Compose 와 오케스트레이션', from: 108, summary: 'docker-compose.yml 다중 서비스 제어, Docker Swarm 과 K8s 기초' },
+    ],
+  },
 };
 
 /* ------------------------------------------------------------------ 실행 */
