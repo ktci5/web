@@ -128,9 +128,9 @@ const MESSAGES = [
             '• `docker-compose.yml` 선언형 IaC 다중 컨테이너 일괄 제어 및 스택 배포',
         },
         {
-          name: '⑥ 실무 치트시트 단축어(Full Name) 사전 연동',
+          name: '⑥ 실무 치트시트 명령어 용어 설명 & 뜻 풀이 사전 연동',
           value:
-            '• `lsblk`, `df`, `parted GPT`, `LVM`, `ss`, `docker ps/exec/prune` 등 66개 실무 명령어 단축어 영문 어원 & 한글 번역 해설 수록\n' +
+            '• `lsblk`, `df`, `parted GPT`, `LVM`, `ss`, `docker ps/exec/prune`, `firewall-cmd`, `semanage` 등 82개 실무 명령어의 영문 어원과 핵심 개념·용어 뜻 풀이 수록\n' +
             `• ${SITE}/study/cheatsheet`,
         },
       ],
