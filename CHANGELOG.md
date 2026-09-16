@@ -12,10 +12,10 @@ npm run updates -- --dry   # 확인만
 
 ## 2026-09-16
 
-### 도커 컨테이너 과목 개설
+### 도커 컨테이너 실무 강의 및 실습 내용 추가
 
-[도커 컨테이너](https://ktci5.kr/study/course/docker) 과목을 새로 열었습니다.
-슬라이드와 강의노트의 핵심 실습을 동작 원리와 함께 수록했습니다.
+[도커 컨테이너](https://ktci5.kr/study/course/docker) 강의 및 실습 내용을 추가했습니다.
+수업 교재와 실습 강의노트의 핵심 실습을 동작 원리와 함께 수록했습니다.
 
 - 가상화 비교 — Type 1/2 하이퍼바이저, 전가상화/반가상화 vs 리눅스 컨테이너(cgroups · namespaces)
 - 도커 구조와 권한 — C/S 데몬 구조, 일반 사용자 소켓 권한(`usermod -aG docker`, `newgrp`), 원격 데몬 바인딩(`-H tcp://0.0.0.0:2375`)과 `rdocker` 별칭

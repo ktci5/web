@@ -454,11 +454,11 @@ async function studyIndexPage(env) {
       <div class="update-cards">
         <div class="u-card featured">
           <div class="u-head">
-            <span class="u-badge new">신규 과목</span>
+            <span class="u-badge new">내용 추가</span>
             <span class="u-date">2026-09-16</span>
           </div>
-          <div class="u-title"><a href="/study/course/docker">도커 컨테이너 과목 개설</a></div>
-          <p class="u-desc">가상화 비교(cgroups/namespaces), 데몬 C/S 구조 및 일반 사용자 소켓 권한, Dockerfile <code>daemon off;</code> 포그라운드 실행 원리, 볼륨 영속성 마운트, Docker Hub & 사설 Registry 배포, Docker Compose 다중 컨테이너 제어까지 핵심 실습 전 과정 수록.</p>
+          <div class="u-title"><a href="/study/course/docker">도커 컨테이너 실무 강의 및 실습 정리 추가</a></div>
+          <p class="u-desc">가상화 아키텍처 비교부터 데몬 소켓 권한, Dockerfile 포그라운드(daemon off) 원리, 볼륨 영속성 마운트, Docker Hub & 사설 Registry 배포, Docker Compose 제어까지 실무 강의 및 실습 내용 수록.</p>
         </div>
         <div class="u-card">
           <div class="u-head">
