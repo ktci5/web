@@ -2970,12 +2970,14 @@ const MEMBER_LINKS = [
 ];
 
 function memberLinks(env, primary = 0) {
-  return MEMBER_LINKS.map(([href, label], i) =>
-    `<a class="btn${i === primary ? '' : ' btn-ghost'}" href="${href}">${label}</a>`
-  ).join('') +
-  (env.DISCORD_INVITE_URL
-    ? `<a class="btn btn-ghost" href="${escapeHtml(env.DISCORD_INVITE_URL)}">💬 디스코드로 이동</a>`
-    : '');
+  const zepBtn = '<a class="btn" href="https://zep.us/@ktcloudinfra05" target="_blank" rel="noopener" style="background:linear-gradient(135deg,#059669 0%,#10b981 100%);color:#fff;font-weight:700;">🏫 ZEP 강의실 입장 바로가기</a>';
+  return zepBtn +
+    MEMBER_LINKS.map(([href, label], i) =>
+      `<a class="btn${i === primary ? '' : ' btn-ghost'}" href="${href}">${label}</a>`
+    ).join('') +
+    (env.DISCORD_INVITE_URL
+      ? `<a class="btn btn-ghost" href="${escapeHtml(env.DISCORD_INVITE_URL)}">💬 디스코드로 이동</a>`
+      : '');
 }
 
 // 인증한 사람에게는 인증 버튼 대신 갈 곳을 보여줍니다.
