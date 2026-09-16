@@ -31,6 +31,7 @@ const PLAN = [
       { name: '🧭-인프라-개요', topic: '인프라와 Cloud 개념, 가상화. Track A 의 출발점입니다.' },
       { name: '🌐-네트워크', topic: 'TCP/IP, 라우팅, 방화벽 등 네트워크 주제를 다룹니다.', voice: true },
       { name: '☁️-클라우드', topic: 'KT클라우드와 가상화, IaC 관련 질문과 자료를 나눕니다.', voice: true },
+      { name: '🐳-도커-컨테이너', topic: '도커 컨테이너 실무와 아키텍처. 실습하다 막힌 곳을 함께 풉니다.', voice: true },
       { name: '🐳-컨테이너-쿠버네티스', topic: '도커와 쿠버네티스. 실습하다 막힌 곳을 함께 풉니다.', voice: true },
       { name: '🗄️-데이터베이스', topic: 'DB 설치·튜닝·백업 등 데이터베이스 주제를 다룹니다.', voice: true },
     ],

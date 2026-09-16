@@ -82,52 +82,66 @@ const MESSAGES = [
   },
   {
     key: 'docker-course',
-    channel: '🐳-컨테이너-쿠버네티스',
+    channel: '🐳-도커-컨테이너',
     embeds: [{
-      title: '🐳 Docker 컨테이너 기초 강의 정리 (총 8개 장) 공개',
-      color: BLUE,
+      title: '🐳 도커 컨테이너 실무 강의 및 실습 정리',
+      color: 0x0284c7,
       description:
-        '수업에서 다룬 도커 기초와 실습 내용을 **웹에서 읽을 수 있게 심층 정리**했습니다.\n' +
-        '슬라이드와 강의노트의 핵심 실습(원격 데몬 -H 바인딩, 일반 사용자 소켓 권한, Dockerfile 포그라운드 daemon off, Docker Hub 이미지 배포)을 상세한 동작 원리와 함께 수록했습니다.\n\n' +
-        `${SITE}/study/course/docker`,
+        '수업에서 다룬 도커 컨테이너 실무와 실습 내용을 **웹에서 바로 학습할 수 있도록 정리**하여 공개했습니다.\n' +
+        '슬라이드와 실습 강의노트의 핵심 실습(데몬 구조, 일반 사용자 소켓 권한, Dockerfile 포그라운드 daemon off, 볼륨 영속성, 이미지 배포, Compose)을 동작 원리와 함께 수록했습니다.\n\n' +
+        `🔗 **강의 정리 바로가기**: ${SITE}/study/course/docker\n` +
+        `⚡ **실무 치트시트 (단축어 사전)**: ${SITE}/study/cheatsheet`,
       fields: [
         {
-          name: '① 가상화와 도커 아키텍처 (intro · install)',
+          name: '① 가상화 아키텍처 & 도커 엔진 설치',
           value:
-            '• 하이퍼바이저(Type 1/2) vs 컨테이너 격리(cgroups · namespaces)\n' +
-            '• Client-Server 데몬 구조와 소켓 권한 (`usermod -aG docker`, `newgrp`)\n' +
+            '• Type 1/2 하이퍼바이저 vs 컨테이너 커널 격리 (`cgroups` · `namespaces`)\n' +
+            '• Client-Server 데몬 구조와 일반 사용자 소켓 권한 (`usermod -aG docker`, `newgrp`)\n' +
             '• 원격 데몬 TCP 바인딩 (`-H tcp://0.0.0.0:2375`)과 `rdocker` 별칭 설정',
         },
         {
-          name: '② 컨테이너 생명주기와 격리 (container)',
+          name: '② 컨테이너 생명주기와 격리 환경',
           value:
-            '• `run` · `start` · `stop` · `exec` 라이프사이클 흐름\n' +
-            '• 격리 환경 검증: 호스트명, 172.17.0.x IP, Overlay2 마운트, PID 1 분리\n' +
-            '• `docker attach` vs `docker exec` (운영 시 왜 exec 를 써야 하는가)',
+            '• `run` · `start` · `stop` · `exec` 라이프사이클 및 네이밍 충돌 방지\n' +
+            '• 격리 환경 검증: 호스트명, 172.17.0.x 사설 IP, Overlay2 마운트, PID 1 분리\n' +
+            '• `docker attach` vs `docker exec` (실무 운영 진단 시 왜 exec를 써야 하는가)',
         },
         {
-          name: '③ Dockerfile 과 이미지 빌드 (dockerfile)',
+          name: '③ Dockerfile 작성 & 포그라운드 daemon off 원리',
           value:
-            '• **왜 `daemon off;` 가 필수인가**: 백그라운드 데몬 실행 시 PID 1 종료로 컨테이너가 꺼지는 원리\n' +
+            '• **왜 `daemon off;` 가 필수인가**: 백그라운드 데몬 실행 시 PID 1 종료로 컨테이너가 꺼지는 원인 분석\n' +
             '• `FROM` · `RUN` · `COPY` · `CMD` vs `ENTRYPOINT` 핵심 차이\n' +
-            '• 이미지 빌드(`docker build -t`)와 레이어 캐시 최적화 기법',
+            '• 이미지 빌드(`docker build -t`), 레이어 캐시 최적화, 비루트(`USER`) 보안 계정',
         },
         {
-          name: '④ 데이터 영속성과 네트워크 (volume · network)',
+          name: '④ 데이터 영속성과 네트워크',
           value:
-            '• 컨테이너 삭제 시 데이터 보존: 볼륨(Volume) · 바인드 마운트(`:ro`) · tmpfs\n' +
-            '• `docker0` 브릿지와 veth 페어, iptables NAT 포트 포워딩 (`-p 81:80`)\n' +
-            '• 사용자 정의 네트워크(User-defined bridge)와 내장 DNS 이름 해석',
+            '• 컨테이너 삭제 시 데이터 보존: 바인드 마운트(`:ro`), 네임드 볼륨, 익명 볼륨, tmpfs\n' +
+            '• NFS 분산 스토리지 연동 노드 간 볼륨 동기화 및 `docker save/load` 이미지 이전\n' +
+            '• `docker0` 브릿지, veth 페어, iptables NAT 포트 포워딩 (`-p 81:80`), 내장 DNS 이름 해석',
         },
         {
-          name: '⑤ 배포와 다중 컨테이너 제어 (registry · compose)',
+          name: '⑤ 이미지 배포 & Docker Compose 오케스트레이션',
           value:
-            '• Docker Hub 태그 달기(`docker tag`), 브라우저/CLI 로그인, `docker push`\n' +
-            '• 원격 노드에서 `docker run` 배포 및 웹 접속 검증, 사설 Registry 서버 구축\n' +
-            '• `docker-compose.yml` 서비스 정의와 Swarm / Kubernetes 클러스터 기초',
+            '• Docker Hub 태그 달기(`docker tag`), 로그인, `docker push` 및 동료 노드 교차 배포\n' +
+            '• 사설 Registry 컨테이너 구축, REST API 카탈로그 조회(`_catalog`), `insecure-registries` 연동\n' +
+            '• `docker-compose.yml` 선언형 IaC 다중 컨테이너 일괄 제어 및 스택 배포',
+        },
+        {
+          name: '⑥ 실무 치트시트 단축어(Full Name) 사전 연동',
+          value:
+            '• `lsblk`, `df`, `parted GPT`, `LVM`, `ss`, `docker ps/exec/prune` 등 66개 실무 명령어 단축어 영문 어원 & 한글 번역 해설 수록\n' +
+            `• ${SITE}/study/cheatsheet`,
         },
       ],
-      footer: { text: '인증한 분만 열립니다 · 질문이나 보강할 내용은 #❓-질문답변 에 남겨주세요' },
+      footer: { text: '인증한 분만 열립니다 · 질문이나 실습 중 막힌 부분은 이 채널에 남겨주세요' },
+    }],
+    components: [{
+      type: 1,
+      components: [
+        { type: 2, style: 5, label: '도커 강의 정리 보기', url: `${SITE}/study/course/docker`, emoji: { name: '🐳' } },
+        { type: 2, style: 5, label: '실무 치트시트 바로가기', url: `${SITE}/study/cheatsheet`, emoji: { name: '⚡' } },
+      ],
     }],
   },
   {
