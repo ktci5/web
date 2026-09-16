@@ -47,6 +47,7 @@ import { LINUX_GUIDE_TITLE, LINUX_GUIDE_CSS, renderLinuxGuide } from './study-li
 import { INFRA_TITLE, INFRA_CSS, renderInfraGuide } from './study-infra.js';
 import { renderProjectPage } from './projects.js';
 import { loadCourseIndex, loadCourse, loadNotes, loadAll, linkResolver, markdown, renderCourseList, renderCourseIndex, renderCourseChapter, renderSearch, COURSE_CSS } from './course.js';
+import { PORTAL_HTML } from './portal_html.js';
 
 const DISCORD_API = 'https://discord.com/api/v10';
 const USER_AGENT = 'DiscordBot (https://ktci5.kr, 1.0)';
@@ -122,6 +123,19 @@ export default {
 
     switch (path) {
       case '/':
+      case '/study':
+      case '/hub':
+      case '/portal':
+      case '/cli':
+      case '/docker':
+      case '/disk':
+        return new Response(PORTAL_HTML, {
+          headers: {
+            'content-type': 'text/html; charset=UTF-8',
+            'cache-control': 'public, max-age=60',
+          },
+        });
+      case '/auth':
         return landingPage(env, request);
       case '/discord':
         return hubPage(env);
@@ -152,7 +166,7 @@ export default {
       case '/updates':
       case '/study/updates':
         return guarded(request, env, updatesPage);
-      case '/study':
+      case '/study/index':
         return guarded(request, env, studyIndexPage);
       case '/study/calendar':
         return guarded(request, env, studyCalendarPage);
