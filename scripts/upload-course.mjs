@@ -93,7 +93,7 @@ const COURSES = {
     ],
   },
   docker: {
-    title: 'Docker 컨테이너 기초',
+    title: '도커 컨테이너',
     subtitle: '가상화 이해부터 Dockerfile 빌드, 컨테이너 운영, 배포까지',
     order: 5,
     chapters: [

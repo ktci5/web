@@ -126,7 +126,7 @@ export default {
         return landingPage(env, request);
       case '/study':
       case '/study/index':
-        return guarded(request, env, studyIndexPage);
+        return studyIndexPage(env);
       case '/study/cheatsheet':
       case '/study/hub':
       case '/study/cli':
@@ -391,8 +391,8 @@ const COURSES_INFO = [
   {
     id: 'docker',
     icon: '🐳',
-    title: 'Docker 컨테이너 기초',
-    badge: '8개 장 · NEW',
+    title: '도커 컨테이너',
+    badge: 'NEW',
     isNew: true,
     desc: '가상화 vs 컨테이너, 데몬 C/S 소켓 권한, Dockerfile 포그라운드(daemon off), 볼륨 영속성, 이미지 배포, Compose',
   },
@@ -400,28 +400,28 @@ const COURSES_INFO = [
     id: 'network',
     icon: '🌐',
     title: '네트워크 기초',
-    badge: '1개 장',
+    badge: '기초',
     desc: '브라우저 접속 6단계 패킷 여정, IP·DNS·포트·게이트웨이·라우팅, ARP/NAT, ss/ping 진단 및 refused vs timed out 분석',
   },
   {
     id: 'admin',
     icon: '🛡️',
     title: 'Linux 시스템 관리자',
-    badge: '16개 장',
+    badge: '실무',
     desc: '디스크 파티션(parted GPT), LVM 3계층 풀, RAID 장애 복구, 파일 권한(chmod/ACL), 프로세스/서비스 제어',
   },
   {
     id: 'bash',
     icon: '📜',
     title: 'Shell Script & Bash 프로그래밍',
-    badge: '12개 장',
+    badge: '자동화',
     desc: '쉘 변수, 조건문·반복문, 함수, 입출력 리다이렉션, 정규표현식(sed/awk), 시스템 자동화 스크립트 작성법',
   },
   {
     id: 'linux',
     icon: '🐧',
     title: 'Linux 기본 명령어',
-    badge: '9개 장',
+    badge: '입문',
     desc: '리눅스 디렉터리 구조, 필수 CLI 명령어, vi 에디터, 파일 및 디렉터리 제어, 사용자 및 그룹 권한 관리',
   },
 ];
@@ -457,7 +457,7 @@ async function studyIndexPage(env) {
             <span class="u-badge new">신규 과목</span>
             <span class="u-date">2026-09-16</span>
           </div>
-          <div class="u-title"><a href="/study/course/docker">Docker 컨테이너 기초 과목 개설 (8개 장 전체 오픈)</a></div>
+          <div class="u-title"><a href="/study/course/docker">도커 컨테이너 과목 개설</a></div>
           <p class="u-desc">가상화 비교(cgroups/namespaces), 데몬 C/S 구조 및 일반 사용자 소켓 권한, Dockerfile <code>daemon off;</code> 포그라운드 실행 원리, 볼륨 영속성 마운트, Docker Hub & 사설 Registry 배포, Docker Compose 다중 컨테이너 제어까지 핵심 실습 전 과정 수록.</p>
         </div>
         <div class="u-card">
@@ -482,7 +482,7 @@ async function studyIndexPage(env) {
     <!-- 2. 과목별 강의 정리 -->
     <section class="study-sec">
       <div class="sec-hd">
-        <h2>📘 과목별 강의 정리 (총 5개 과목 · 46개 장)</h2>
+        <h2>📘 과목별 강의 정리</h2>
         <a href="/study/course" class="more-link">과목 전체 목차 보기 →</a>
       </div>
       <form class="sf" method="get" action="/study/search">
@@ -540,7 +540,7 @@ async function studyIndexPage(env) {
         <div class="how-card">
           <div class="how-num">1</div>
           <h3>강의 정리 복습 & 키워드 검색</h3>
-          <p>정규 수업 후 복습할 때 <strong>과목별 강의 정리</strong>를 순서대로 학습하세요. 기억이 나지 않는 실습 명령어나 에러는 상단 검색창(<code>/study/search</code>)에 입력하면 46개 장 전체에서 해당 구문과 원리를 찾아줍니다.</p>
+          <p>정규 수업 후 복습할 때 <strong>과목별 강의 정리</strong>를 순서대로 학습하세요. 기억이 나지 않는 실습 명령어나 에러는 상단 검색창(<code>/study/search</code>)에 입력하면 전체 강의 정리에서 해당 구문과 원리를 찾아줍니다.</p>
         </div>
         <div class="how-card">
           <div class="how-num">2</div>
@@ -2965,7 +2965,6 @@ function hubPage(env) {
 // 인증을 마친 사람에게 보여줄 곳들. 랜딩과 완료 화면이 함께 씁니다.
 const MEMBER_LINKS = [
   ['/study', '📖 스터디 Hub 바로가기', '과목별 강의 정리, 최근 업데이트 소식, 활용법'],
-  ['/study/course', '📘 강의 정리 (5개 과목)', 'Docker, 네트워크, 리눅스 관리자, Shell Script'],
   ['/study/calendar', '🗓️ 스터디 캘린더', '132일 훈련 일정 및 구글 캘린더 연동'],
   ['/guide', '📚 채널 사용 안내', '디스코드 채널 가이드 및 드라이브 연동'],
 ];
@@ -2997,15 +2996,16 @@ async function landingPage(env, request) {
 
 function unverifiedLanding(env) {
   return html(renderPage({
-    title: 'KT클라우드 5기 인증',
-    heading: '🎫 KT클라우드 인프라교육 5기 인증',
+    title: 'KT클라우드 5기 스터디',
+    heading: '🎫 KT클라우드 인프라교육 5기',
     body:
-      '<p>두 단계면 끝납니다.<br>' +
-      '이미 서버에 들어와 계시다면 아래 인증만 눌러주세요.</p>' +
-      '<a class="btn btn-ghost" href="/discord/join">1. 스터디 서버 참여하기</a>' +
-      '<a class="btn" href="/discord/verify">2. 디스코드로 인증하기</a>' +
-      `<p class="hint">인증을 마치면 <strong>${ROLE_NAME}</strong> 역할이 부여되어 모든 채널이 열리고,<br>` +
-      '스터디 자료와 채널 안내를 볼 수 있습니다.</p>',
+      '<p>KT Cloud 5기 스터디 종합 포털입니다.<br>' +
+      '강의 정리와 최근 소식, 스터디 활용법은 스터디 Hub에서 바로 확인하실 수 있습니다.</p>' +
+      '<a class="btn" href="/study">📖 스터디 Hub 바로가기</a>' +
+      '<a class="btn btn-ghost" href="/discord/verify">디스코드로 5기 인증하기</a>' +
+      '<a class="btn btn-ghost" href="/discord/join">스터디 서버 참여하기</a>' +
+      `<p class="hint">디스코드 인증을 마치면 <strong>${ROLE_NAME}</strong> 역할이 부여되어<br>` +
+      '전용 채널과 실시간 캘린더를 모두 이용하실 수 있습니다.</p>',
   }));
 }
 

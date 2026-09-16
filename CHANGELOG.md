@@ -12,9 +12,9 @@ npm run updates -- --dry   # 확인만
 
 ## 2026-09-16
 
-### Docker 컨테이너 기초 과목 개설 (8개 장)
+### 도커 컨테이너 과목 개설
 
-[Docker 컨테이너 기초](https://ktci5.kr/study/course/docker) 과목을 새로 열고 8개 장 전체를 공개했습니다.
+[도커 컨테이너](https://ktci5.kr/study/course/docker) 과목을 새로 열었습니다.
 슬라이드와 강의노트의 핵심 실습을 동작 원리와 함께 수록했습니다.
 
 - 가상화 비교 — Type 1/2 하이퍼바이저, 전가상화/반가상화 vs 리눅스 컨테이너(cgroups · namespaces)
