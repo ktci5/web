@@ -123,10 +123,18 @@ export default {
 
     switch (path) {
       case '/':
+        return landingPage(env, request);
       case '/study':
+      case '/study/index':
+        return guarded(request, env, studyIndexPage);
+      case '/study/cheatsheet':
+      case '/study/hub':
+      case '/study/cli':
       case '/hub':
       case '/portal':
       case '/cli':
+      case '/cheat':
+      case '/cheatsheet':
       case '/docker':
       case '/disk':
         return new Response(PORTAL_HTML, {
@@ -166,8 +174,6 @@ export default {
       case '/updates':
       case '/study/updates':
         return guarded(request, env, updatesPage);
-      case '/study/index':
-        return guarded(request, env, studyIndexPage);
       case '/study/calendar':
         return guarded(request, env, studyCalendarPage);
       case '/api/calendar/events':
@@ -328,69 +334,243 @@ function guardedGuide(request, env) {
   return guarded(request, env, guidePage);
 }
 
-/* -------------------------------------------------------------- 스터디 자료 */
+/* -------------------------------------------------------------- 스터디 자료 (스터디 Hub) */
 
-const STUDY_MATERIALS = [
+const STUDY_CSS = COURSE_CSS + `
+  .study-hero { margin: 0 0 24px; padding: 18px 22px; background: linear-gradient(135deg, rgba(35,40,56,0.9) 0%, rgba(26,29,36,0.95) 100%); border: 1px solid #2a3143; border-radius: 12px; }
+  .study-hero h2 { margin: 0 0 6px; font-size: 17px; color: #f8fafc; font-weight: 700; }
+  .study-hero p { margin: 0; font-size: 13.5px; line-height: 1.6; color: #94a3b8; }
+  
+  .study-sec { margin: 28px 0 34px; }
+  .sec-hd { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 12px; flex-wrap: wrap; gap: 8px; border-bottom: 1px solid #2a3143; padding-bottom: 8px; }
+  .sec-hd h2 { margin: 0; font-size: 16px; color: #f1f5f9; font-weight: 700; }
+  .more-link { font-size: 13px; color: #818cf8; text-decoration: none; font-weight: 600; display: inline-flex; align-items: center; gap: 4px; }
+  .more-link:hover { text-decoration: underline; color: #a5b4fc; }
+
+  .update-cards { display: grid; gap: 10px; }
+  .u-card { background: #232838; border: 1px solid #2a3143; border-radius: 10px; padding: 14px 16px; transition: border-color 0.15s ease; }
+  .u-card:hover { border-color: #5865f2; }
+  .u-card.featured { border-color: rgba(99, 102, 241, 0.4); background: linear-gradient(180deg, rgba(99,102,241,0.08) 0%, rgba(35,40,56,1) 100%); }
+  .u-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  .u-badge { font-size: 11px; padding: 2px 7px; border-radius: 4px; background: #2d3446; color: #94a3b8; font-weight: 600; }
+  .u-badge.new { background: #1e3a8a; color: #93c5fd; border: 1px solid #3b82f6; }
+  .u-date { font-size: 12px; color: #64748b; }
+  .u-title { font-size: 15px; font-weight: 700; margin-bottom: 5px; }
+  .u-title a { color: #f8fafc; text-decoration: none; }
+  .u-title a:hover { color: #818cf8; text-decoration: underline; }
+  .u-desc { font-size: 13px; color: #94a3b8; line-height: 1.55; margin: 0; }
+  .u-desc code { font-size: 12px; color: #cbd5e1; }
+
+  .course-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; margin-top: 14px; }
+  .c-card { display: flex; flex-direction: column; background: #232838; border: 1px solid #2a3143; border-radius: 10px; padding: 16px; text-decoration: none; transition: all 0.15s ease; }
+  .c-card:hover { border-color: #6366f1; transform: translateY(-2px); background: #272d3f; }
+  .c-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+  .c-icon { font-size: 24px; }
+  .c-badge { font-size: 11px; padding: 2px 6px; border-radius: 4px; background: #1e293b; color: #94a3b8; border: 1px solid #334155; }
+  .c-badge.new { background: rgba(59, 130, 246, 0.2); color: #60a5fa; border-color: #3b82f6; }
+  .c-title { font-size: 15px; font-weight: 700; color: #f8fafc; margin-bottom: 6px; }
+  .c-desc { font-size: 12.5px; color: #94a3b8; line-height: 1.5; flex-grow: 1; margin: 0; }
+
+  .tool-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+  .t-card { display: flex; gap: 14px; background: #232838; border: 1px solid #2a3143; border-radius: 10px; padding: 14px 16px; text-decoration: none; transition: all 0.15s ease; align-items: flex-start; }
+  .t-card:hover { border-color: #6366f1; transform: translateY(-2px); background: #272d3f; }
+  .t-icon { font-size: 24px; flex-shrink: 0; padding-top: 2px; }
+  .t-body { flex-grow: 1; }
+  .t-title { font-size: 14.5px; font-weight: 700; color: #f8fafc; margin-bottom: 4px; display: flex; align-items: center; gap: 6px; }
+  .t-desc { font-size: 12.5px; color: #94a3b8; line-height: 1.5; margin: 0; }
+
+  .how-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+  .how-card { background: #232838; border: 1px solid #2a3143; border-radius: 10px; padding: 16px; display: flex; flex-direction: column; }
+  .how-num { width: 26px; height: 26px; border-radius: 50%; background: #4f46e5; color: #fff; font-size: 13px; font-weight: 700; display: flex; align-items: center; justify-content: center; margin-bottom: 10px; flex-shrink: 0; }
+  .how-card h3 { font-size: 14px; font-weight: 700; color: #f1f5f9; margin: 0 0 6px; }
+  .how-card p { font-size: 12.5px; color: #94a3b8; line-height: 1.6; margin: 0; }
+  .how-card code { font-size: 11.5px; color: #e2e8f0; }
+`;
+
+const COURSES_INFO = [
   {
-    href: '/updates',
-    name: '업데이트 내역',
-    desc: '무엇이 언제 새로 올라왔는지 날짜순으로 봅니다. 오랜만에 들어왔다면 여기부터.',
-    tag: '소식',
+    id: 'docker',
+    icon: '🐳',
+    title: 'Docker 컨테이너 기초',
+    badge: '8개 장 · NEW',
+    isNew: true,
+    desc: '가상화 vs 컨테이너, 데몬 C/S 소켓 권한, Dockerfile 포그라운드(daemon off), 볼륨 영속성, 이미지 배포, Compose',
   },
   {
-    href: '/study/course',
-    name: '강의 정리',
-    desc: '과정에서 다루는 내용을 과목별·장별로 정리했습니다. 처음이라면 여기부터.',
-    tag: '기초',
+    id: 'network',
+    icon: '🌐',
+    title: '네트워크 기초',
+    badge: '1개 장',
+    desc: '브라우저 접속 6단계 패킷 여정, IP·DNS·포트·게이트웨이·라우팅, ARP/NAT, ss/ping 진단 및 refused vs timed out 분석',
   },
   {
-    href: '/study/calendar',
-    name: '스터디 & 미팅 캘린더',
-    desc: '주간 및 일간 스터디 일정, 미팅 공지 및 구글 캘린더 연동 현황을 시각적으로 확인합니다 (인증 필요).',
-    tag: '일정',
+    id: 'admin',
+    icon: '🛡️',
+    title: 'Linux 시스템 관리자',
+    badge: '16개 장',
+    desc: '디스크 파티션(parted GPT), LVM 3계층 풀, RAID 장애 복구, 파일 권한(chmod/ACL), 프로세스/서비스 제어',
   },
   {
-    href: '/study/linux',
-    name: '리눅스 CLI 심층 가이드',
-    desc: '명령을 익힌 다음 단계 — 출력을 읽는 법과 증상별 진단 순서.',
-    tag: '심화',
+    id: 'bash',
+    icon: '📜',
+    title: 'Shell Script & Bash 프로그래밍',
+    badge: '12개 장',
+    desc: '쉘 변수, 조건문·반복문, 함수, 입출력 리다이렉션, 정규표현식(sed/awk), 시스템 자동화 스크립트 작성법',
   },
   {
-    href: '/study/infra',
-    name: '이 서버는 어떻게 돌아가나',
-    desc: '도메인·Cloudflare·깃허브 연결을 L1 기초부터 L4 마스터까지. 지금 쓰는 시스템이 그대로 교재입니다.',
-    tag: '인프라',
-  },
-  {
-    href: 'https://github.com/ktci5/study',
-    name: '명령어 치트 시트 · 마인드맵',
-    desc: 'ktci5/study 저장소. 인터랙티브 허브(HTML)와 정리 문서가 있습니다.',
-    tag: '참조',
-    external: true,
+    id: 'linux',
+    icon: '🐧',
+    title: 'Linux 기본 명령어',
+    badge: '9개 장',
+    desc: '리눅스 디렉터리 구조, 필수 CLI 명령어, vi 에디터, 파일 및 디렉터리 제어, 사용자 및 그룹 권한 관리',
   },
 ];
 
-function studyIndexPage(env) {
-  const items = STUDY_MATERIALS.map((m) =>
-    `<div class="ch"><div class="ch-name">` +
-    `<a href="${escapeHtml(m.href)}"${m.external ? ' target="_blank" rel="noopener"' : ''}>${escapeHtml(m.name)}</a>` +
-    ` <span class="tag">${escapeHtml(m.tag)}</span></div>` +
-    `<div class="ch-desc"><p>${escapeHtml(m.desc)}</p></div></div>`
-  ).join('');
+async function studyIndexPage(env) {
+  const courseCards = COURSES_INFO.map((c) => `
+    <a class="c-card" href="/study/course/${c.id}">
+      <div class="c-top">
+        <span class="c-icon">${c.icon}</span>
+        <span class="c-badge${c.isNew ? ' new' : ''}">${c.badge}</span>
+      </div>
+      <div class="c-title">${escapeHtml(c.title)}</div>
+      <p class="c-desc">${escapeHtml(c.desc)}</p>
+    </a>
+  `).join('');
 
-  const body =
-    '<p class="lead">과정 내용을 정리한 자료를 모아둔 곳입니다. ' +
-    '처음이시라면 <strong>강의 정리</strong>부터 보시면 됩니다.<br>' +
-    '파일이 오가는 드라이브 폴더는 <strong>#📚-자료공유</strong> 채널에 있습니다.</p>' +
-    `<section><h2>리눅스</h2>${items}</section>` +
-    `<section><h2>자료 올리기</h2>
-      <ul class="how">
-        <li>채널마다 같은 이름의 드라이브 폴더가 있습니다. 해당 채널에서 <code>/자료함</code>.</li>
-        <li>파일 이름에 <code>#태그</code> 를 넣어두면 <code>/자료검색</code> 으로 바로 찾힙니다.</li>
-        <li>문서로 정리해 공유하고 싶은 것이 있으면 <strong>#📚-자료공유</strong> 에 알려주세요.</li>
-      </ul></section>`;
+  const body = `
+    <div class="study-hero">
+      <h2>👋 KT Cloud 5기 수강생을 위한 스터디 포털</h2>
+      <p>수업에서 다룬 핵심 이론과 명령어 실습, 스터디 일정, 디스코드/드라이브 연동 도구를 일목요연하게 모아둔 공간입니다.<br>
+      오랜만에 오셨다면 <strong>최근 업데이트 소식</strong>을, 복습이 필요하시면 <strong>과목별 강의 정리</strong>를 확인하세요.</p>
+    </div>
 
-  return html(renderDoc({ title: '스터디 자료', heading: '📖 스터디 자료', html: body }));
+    <!-- 1. 최근 업데이트 소식 -->
+    <section class="study-sec">
+      <div class="sec-hd">
+        <h2>📢 최근 업데이트 소식</h2>
+        <a href="/updates" class="more-link">전체 내역 보기 →</a>
+      </div>
+      <div class="update-cards">
+        <div class="u-card featured">
+          <div class="u-head">
+            <span class="u-badge new">신규 과목</span>
+            <span class="u-date">2026-09-16</span>
+          </div>
+          <div class="u-title"><a href="/study/course/docker">Docker 컨테이너 기초 과목 개설 (8개 장 전체 오픈)</a></div>
+          <p class="u-desc">가상화 비교(cgroups/namespaces), 데몬 C/S 구조 및 일반 사용자 소켓 권한, Dockerfile <code>daemon off;</code> 포그라운드 실행 원리, 볼륨 영속성 마운트, Docker Hub & 사설 Registry 배포, Docker Compose 다중 컨테이너 제어까지 핵심 실습 전 과정 수록.</p>
+        </div>
+        <div class="u-card">
+          <div class="u-head">
+            <span class="u-badge">과목 추가</span>
+            <span class="u-date">2026-09-10</span>
+          </div>
+          <div class="u-title"><a href="/study/course/network">네트워크 기초 — IP · DNS · 포트 · 게이트웨이 · 라우팅</a></div>
+          <p class="u-desc">브라우저에 www.google.com 입력 시 일어나는 6단계 패킷 여정, ARP와 MAC, 공유기 NAT, 최장 접두어 일치 라우팅, ss/ping 진단 및 refused vs timed out 에러 분석 표 수록.</p>
+        </div>
+        <div class="u-card">
+          <div class="u-head">
+            <span class="u-badge">일정 & 실습</span>
+            <span class="u-date">2026-09-08</span>
+          </div>
+          <div class="u-title"><a href="/study/calendar">훈련 132일 전 일정 등록 & Linux 관리자(디스크/LVM/RAID) 실습 보강</a></div>
+          <p class="u-desc">개강부터 수료식까지 132일 훈련 일정 및 단위기간 1~5구간 구글 캘린더 실시간 연동, parted GPT, LVM 스냅샷, RAID 장애 복구 실습 보강.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- 2. 과목별 강의 정리 -->
+    <section class="study-sec">
+      <div class="sec-hd">
+        <h2>📘 과목별 강의 정리 (총 5개 과목 · 46개 장)</h2>
+        <a href="/study/course" class="more-link">과목 전체 목차 보기 →</a>
+      </div>
+      <form class="sf" method="get" action="/study/search">
+        <input name="q" placeholder="모든 과목에서 찾기 (예: docker, LVM, 포트, DNS, swap, awk)">
+        <button type="submit">검색</button>
+      </form>
+      <div class="course-grid">
+        ${courseCards}
+      </div>
+    </section>
+
+    <!-- 3. 스터디 도구 & 심층 가이드 -->
+    <section class="study-sec">
+      <div class="sec-hd">
+        <h2>🛠️ 스터디 도구 & 심층 가이드</h2>
+      </div>
+      <div class="tool-grid">
+        <a class="t-card" href="/study/calendar">
+          <div class="t-icon">🗓️</div>
+          <div class="t-body">
+            <div class="t-title">스터디 & 미팅 캘린더 <span class="tag">일정</span></div>
+            <p class="t-desc">132일 훈련 시간표, 단위기간별 회차, 프로젝트·평가일, 구글 캘린더 실시간 연동 현황을 시각적으로 확인합니다.</p>
+          </div>
+        </a>
+        <a class="t-card" href="/study/cheatsheet">
+          <div class="t-icon">⚡</div>
+          <div class="t-body">
+            <div class="t-title">실무 CLI & 명령어 포털 <span class="tag">치트시트</span></div>
+            <p class="t-desc">66개 핵심 실무 명령어 검색, Docker · 디스크(LVM/RAID) · 네트워크 진단 대화형 치트 시트와 시나리오.</p>
+          </div>
+        </a>
+        <a class="t-card" href="/study/linux">
+          <div class="t-icon">🐧</div>
+          <div class="t-body">
+            <div class="t-title">리눅스 CLI 심층 가이드 <span class="tag">심화</span></div>
+            <p class="t-desc">명령을 익힌 다음 단계 — 단순 암기가 아닌 명령어 출력을 읽는 법과 현업 엔지니어의 증상별 진단 순서.</p>
+          </div>
+        </a>
+        <a class="t-card" href="/study/infra">
+          <div class="t-icon">🏗️</div>
+          <div class="t-body">
+            <div class="t-title">이 서버는 어떻게 돌아가나 <span class="tag">인프라</span></div>
+            <p class="t-desc">도메인·Cloudflare Worker·KV·디스코드 봇 연결 구조. 지금 사용하는 스터디 서비스 자체가 그대로 교재입니다.</p>
+          </div>
+        </a>
+      </div>
+    </section>
+
+    <!-- 4. 어떻게 사용하는지 (활용법) -->
+    <section class="study-sec">
+      <div class="sec-hd">
+        <h2>💡 어떻게 사용하는지 (스터디 자료 활용법)</h2>
+      </div>
+      <div class="how-grid">
+        <div class="how-card">
+          <div class="how-num">1</div>
+          <h3>강의 정리 복습 & 키워드 검색</h3>
+          <p>정규 수업 후 복습할 때 <strong>과목별 강의 정리</strong>를 순서대로 학습하세요. 기억이 나지 않는 실습 명령어나 에러는 상단 검색창(<code>/study/search</code>)에 입력하면 46개 장 전체에서 해당 구문과 원리를 찾아줍니다.</p>
+        </div>
+        <div class="how-card">
+          <div class="how-num">2</div>
+          <h3>구글 드라이브 자료함 연동 (<code>/자료함</code>)</h3>
+          <p>디스코드의 각 주제별 채널마다 전용 구글 드라이브 폴더가 연결되어 있습니다. 채널 채팅창에서 <code>/자료함</code> 명령어를 입력하면 해당 과목의 공유 드라이브 링크가 바로 표시됩니다.</p>
+        </div>
+        <div class="how-card">
+          <div class="how-num">3</div>
+          <h3>디스코드 일정 & 자료 검색 명령어</h3>
+          <p>
+            • <code>/오늘일정</code>, <code>/주간일정</code>: 오늘의 수업 진도 및 스터디 일정을 디스코드에서 바로 확인<br>
+            • <code>/일정등록</code>: 팀 스터디나 회의 일정을 구글 캘린더에 바로 등록<br>
+            • <code>/자료검색</code>: 드라이브에 등록된 학습 교재나 공유 문서를 키워드로 검색
+          </p>
+        </div>
+        <div class="how-card">
+          <div class="how-num">4</div>
+          <h3>질문 & 자료 공유 채널 안내</h3>
+          <p>실습 중 막히거나 에러가 발생하면 <strong>#❓-질문답변</strong> 또는 각 과목 채널(<code>#💻-리눅스</code>, <code>#🌐-네트워크</code>, <code>#🐳-컨테이너-쿠버네티스</code>)에 질문해주세요. 정리한 문서나 팁은 <strong>#📚-자료공유</strong>에 올려주시면 사이트에 반영됩니다.</p>
+        </div>
+      </div>
+    </section>
+  `;
+
+  return html(renderDoc({
+    title: '스터디 Hub · 자료 및 강의 정리',
+    heading: '📖 KT-CI5 스터디 Hub',
+    html: body,
+    extraCss: STUDY_CSS,
+  }));
 }
 
 /* -------------------------------------------------------------- 스터디 & 미팅 캘린더 (디스코드 인증 필요) */
@@ -2784,8 +2964,10 @@ function hubPage(env) {
 
 // 인증을 마친 사람에게 보여줄 곳들. 랜딩과 완료 화면이 함께 씁니다.
 const MEMBER_LINKS = [
-  ['/study', '📖 스터디 자료', '리눅스 강의 정리, 심층 가이드, 인프라 문서'],
-  ['/guide', '📚 채널 사용 안내', '어느 채널에서 무엇을 하는지'],
+  ['/study', '📖 스터디 Hub 바로가기', '과목별 강의 정리, 최근 업데이트 소식, 활용법'],
+  ['/study/course', '📘 강의 정리 (5개 과목)', 'Docker, 네트워크, 리눅스 관리자, Shell Script'],
+  ['/study/calendar', '🗓️ 스터디 캘린더', '132일 훈련 일정 및 구글 캘린더 연동'],
+  ['/guide', '📚 채널 사용 안내', '디스코드 채널 가이드 및 드라이브 연동'],
 ];
 
 function memberLinks(env, primary = 0) {
@@ -3265,6 +3447,7 @@ function renderDoc({ title, heading, sections, html: raw, extraCss = '' }) {
         <nav class="top-nav">
           <a href="/study/course" class="nav-item">📘 강의 정리</a>
           <a href="/study/calendar" class="nav-item">🗓️ 캘린더</a>
+          <a href="/study/cheatsheet" class="nav-item">⚡ 치트시트</a>
           <a href="/study/linux" class="nav-item">🐧 리눅스 가이드</a>
           <a href="/study/infra" class="nav-item">🛠️ 인프라 가이드</a>
           <a href="/guide" class="nav-item">💬 채널 가이드</a>
@@ -3278,6 +3461,7 @@ function renderDoc({ title, heading, sections, html: raw, extraCss = '' }) {
       <a href="/study" class="bnav-btn">← 스터디 Hub</a>
       <a href="/study/course" class="bnav-btn">📘 강의 정리</a>
       <a href="/study/calendar" class="bnav-btn highlight">🗓️ 스터디 캘린더</a>
+      <a href="/study/cheatsheet" class="bnav-btn">⚡ 치트시트</a>
       <a href="/guide" class="bnav-btn">💬 채널 가이드 →</a>
     </div>
   `;
