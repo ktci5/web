@@ -5,22 +5,44 @@
  * 않습니다. 내용은 KV 에만 있고, 인증한 사람에게만 보여줍니다.
  */
 
+import { K8S_COURSE_DOC, K8S_NOTES, K8S_INDEX_ENTRY } from './k8s_data.js';
+
 // 과목 목록
 export async function loadCourseIndex(env) {
-  if (!env.ROSTER) return null;
-  return env.ROSTER.get('course:index', 'json');
+  let list = null;
+  if (env && env.ROSTER) {
+    try { list = await env.ROSTER.get('course:index', 'json'); } catch {}
+  }
+  const items = Array.isArray(list) ? [...list] : [];
+  if (!items.some((c) => c.id === 'k8s')) {
+    items.push(K8S_INDEX_ENTRY);
+  }
+  items.sort((a, b) => (a.order || 99) - (b.order || 99));
+  return items;
 }
 
 // 한 과목의 장 구조
 export async function loadCourse(env, courseId) {
-  if (!env.ROSTER || !/^[a-z0-9-]+$/.test(courseId || '')) return null;
-  return env.ROSTER.get(`course:${courseId}`, 'json');
+  if (!/^[a-z0-9-]+$/.test(courseId || '')) return null;
+  let doc = null;
+  if (env && env.ROSTER) {
+    try { doc = await env.ROSTER.get(`course:${courseId}`, 'json'); } catch {}
+  }
+  if (doc) return doc;
+  if (courseId === 'k8s') return K8S_COURSE_DOC;
+  return null;
 }
 
 // 그 과목의 정리본. 장별로 담겨 있습니다.
 export async function loadNotes(env, courseId) {
-  if (!env.ROSTER || !/^[a-z0-9-]+$/.test(courseId || '')) return null;
-  return env.ROSTER.get(`course:${courseId}:notes`, 'json');
+  if (!/^[a-z0-9-]+$/.test(courseId || '')) return null;
+  let notes = null;
+  if (env && env.ROSTER) {
+    try { notes = await env.ROSTER.get(`course:${courseId}:notes`, 'json'); } catch {}
+  }
+  if (notes && Object.keys(notes).length > 0) return notes;
+  if (courseId === 'k8s') return K8S_NOTES;
+  return null;
 }
 
 // 모든 과목의 장 구조 + 정리본. 검색과 상호 링크에 씁니다.
