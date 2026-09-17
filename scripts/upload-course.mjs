@@ -107,6 +107,25 @@ const COURSES = {
       { id: 'compose',    name: 'Docker Compose 와 오케스트레이션', from: 108, summary: 'docker-compose.yml 다중 서비스 제어, Docker Swarm 과 K8s 기초' },
     ],
   },
+  k8s: {
+    title: '쿠버네티스',
+    subtitle: '컨테이너 오케스트레이션과 클라우드 네이티브 아키텍처',
+    order: 6,
+    chapters: [
+      { id: 'intro',      name: '쿠버네티스 소개와 아키텍처', from: 3,   summary: 'K8s의 역사, 마스터/워커 노드 구성, etcd·API서버·스케줄러·kubelet' },
+      { id: 'install',    name: 'K8s 클러스터 설치와 kubeadm', from: 10,  summary: 'Minikube, MicroK8s, Kubeadm 1 Master + 1 Worker 구성 및 CNI' },
+      { id: 'kubectl',    name: 'Kubectl 기본 제어와 CLI',   from: 33,  summary: 'kubectl run, get, describe, exec, logs, port-forward 명령어' },
+      { id: 'pod',        name: 'Pod 개념과 라이프사이클',     from: 40,  summary: '단일/다중 컨테이너, Pause 컨테이너, 수명 주기와 Probe 진단' },
+      { id: 'manifest',   name: 'YAML 템플릿과 오브젝트 명세',  from: 60,  summary: 'apiVersion, kind, metadata, spec 4대 필드와 dry-run 활용' },
+      { id: 'controller', name: '워크로드 컨트롤러',           from: 66,  summary: 'ReplicaSet, Deployment, DaemonSet, Job, CronJob, StatefulSet' },
+      { id: 'service',    name: '서비스와 네트워킹',          from: 81,  summary: 'ClusterIP, NodePort, LoadBalancer, ExternalName, kube-proxy' },
+      { id: 'deploy',     name: '배포 전략과 롤링 업데이트',    from: 95,  summary: 'Labels와 Selector, RollingUpdate vs Recreate, 롤아웃/롤백' },
+      { id: 'security',   name: '보안과 RBAC 권한 관리',      from: 106, summary: '인증/인가 흐름, ServiceAccount, Role, ClusterRole, RoleBinding' },
+      { id: 'helm',       name: '패키지 매니저 Helm',         from: 117, summary: '차트 구조, Values 오버라이드, 저장소 관리, Helm v3 패키징' },
+      { id: 'volume',     name: '볼륨 스토리지와 Config/Secret', from: 132, summary: 'emptyDir, hostPath, PV/PVC, StorageClass, ConfigMap, Secret' },
+      { id: 'ha',         name: '고가용성(HA) 아키텍처',       from: 152, summary: '다중 마스터, etcd 쿼럼, 부하분산기와 무중단 클러스터 설계' },
+    ],
+  },
 };
 
 /* ------------------------------------------------------------------ 실행 */

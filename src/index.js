@@ -389,11 +389,19 @@ const STUDY_CSS = COURSE_CSS + `
 
 const COURSES_INFO = [
   {
+    id: 'k8s',
+    icon: '☸️',
+    title: '쿠버네티스 (Kubernetes)',
+    badge: 'NEW',
+    isNew: true,
+    desc: 'K8s 마스터/워커 아키텍처, kubeadm 클러스터 구축, Pod/Deployment/Service, 무중단 롤링 배포, RBAC, Helm, PV/PVC, HA',
+  },
+  {
     id: 'docker',
     icon: '🐳',
     title: '도커 컨테이너',
-    badge: 'NEW',
-    isNew: true,
+    badge: '컨테이너',
+    isNew: false,
     desc: '가상화 vs 컨테이너, 데몬 C/S 소켓 권한, Dockerfile 포그라운드(daemon off), 볼륨 영속성, 이미지 배포, Compose',
   },
   {
@@ -454,7 +462,15 @@ async function studyIndexPage(env) {
       <div class="update-cards">
         <div class="u-card featured">
           <div class="u-head">
-            <span class="u-badge new">내용 추가</span>
+            <span class="u-badge new">신규 과목</span>
+            <span class="u-date">2026-09-17</span>
+          </div>
+          <div class="u-title"><a href="/study/course/k8s">쿠버네티스(Kubernetes) 오케스트레이션 실무 강의 정리 추가</a></div>
+          <p class="u-desc">K8s 아키텍처(마스터/워커 컴포넌트), kubeadm 1 Master + 1 Worker 구축, Pod 라이프사이클 & Probe, 선언적 YAML 매니페스트, Deployment 롤링 배포 & 롤백, Service 4대 유형, RBAC 보안, Helm v3, PV/PVC 스토리지, 고가용성(HA) 수록.</p>
+        </div>
+        <div class="u-card">
+          <div class="u-head">
+            <span class="u-badge">내용 추가</span>
             <span class="u-date">2026-09-16</span>
           </div>
           <div class="u-title"><a href="/study/course/docker">도커 컨테이너 실무 강의 및 실습 정리 추가</a></div>
