@@ -49,7 +49,7 @@ import { renderProjectPage } from './projects.js';
 import { loadCourseIndex, loadCourse, loadNotes, loadAll, linkResolver, markdown, renderCourseList, renderCourseIndex, renderCourseChapter, renderSearch, COURSE_CSS } from './course.js';
 import { PORTAL_HTML } from './portal_html.js';
 import { STATIC_CHANGELOG } from './updates_data.js';
-import { renderSimulatorPage, handleSimulatorApi } from './simulator.js';
+import { renderSimulatorPage, handleSimulatorApi, renderVirtualDomainResponse } from './simulator.js';
 
 const DISCORD_API = 'https://discord.com/api/v10';
 const USER_AGENT = 'DiscordBot (https://ktci5.kr, 1.0)';
@@ -103,6 +103,45 @@ export default {
       return page
         ? html(page)
         : errorPage('아직 준비되지 않은 프로젝트입니다.', 404);
+    }
+
+    // 가상 도메인 직접 접속 (app.ktci5.kr, dev.ktci5.kr, api.ktci5.kr 또는 /vhost/<host>/*)
+    const vhostMatch = url.hostname.match(/^([a-z0-9-]+)\.ktci5\.kr$/);
+    const isDedicatedVhost = vhostMatch && ['app', 'dev', 'api'].includes(vhostMatch[1]);
+    const isVhostPath = path.startsWith('/vhost/');
+
+    if (isDedicatedVhost || isVhostPath) {
+      let vHost = '';
+      let vPath = url.pathname;
+      let vPort = url.port ? parseInt(url.port, 10) : (url.protocol === 'https:' ? 443 : 80);
+
+      if (isDedicatedVhost) {
+        vHost = url.hostname;
+      } else {
+        const afterVhost = url.pathname.slice('/vhost/'.length);
+        const slashIdx = afterVhost.indexOf('/');
+        const hostPortStr = slashIdx === -1 ? afterVhost : afterVhost.slice(0, slashIdx);
+        vPath = slashIdx === -1 ? '/' : afterVhost.slice(slashIdx);
+        if (hostPortStr.includes(':')) {
+          const [h, p] = hostPortStr.split(':');
+          vHost = h;
+          vPort = parseInt(p, 10) || 80;
+        } else {
+          vHost = hostPortStr;
+          vPort = vHost.startsWith('dev') ? 443 : 80;
+        }
+      }
+
+      return renderVirtualDomainResponse(request, env, {
+        host: vHost,
+        port: vPort,
+        path: vPath
+      });
+    }
+
+    // 가상 웹 브라우저 렌더링 엔드포인트 (/api/simulator/browse)
+    if (path === '/api/simulator/browse') {
+      return renderVirtualDomainResponse(request, env);
     }
 
     // K8s 협업 가상 시뮬레이터 API (/api/simulator/*)

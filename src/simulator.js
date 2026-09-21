@@ -230,6 +230,19 @@ export const DEFAULT_LABS = [
         labels: { app: 'api' },
         restarts: 0,
         age: '1d'
+      },
+      {
+        name: 'dev-deploy-69f84b77-m8q2z',
+        namespace: 'default',
+        node: 'w1',
+        status: 'Running',
+        ip: '172.20.1.10',
+        image: 'node:20-alpine',
+        cpuReqM: 100,
+        ramReqMi: 128,
+        labels: { app: 'dev' },
+        restarts: 0,
+        age: '1d'
       }
     ],
     deployments: [
@@ -244,6 +257,12 @@ export const DEFAULT_LABS = [
         replicas: 1,
         image: 'python:3.11-alpine',
         labels: { app: 'api' }
+      },
+      {
+        name: 'dev-deploy',
+        replicas: 1,
+        image: 'node:20-alpine',
+        labels: { app: 'dev' }
       }
     ],
     services: [
@@ -272,7 +291,7 @@ export const DEFAULT_LABS = [
         nodePort: 30081,
         port: 8080,
         targetPort: 8080,
-        selector: { app: 'web' }
+        selector: { app: 'dev' }
       }
     ],
     activityLogs: [
@@ -491,7 +510,7 @@ export async function getLabDetail(env, id) {
         if (!lab.network.layers) lab.network.layers = def.layers;
         if (!lab.network.ingress) lab.network.ingress = def.ingress;
 
-        // Ingress 도메인 보정: 실등록 3개 도메인(app, api, dev) 보장 및 와일드카드 제외
+        // Ingress 도메인 보정: 실등록 3개 도메인(app, api, dev) 보장, 중복 제거 및 와일드카드 제외
         if (lab.network.ingress?.rules) {
           lab.network.ingress.rules = lab.network.ingress.rules.filter(r => r.host !== '*.ktci5.kr' && !r.host?.startsWith('*.'));
           const rules = lab.network.ingress.rules;
@@ -528,34 +547,72 @@ export async function getLabDetail(env, id) {
               protocol: 'HTTPS (TLS1.3)'
             });
           }
-        }
-        // 서비스 보정: api-service가 없으면 추가
-        if (lab.services && !lab.services.some(s => s.name === 'api-service')) {
-          lab.services.push({
-            name: 'api-service',
-            type: 'NodePort',
-            clusterIp: '10.96.100.70',
-            nodePort: 30082,
-            port: 8080,
-            targetPort: 8080,
-            selector: { app: 'api' }
+          // 중복 방지 (host + port + path 기준)
+          const seenRules = new Set();
+          lab.network.ingress.rules = rules.filter(r => {
+            const key = `${r.host}:${r.port || 80}:${r.path || '/'}`;
+            if (seenRules.has(key)) return false;
+            seenRules.add(key);
+            return true;
           });
         }
-        // 파드 보정: api-deploy 파드가 없으면 추가
-        if (lab.pods && !lab.pods.some(p => p.labels?.app === 'api')) {
-          lab.pods.push({
-            name: 'api-deploy-77d9c8d55-p2w9k',
-            namespace: 'default',
-            node: 'w1',
-            status: 'Running',
-            ip: '172.20.1.9',
-            image: 'python:3.11-alpine',
-            cpuReqM: 100,
-            ramReqMi: 128,
-            labels: { app: 'api' },
-            restarts: 0,
-            age: '1d'
-          });
+        // 서비스 보정: api-service, dev-service 보장
+        if (lab.services) {
+          if (!lab.services.some(s => s.name === 'api-service')) {
+            lab.services.push({
+              name: 'api-service',
+              type: 'NodePort',
+              clusterIp: '10.96.100.70',
+              nodePort: 30082,
+              port: 8080,
+              targetPort: 8080,
+              selector: { app: 'api' }
+            });
+          }
+          if (!lab.services.some(s => s.name === 'dev-service')) {
+            lab.services.push({
+              name: 'dev-service',
+              type: 'NodePort',
+              clusterIp: '10.96.100.60',
+              nodePort: 30081,
+              port: 8080,
+              targetPort: 8080,
+              selector: { app: 'dev' }
+            });
+          }
+        }
+        // 파드 보정: api-deploy, dev-deploy 파드가 없으면 추가
+        if (lab.pods) {
+          if (!lab.pods.some(p => p.labels?.app === 'api')) {
+            lab.pods.push({
+              name: 'api-deploy-77d9c8d55-p2w9k',
+              namespace: 'default',
+              node: 'w1',
+              status: 'Running',
+              ip: '172.20.1.9',
+              image: 'python:3.11-alpine',
+              cpuReqM: 100,
+              ramReqMi: 128,
+              labels: { app: 'api' },
+              restarts: 0,
+              age: '1d'
+            });
+          }
+          if (!lab.pods.some(p => p.labels?.app === 'dev')) {
+            lab.pods.push({
+              name: 'dev-deploy-69f84b77-m8q2z',
+              namespace: 'default',
+              node: 'w1',
+              status: 'Running',
+              ip: '172.20.1.10',
+              image: 'node:20-alpine',
+              cpuReqM: 100,
+              ramReqMi: 128,
+              labels: { app: 'dev' },
+              restarts: 0,
+              age: '1d'
+            });
+          }
         }
       }
     }
@@ -964,12 +1021,6 @@ export function evalK8sCommand(cmdLine, lab, user) {
       if (candidatePods.length === 0) {
         const svcPrefix = targetService.split('-')[0];
         candidatePods = allRunningPods.filter(p => p.name.includes(svcPrefix) || p.labels?.app === svcPrefix);
-      }
-      if (candidatePods.length === 0) {
-        candidatePods = allRunningPods.filter(p => p.name.includes('web') || p.name.includes('dev') || p.name.includes('api'));
-      }
-      if (candidatePods.length === 0) {
-        candidatePods = allRunningPods;
       }
       
       if (candidatePods.length > 0) {
@@ -2546,6 +2597,11 @@ export async function handleSimulatorApi(request, path, env, user) {
     'cache-control': 'no-store'
   };
 
+  // 0-1. GET /api/simulator/browse : 실시간 가상 웹 브라우저 렌더링 엔드포인트
+  if (path === '/api/simulator/browse' && method === 'GET') {
+    return renderVirtualDomainResponse(request, env);
+  }
+
   // 0. GET / POST /api/simulator/ai : 전역 AI 코파일럿 조언
   if (path === '/api/simulator/ai') {
     let body = {};
@@ -2965,21 +3021,26 @@ export async function handleSimulatorApi(request, path, env, user) {
       if (body.addDomain) {
         if (!lab.network.ingress) lab.network.ingress = createDefaultNetwork().ingress;
         if (!lab.network.ingress.rules) lab.network.ingress.rules = [];
+        const host = (body.addDomain.host || '').trim();
         const port = parseInt(body.addDomain.port || '80', 10);
-        const targetPort = parseInt(body.addDomain.targetPort || '80', 10);
-        lab.network.ingress.rules.push({
-          host: body.addDomain.host,
-          path: body.addDomain.path || '/',
-          port,
-          targetPort,
-          service: body.addDomain.service || `web-service:${targetPort}`,
-          ssl: port === 443 || Boolean(body.addDomain.ssl),
-          protocol: port === 443 ? 'HTTPS (TLS1.3)' : 'HTTP/1.1'
-        });
+        const path = (body.addDomain.path || '/').trim() || '/';
+        const targetPort = parseInt(body.addDomain.targetPort || (port === 443 ? '8080' : '80'), 10);
+        const service = body.addDomain.service || `web-service:${targetPort}`;
+        const ssl = port === 443 || Boolean(body.addDomain.ssl);
+        const protocol = port === 443 ? 'HTTPS (TLS1.3)' : 'HTTP/1.1';
+
+        const existingIdx = lab.network.ingress.rules.findIndex(r => r.host === host && (r.port || 80) === port && (r.path || '/') === path);
+        const newRule = { host, path, port, targetPort, service, ssl, protocol };
+        if (existingIdx >= 0) {
+          lab.network.ingress.rules[existingIdx] = newRule;
+        } else {
+          lab.network.ingress.rules.push(newRule);
+        }
+
         lab.activityLogs.unshift({
           time: timeStr,
           user: userName,
-          action: `🌐 [도메인/포트 라우팅] '${body.addDomain.host}:${port}' ➔ '${body.addDomain.service}' Ingress 매핑 & SSL 바인딩 완료`
+          action: `🌐 [도메인/포트 라우팅] '${host}:${port}${path}' ➔ '${service}' Ingress 매핑 & SSL 바인딩 완료`
         });
       }
 
@@ -3359,6 +3420,1032 @@ export async function handleSimulatorApi(request, path, env, user) {
   }
 
   return new Response(JSON.stringify({ ok: false, error: 'Not Found' }), { headers: jsonHeaders, status: 404 });
+}
+
+// ============================================================================
+// 가상 호스트 및 Ingress 도메인 실시간 렌더러 (Virtual Domain Live Renderer)
+// ============================================================================
+
+export async function renderVirtualDomainResponse(request, env, options = {}) {
+  const url = new URL(request.url);
+  const labId = options.labId || url.searchParams.get('labId') || 'lab-default';
+  const lab = (await getLabDetail(env, labId)) || DEFAULT_LABS[0];
+  const net = lab.network || createDefaultNetwork();
+
+  // 1. Host 추출 및 정규화
+  let reqHost = (options.host || url.searchParams.get('host') || url.hostname || 'app.ktci5.kr').toLowerCase();
+  if (reqHost.includes(':')) reqHost = reqHost.split(':')[0];
+
+  // 2. Port 추출 및 정규화
+  let reqPort = options.port || url.searchParams.get('port');
+  if (!reqPort) {
+    if (url.port) reqPort = parseInt(url.port, 10);
+    else if (reqHost.startsWith('dev')) reqPort = 443;
+    else reqPort = 80;
+  }
+  reqPort = parseInt(reqPort, 10) || 80;
+
+  // 3. Path 추출 및 정규화
+  let reqPath = options.path || url.searchParams.get('path') || url.pathname || '/';
+  if (reqPath.startsWith('/vhost/')) {
+    const after = reqPath.slice('/vhost/'.length);
+    const sIdx = after.indexOf('/');
+    reqPath = sIdx === -1 ? '/' : after.slice(sIdx);
+  }
+  if (!reqPath.startsWith('/')) reqPath = '/' + reqPath;
+
+  const isAjax = url.searchParams.get('ajax') === '1';
+  const wantsJson = (request.headers.get('accept') || '').includes('application/json') || url.searchParams.get('format') === 'json' || reqPath.startsWith('/api/v1/');
+
+  // [예외 1] Cloudflare Argo Hybrid Tunnel 단절 검사
+  const isTunnelDown = net.tunnel?.status !== 'CONNECTED';
+  if (isTunnelDown) {
+    if (isAjax || wantsJson) {
+      return new Response(JSON.stringify({
+        ok: false,
+        status: 502,
+        error: 'Bad Gateway (Cloudflare Origin Tunnel Unreachable)',
+        tunnelStatus: 'DISCONNECTED',
+        host: reqHost,
+        port: reqPort
+      }), {
+        status: 502,
+        headers: { 'content-type': 'application/json; charset=UTF-8', 'cache-control': 'no-store' }
+      });
+    }
+    return render502BadGatewayResponse({ host: reqHost, port: reqPort, path: reqPath, net, lab });
+  }
+
+  // [예외 2] Ingress 도메인 및 포트 라우팅 유효성 검사
+  const registeredRules = net.ingress?.rules || [];
+  let matchedRule = registeredRules.find(r => r.host === reqHost && (r.port || 80) === reqPort && (r.path === reqPath || (r.path !== '/' && reqPath.startsWith(r.path))))
+                 || registeredRules.find(r => r.host === reqHost && (r.port || 80) === reqPort)
+                 || registeredRules.find(r => r.host === reqHost && (r.path === reqPath || (r.path !== '/' && reqPath.startsWith(r.path))))
+                 || registeredRules.find(r => r.host === reqHost);
+
+  if (!matchedRule) {
+    if (isAjax || wantsJson) {
+      return new Response(JSON.stringify({
+        ok: false,
+        status: 404,
+        error: 'Not Found (DNS Unregistered Host / Route)',
+        host: reqHost,
+        port: reqPort,
+        path: reqPath,
+        registeredHosts: registeredRules.map(r => `${r.host}:${r.port || 80}${r.path || '/'}`)
+      }), {
+        status: 404,
+        headers: { 'content-type': 'application/json; charset=UTF-8', 'cache-control': 'no-store' }
+      });
+    }
+    return render404NotFoundResponse({ host: reqHost, port: reqPort, path: reqPath, registeredRules, net, lab });
+  }
+
+  // [예외 3] 포트 & 프로토콜 일치 검사 (443 HTTPS 전용 포트에 일반 HTTP 접근 시)
+  const isHttps = reqPort === 443 || url.protocol === 'https:';
+  if ((matchedRule.port === 443 || matchedRule.ssl) && reqPort === 443 && url.protocol === 'http:' && !options.host) {
+    return render400HttpsRequiredResponse({ host: reqHost, port: reqPort, path: reqPath });
+  }
+
+  // [예외 4] 타겟 서비스 및 파드/타겟 풀 헬스체크 검사
+  const targetServiceStr = matchedRule.service || 'web-service:80';
+  const [targetServiceName, targetPortStr] = targetServiceStr.split(':');
+  const targetPortNum = matchedRule.targetPort || parseInt(targetPortStr || '80', 10);
+
+  const svcObj = (lab.services || []).find(s => s.name === targetServiceName);
+  const svcSelectorApp = svcObj?.selector?.app;
+
+  const allRunningPods = (lab.pods || []).filter(p => p.status === 'Running');
+  let candidatePods = [];
+  if (svcSelectorApp) {
+    candidatePods = allRunningPods.filter(p => p.labels?.app === svcSelectorApp);
+  }
+  if (candidatePods.length === 0) {
+    const svcPrefix = targetServiceName.split('-')[0];
+    candidatePods = allRunningPods.filter(p => p.name.includes(svcPrefix) || p.labels?.app === svcPrefix);
+  }
+
+  const targetPool = net.loadBalancer?.targetPool || [];
+  const unhealthyNodeNames = targetPool.filter(p => !p.status.includes('Healthy')).map(p => p.nodeName);
+  const healthyPods = candidatePods.filter(p => !unhealthyNodeNames.includes(p.node));
+
+  if (candidatePods.length === 0 || (healthyPods.length === 0 && unhealthyNodeNames.length > 0)) {
+    if (isAjax || wantsJson) {
+      return new Response(JSON.stringify({
+        ok: false,
+        status: 503,
+        error: 'Service Unavailable (No healthy upstream pods in pool)',
+        targetService: targetServiceName,
+        targetPort: targetPortNum,
+        candidatePodsCount: candidatePods.length,
+        unhealthyNodes: unhealthyNodeNames
+      }), {
+        status: 503,
+        headers: { 'content-type': 'application/json; charset=UTF-8', 'cache-control': 'no-store' }
+      });
+    }
+    return render503ServiceUnavailableResponse({
+      host: reqHost,
+      port: reqPort,
+      path: reqPath,
+      targetService: targetServiceName,
+      targetPort: targetPortNum,
+      candidatePods,
+      unhealthyNodes: unhealthyNodeNames,
+      targetPool,
+      net,
+      lab
+    });
+  }
+
+  // 5. 정상 가동 - 로드밸런싱 활성 파드 선택
+  const poolToUse = healthyPods.length > 0 ? healthyPods : candidatePods;
+  const chosenPod = poolToUse[Math.floor(Math.random() * poolToUse.length)];
+
+  // 실시간 LB 테스트 및 AJAX 호출 응답
+  if (isAjax) {
+    return new Response(JSON.stringify({
+      ok: true,
+      status: 200,
+      host: reqHost,
+      port: reqPort,
+      service: targetServiceName,
+      targetPort: targetPortNum,
+      pod: chosenPod.name,
+      podIp: chosenPod.ip,
+      node: chosenPod.node,
+      latencyMs: (1.5 + Math.random() * 1.5).toFixed(1),
+      timestamp: new Date().toLocaleTimeString('ko-KR')
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json; charset=UTF-8', 'cache-control': 'no-store' }
+    });
+  }
+
+  // 6. 정상 실시간 페이지 렌더링
+  if (reqHost.startsWith('api') || reqPath.startsWith('/api') || matchedRule.service.includes('api')) {
+    return renderApiServicePage({ host: reqHost, port: reqPort, path: reqPath, service: targetServiceName, targetPort: targetPortNum, chosenPod, net, lab, wantsJson });
+  } else if (reqHost.startsWith('dev') || matchedRule.service.includes('dev')) {
+    return renderDevServicePage({ host: reqHost, port: reqPort, path: reqPath, service: targetServiceName, targetPort: targetPortNum, chosenPod, net, lab });
+  } else if (reqHost.startsWith('app') || matchedRule.service.includes('web')) {
+    return renderAppServicePage({ host: reqHost, port: reqPort, path: reqPath, service: targetServiceName, targetPort: targetPortNum, chosenPod, net, lab });
+  } else {
+    return renderGenericServicePage({ host: reqHost, port: reqPort, path: reqPath, service: targetServiceName, targetPort: targetPortNum, chosenPod, net, lab });
+  }
+}
+
+// ============================================================================
+// 페이지별 HTML 렌더러 (200 OK & 예외 페이지)
+// ============================================================================
+
+function commonVirtualNav(currentHost, currentPort, currentPath) {
+  return `
+    <header class="v-nav">
+      <div class="v-nav-brand">
+        <span class="v-nav-logo">☁️</span>
+        <div>
+          <span class="v-nav-title">KT Cloud 5기 K8s 클라우드 인프라</span>
+          <span class="v-nav-sub">L7 Ingress Virtual Application</span>
+        </div>
+      </div>
+      <div class="v-nav-links">
+        <a href="/vhost/app.ktci5.kr/" class="v-link ${currentHost === 'app.ktci5.kr' ? 'active' : ''}">🏢 app.ktci5.kr:80</a>
+        <a href="/vhost/api.ktci5.kr/api" class="v-link ${currentHost === 'api.ktci5.kr' ? 'active' : ''}">⚡ api.ktci5.kr:80/api</a>
+        <a href="/vhost/dev.ktci5.kr/" class="v-link ${currentHost === 'dev.ktci5.kr' ? 'active' : ''}">🧪 dev.ktci5.kr:443</a>
+        <a href="/study/simulator" target="_blank" class="v-btn-console">🖥️ 가상 랩 콘솔</a>
+      </div>
+    </header>
+  `;
+}
+
+function commonVirtualStyles() {
+  return `
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: #090d16;
+      color: #f1f5f9;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      line-height: 1.5;
+    }
+    .v-nav {
+      background: #0f172a;
+      border-bottom: 1px solid #1e293b;
+      padding: 12px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+    .v-nav-brand { display: flex; align-items: center; gap: 10px; }
+    .v-nav-logo { font-size: 22px; }
+    .v-nav-title { font-size: 15px; font-weight: 700; color: #f8fafc; display: block; }
+    .v-nav-sub { font-size: 11px; color: #94a3b8; display: block; }
+    .v-nav-links { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .v-link {
+      font-size: 12px; font-weight: 600; color: #94a3b8; text-decoration: none; padding: 5px 10px; border-radius: 6px;
+      border: 1px solid transparent; transition: all 0.15s;
+    }
+    .v-link:hover { color: #f8fafc; background: #1e293b; }
+    .v-link.active { color: #38bdf8; background: rgba(56, 189, 248, 0.1); border-color: rgba(56, 189, 248, 0.3); }
+    .v-btn-console {
+      font-size: 12px; font-weight: 700; color: #ffffff; background: #4f46e5; text-decoration: none; padding: 6px 12px; border-radius: 6px;
+      border: 1px solid #6366f1; transition: background 0.15s; margin-left: 6px;
+    }
+    .v-btn-console:hover { background: #4338ca; }
+    
+    .v-container { max-width: 1080px; width: 100%; margin: 0 auto; padding: 28px 20px; flex: 1; }
+    .v-card {
+      background: #111827; border: 1px solid #1f293d; border-radius: 12px; padding: 24px; margin-bottom: 20px;
+      box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3);
+    }
+    .v-card-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
+    .v-card-title { font-size: 17px; font-weight: 700; color: #f8fafc; }
+    
+    .badge { font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 999px; display: inline-flex; align-items: center; gap: 4px; }
+    .badge.green { background: rgba(16, 185, 129, 0.15); color: #10b981; border: 1px solid #059669; }
+    .badge.blue { background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid #0284c7; }
+    .badge.amber { background: rgba(245, 158, 11, 0.15); color: #fbbf24; border: 1px solid #d97706; }
+    .badge.red { background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid #dc2626; }
+    
+    .info-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin-bottom: 16px; }
+    .info-box { background: #0b0f19; border: 1px solid #1f293d; border-radius: 8px; padding: 12px 14px; }
+    .info-label { font-size: 11px; color: #94a3b8; margin-bottom: 4px; }
+    .info-val { font-size: 14px; font-weight: 700; color: #f8fafc; font-family: monospace; }
+    
+    .btn-action {
+      display: inline-flex; align-items: center; gap: 6px; padding: 8px 16px; font-size: 13px; font-weight: 700;
+      color: #ffffff; background: #0284c7; border: 1px solid #38bdf8; border-radius: 6px; cursor: pointer; transition: all 0.15s;
+    }
+    .btn-action:hover { background: #0369a1; }
+    
+    .code-view {
+      background: #050811; border: 1px solid #1e293b; border-radius: 8px; padding: 14px; font-family: monospace;
+      font-size: 12px; color: #38bdf8; overflow-x: auto; line-height: 1.6;
+    }
+    
+    .v-footer {
+      background: #0f172a; border-top: 1px solid #1e293b; padding: 14px 24px; font-size: 11px; color: #64748b;
+      text-align: center; margin-top: auto;
+    }
+  `;
+}
+
+// 1. app.ktci5.kr (Production Web Service)
+function renderAppServicePage({ host, port, path, service, targetPort, chosenPod, net, lab }) {
+  const lbVip = net.loadBalancer?.vip || '211.252.85.10';
+  const html = `<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>KT Cloud 5기 - ${host} 프로덕션 포털</title>
+  <style>
+    ${commonVirtualStyles()}
+    .hero-box {
+      background: linear-gradient(135deg, rgba(79, 70, 229, 0.2) 0%, rgba(14, 165, 233, 0.15) 100%);
+      border: 1px solid rgba(99, 102, 241, 0.3); border-radius: 12px; padding: 24px; margin-bottom: 20px;
+    }
+  </style>
+</head>
+<body>
+  ${commonVirtualNav(host, port, path)}
+
+  <div class="v-container">
+    <div class="hero-box">
+      <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:12px; flex-wrap:wrap; gap:10px;">
+        <div>
+          <span class="badge green">● 200 OK Production Active</span>
+          <span class="badge blue">포트 :${port}</span>
+          <span class="badge amber">L7 ALB VIP: ${lbVip}</span>
+          <h1 style="font-size:22px; font-weight:800; margin-top:8px; color:#ffffff;">🚀 KT Cloud 제5기 프로덕션 웹 포털</h1>
+          <p style="font-size:13px; color:#cbd5e1; margin-top:4px;">
+            쿠버네티스 Ingress와 KT Cloud L7 로드밸런서를 통해 서비스 파드로 무중단 트래픽이 실시간 분산 라우팅되고 있습니다.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <!-- 실시간 로드밸런싱 & 파드 응답 카드 -->
+    <div class="v-card">
+      <div class="v-card-header">
+        <div class="v-card-title">⚖️ 실시간 파드 트래픽 분산 & 로드밸런싱 검증</div>
+        <button class="btn-action" onclick="testTraffic()" id="btn-traffic">🚀 트래픽 전송 (LB 테스트)</button>
+      </div>
+      <div class="info-grid">
+        <div class="info-box">
+          <div class="info-label">타겟 서비스</div>
+          <div class="info-val" style="color:#38bdf8;">${service}:${targetPort}</div>
+        </div>
+        <div class="info-box">
+          <div class="info-label">응답 파드 (Active Pod)</div>
+          <div class="info-val" id="pod-name" style="color:#10b981;">${chosenPod.name}</div>
+        </div>
+        <div class="info-box">
+          <div class="info-label">파드 IP 및 호스트 노드</div>
+          <div class="info-val" id="pod-node" style="color:#a855f7;">${chosenPod.ip} (${chosenPod.node})</div>
+        </div>
+        <div class="info-box">
+          <div class="info-label">응답 지연시간 (Latency)</div>
+          <div class="info-val" id="pod-latency" style="color:#fbbf24;">2.1 ms</div>
+        </div>
+      </div>
+      <div style="font-size:12px; color:#94a3b8; background:#0b0f19; border:1px solid #1f293d; border-radius:6px; padding:10px 14px;">
+        누적 요청 수: <b id="hit-count" style="color:#ffffff;">1</b>회 | 분산 처리 파드 이력: <span id="pod-history" style="font-family:monospace; color:#38bdf8;">${chosenPod.name}</span>
+      </div>
+    </div>
+
+    <!-- 수신 HTTP 헤더 및 7계층 라우팅 -->
+    <div class="v-card">
+      <div class="v-card-title" style="margin-bottom:12px;">🔍 수신 HTTP 요청 & Ingress 7계층 헤더 정보</div>
+      <div class="code-view">
+Host: ${host}:${port}
+X-Forwarded-Host: ${host}
+X-Forwarded-For: ${lbVip}
+X-Forwarded-Proto: ${port === 443 ? 'https' : 'http'}
+X-Target-Service: ${service}:${targetPort}
+X-Routed-Pod: ${chosenPod.name} (${chosenPod.ip})
+X-Origin-Node: ${chosenPod.node}
+X-Tunnel-Status: ${net.tunnel?.status || 'CONNECTED'}
+X-LoadBalancer-VIP: ${lbVip}
+X-Ingress-Controller: KT-Cloud-ALB/2.4 (L7 Reverse Proxy & Ingress)
+      </div>
+    </div>
+
+    <!-- 7계층 토폴로지 패킷 흐름 -->
+    <div class="v-card">
+      <div class="v-card-title" style="margin-bottom:8px;">🌐 네트워크 7-Layer 패킷 라우팅 경로</div>
+      <div style="font-size:12px; color:#94a3b8; line-height:1.7;">
+        • <b>L1 물리/허브:</b> kt-l1-virtual-hub (100% Signal)<br>
+        • <b>L2 데이터링크:</b> kt-vswitch-dist-01 (VLAN 100, 10Gbps Open vSwitch)<br>
+        • <b>L3 네트워크:</b> kt-vrouter-core-01 (Gateway: 10.10.0.1, CIDR: 10.10.0.0/16)<br>
+        • <b>L4 전송:</b> L7 ALB VIP (${lbVip}:${port}) ➔ ClusterIP (10.96.100.50:80)<br>
+        • <b>L5 세션:</b> Cloudflare Argo Hybrid Tunnel (ChaCha20-Poly1305)<br>
+        • <b>L6 표현:</b> TLS 1.3 암호화 종단 (SSL Termination)<br>
+        • <b>L7 응용/인그레스:</b> Host '${host}' ➔ Service '${service}' ➔ Pod '${chosenPod.name}'
+      </div>
+    </div>
+  </div>
+
+  <footer class="v-footer">
+    KT Cloud 5기 클라우드 인프라 엔지니어링 실습 포털 · L7 Ingress ALB VIP: ${lbVip} · 도메인: ${host}:${port}${path}
+  </footer>
+
+  <script>
+    let hits = 1;
+    async function testTraffic() {
+      const btn = document.getElementById('btn-traffic');
+      btn.innerText = '⏳ 처리 중...';
+      btn.style.opacity = '0.7';
+      try {
+        const res = await fetch('/api/simulator/browse?host=${host}&port=${port}&path=${encodeURIComponent(path)}&ajax=1&_t=' + Date.now());
+        const data = await res.json();
+        if (data.ok) {
+          hits++;
+          document.getElementById('pod-name').innerText = data.pod;
+          document.getElementById('pod-node').innerText = data.podIp + ' (' + data.node + ')';
+          document.getElementById('pod-latency').innerText = data.latencyMs + ' ms';
+          document.getElementById('hit-count').innerText = hits;
+          const hist = document.getElementById('pod-history');
+          hist.innerText = data.pod + ' ➔ ' + hist.innerText;
+        }
+      } catch (err) {
+        console.error('Traffic test error:', err);
+      } finally {
+        btn.innerText = '🚀 트래픽 전송 (LB 테스트)';
+        btn.style.opacity = '1';
+      }
+    }
+  </script>
+</body>
+</html>`;
+
+  return new Response(html, {
+    status: 200,
+    headers: {
+      'content-type': 'text/html; charset=UTF-8',
+      'cache-control': 'no-store, no-cache, must-revalidate',
+      'X-Virtual-Host': `${host}:${port}${path}`,
+      'X-Target-Service': `${service}:${targetPort}`,
+      'X-Routed-Pod': chosenPod.name
+    }
+  });
+}
+
+// 2. api.ktci5.kr (REST API Backend & Interactive Console)
+function renderApiServicePage({ host, port, path, service, targetPort, chosenPod, net, lab, wantsJson }) {
+  const lbVip = net.loadBalancer?.vip || '211.252.85.10';
+
+  // 순수 JSON 응답 요청 시
+  if (wantsJson || path.startsWith('/api/v1/')) {
+    let payload = {};
+    if (path.includes('/nodes')) {
+      payload = {
+        endpoint: '/api/v1/nodes',
+        service,
+        clusterNodes: (lab.nodes || []).map(n => ({ name: n.name, role: n.role, ip: n.ip, status: n.status, cpuM: n.cpuTotalM, ramMi: n.ramTotalMi }))
+      };
+    } else if (path.includes('/pods')) {
+      payload = {
+        endpoint: '/api/v1/pods',
+        service,
+        clusterPods: (lab.pods || []).map(p => ({ name: p.name, node: p.node, ip: p.ip, status: p.status, image: p.image }))
+      };
+    } else if (path.includes('/ingress')) {
+      payload = {
+        endpoint: '/api/v1/ingress',
+        service,
+        rules: net.ingress?.rules || []
+      };
+    } else if (path.includes('/network')) {
+      payload = {
+        endpoint: '/api/v1/network',
+        loadBalancer: net.loadBalancer,
+        tunnel: net.tunnel,
+        vpn: net.vpn
+      };
+    } else {
+      payload = {
+        apiVersion: 'v1',
+        status: 'ACTIVE',
+        service: `${service}:${targetPort}`,
+        domain: `${host}:${port}`,
+        path,
+        backendPod: {
+          name: chosenPod.name,
+          ip: chosenPod.ip,
+          node: chosenPod.node,
+          image: chosenPod.image || 'python:3.11-alpine'
+        },
+        databasePool: {
+          status: 'CONNECTED',
+          activeConnections: 8,
+          target: 'db-0: 172.20.2.8:5432'
+        },
+        clusterState: {
+          nodeCount: (lab.nodes || []).length,
+          runningPods: (lab.pods || []).filter(p => p.status === 'Running').length,
+          tunnelStatus: net.tunnel?.status || 'CONNECTED'
+        },
+        message: 'KT Cloud 5기 REST API 백엔드 서비스가 정상 운용 중입니다.'
+      };
+    }
+
+    return new Response(JSON.stringify(payload, null, 2), {
+      status: 200,
+      headers: {
+        'content-type': 'application/json; charset=UTF-8',
+        'cache-control': 'no-store',
+        'X-Virtual-Host': `${host}:${port}${path}`
+      }
+    });
+  }
+
+  // 브라우저 렌더링 (인터랙티브 API 콘솔)
+  const defaultJson = JSON.stringify({
+    apiVersion: 'v1',
+    status: 'ACTIVE',
+    service: `${service}:${targetPort}`,
+    domain: `${host}:${port}`,
+    path,
+    routedPod: {
+      name: chosenPod.name,
+      ip: chosenPod.ip,
+      node: chosenPod.node,
+      image: chosenPod.image || 'python:3.11-alpine'
+    },
+    databasePool: {
+      status: 'CONNECTED',
+      activeConnections: 8,
+      target: 'db-0: 172.20.2.8:5432'
+    },
+    message: 'KT Cloud 5기 REST API 백엔드 서비스 정상 가동 중'
+  }, null, 2);
+
+  const html = `<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>KT Cloud 5기 - ${host} REST API 콘솔</title>
+  <style>
+    ${commonVirtualStyles()}
+    .api-nav-btn {
+      background: #1e293b; border: 1px solid #334155; color: #cbd5e1; font-size: 11px; font-weight: 600;
+      padding: 6px 12px; border-radius: 6px; cursor: pointer; transition: all 0.15s; font-family: monospace;
+    }
+    .api-nav-btn:hover { background: #334155; color: #38bdf8; border-color: #38bdf8; }
+    .api-nav-btn.active { background: rgba(56, 189, 248, 0.15); color: #38bdf8; border-color: #0284c7; }
+  </style>
+</head>
+<body>
+  ${commonVirtualNav(host, port, path)}
+
+  <div class="v-container">
+    <div class="v-card" style="border-color: rgba(56, 189, 248, 0.3);">
+      <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:12px; flex-wrap:wrap; gap:10px;">
+        <div>
+          <span class="badge green">● 200 OK (REST API)</span>
+          <span class="badge blue">호스트: ${host}:${port}</span>
+          <span class="badge amber">경로: ${path}</span>
+          <h1 style="font-size:22px; font-weight:800; margin-top:8px; color:#ffffff;">⚡ KT Cloud 제5기 REST API 백엔드 콘솔</h1>
+          <p style="font-size:13px; color:#94a3b8; margin-top:4px;">
+            파이썬/FastAPI 기반 백엔드 서비스가 Ingress 라우팅 규칙에 따라 안전하게 격리 노출되고 있습니다.
+          </p>
+        </div>
+        <a href="/api/simulator/browse?host=${host}&port=${port}&path=${encodeURIComponent(path)}&format=json" target="_blank" class="btn-action" style="background:#0f172a; border-color:#38bdf8; font-size:11px;">
+          📄 Raw JSON 열기
+        </a>
+      </div>
+    </div>
+
+    <!-- API 인터랙티브 테스트 툴바 -->
+    <div class="v-card">
+      <div class="v-card-header">
+        <div class="v-card-title">📡 엔드포인트 직접 호출 및 응답 테스트</div>
+        <span id="api-call-status" style="font-size:11px; color:#10b981; font-weight:bold;">준비 완료</span>
+      </div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:14px;">
+        <button class="api-nav-btn active" onclick="callEndpoint('/api/v1/health', this)">GET /api/v1/health</button>
+        <button class="api-nav-btn" onclick="callEndpoint('/api/v1/nodes', this)">GET /api/v1/nodes</button>
+        <button class="api-nav-btn" onclick="callEndpoint('/api/v1/pods', this)">GET /api/v1/pods</button>
+        <button class="api-nav-btn" onclick="callEndpoint('/api/v1/ingress', this)">GET /api/v1/ingress</button>
+        <button class="api-nav-btn" onclick="callEndpoint('/api/v1/network', this)">GET /api/v1/network</button>
+      </div>
+
+      <!-- JSON 뷰어 -->
+      <div class="code-view" id="json-viewer" style="max-height:400px; overflow-y:auto; color:#38bdf8;">${defaultJson}</div>
+    </div>
+
+    <!-- 백엔드 메타데이터 -->
+    <div class="v-card">
+      <div class="v-card-title" style="margin-bottom:12px;">📊 백엔드 컨테이너 & 데이터베이스 풀 상태</div>
+      <div class="info-grid">
+        <div class="info-box">
+          <div class="info-label">백엔드 서비스</div>
+          <div class="info-val" style="color:#38bdf8;">${service}:${targetPort}</div>
+        </div>
+        <div class="info-box">
+          <div class="info-label">실행 파드 (Container)</div>
+          <div class="info-val" style="color:#10b981;">${chosenPod.name}</div>
+        </div>
+        <div class="info-box">
+          <div class="info-label">내부 IP 및 노드</div>
+          <div class="info-val" style="color:#a855f7;">${chosenPod.ip} (${chosenPod.node})</div>
+        </div>
+        <div class="info-box">
+          <div class="info-label">DB 커넥션 풀</div>
+          <div class="info-val" style="color:#10b981;">CONNECTED (db-0)</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <footer class="v-footer">
+    KT Cloud 5기 클라우드 인프라 엔지니어링 실습 포털 · REST API Backend Console · ${host}:${port}${path}
+  </footer>
+
+  <script>
+    async function callEndpoint(ep, btn) {
+      document.querySelectorAll('.api-nav-btn').forEach(b => b.classList.remove('active'));
+      if (btn) btn.classList.add('active');
+      const st = document.getElementById('api-call-status');
+      st.innerText = '호출 중... (' + ep + ')';
+      st.style.color = '#38bdf8';
+      try {
+        const res = await fetch('/api/simulator/browse?host=${host}&port=${port}&path=' + encodeURIComponent(ep) + '&format=json&_t=' + Date.now());
+        const data = await res.json();
+        document.getElementById('json-viewer').innerText = JSON.stringify(data, null, 2);
+        st.innerText = '● 200 OK (' + ep + ')';
+        st.style.color = '#10b981';
+      } catch (err) {
+        st.innerText = '✕ 호출 실패';
+        st.style.color = '#ef4444';
+      }
+    }
+  </script>
+</body>
+</html>`;
+
+  return new Response(html, {
+    status: 200,
+    headers: {
+      'content-type': 'text/html; charset=UTF-8',
+      'cache-control': 'no-store, no-cache, must-revalidate',
+      'X-Virtual-Host': `${host}:${port}${path}`
+    }
+  });
+}
+
+// 3. dev.ktci5.kr (Staging & Dev Service)
+function renderDevServicePage({ host, port, path, service, targetPort, chosenPod, net, lab }) {
+  const lbVip = net.loadBalancer?.vip || '211.252.85.10';
+  const html = `<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>KT Cloud 5기 - ${host} 스테이징 콘솔</title>
+  <style>
+    ${commonVirtualStyles()}
+    .staging-banner {
+      background: rgba(245, 158, 11, 0.15); border: 1px solid #d97706; border-radius: 8px; padding: 10px 16px;
+      margin-bottom: 20px; display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    }
+  </style>
+</head>
+<body>
+  ${commonVirtualNav(host, port, path)}
+
+  <div class="v-container">
+    <div class="staging-banner">
+      <div style="display:flex; align-items:center; gap:8px;">
+        <span style="font-size:18px;">⚠️</span>
+        <span style="font-size:12.5px; font-weight:700; color:#fbbf24;">STAGING / DEV ENVIRONMENT - 내부 테스트 및 스테이징 전용 환경</span>
+      </div>
+      <span class="badge amber">SSL: TLS 1.3 Strict</span>
+    </div>
+
+    <div class="v-card" style="border-color:#334155;">
+      <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:12px; flex-wrap:wrap; gap:10px;">
+        <div>
+          <span class="badge green">● 200 OK Staging Active</span>
+          <span class="badge blue">HTTPS :${port}</span>
+          <span class="badge amber">VIP: ${lbVip}</span>
+          <h1 style="font-size:22px; font-weight:800; margin-top:8px; color:#ffffff;">🧪 KT Cloud 제5기 개발 & 스테이징 환경</h1>
+          <p style="font-size:13px; color:#94a3b8; margin-top:4px;">
+            안전한 HTTPS(TLS 1.3) 전송 프로토콜을 통해 스테이징 브랜치 최신 빌드가 구동 중입니다.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <!-- CI/CD 배포 및 파드 정보 -->
+    <div class="v-card">
+      <div class="v-card-header">
+        <div class="v-card-title">📦 CI/CD 파이프라인 빌드 & 스테이징 파드</div>
+        <button class="btn-action" onclick="runStagingCheck()" id="btn-stage" style="background:#d97706; border-color:#f59e0b;">🧪 스테이징 헬스체크</button>
+      </div>
+      <div class="info-grid">
+        <div class="info-box">
+          <div class="info-label">타겟 서비스</div>
+          <div class="info-val" style="color:#38bdf8;">${service}:${targetPort}</div>
+        </div>
+        <div class="info-box">
+          <div class="info-label">스테이징 파드 (Pod)</div>
+          <div class="info-val" id="stage-pod" style="color:#10b981;">${chosenPod.name}</div>
+        </div>
+        <div class="info-box">
+          <div class="info-label">빌드 브랜치 / 커밋</div>
+          <div class="info-val" style="color:#a855f7;">develop (#42)</div>
+        </div>
+        <div class="info-box">
+          <div class="info-label">TLS 암호화 모드</div>
+          <div class="info-val" style="color:#10b981;">TLS 1.3 Strict</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 기능 플래그 및 디버그 설정 -->
+    <div class="v-card">
+      <div class="v-card-title" style="margin-bottom:12px;">⚙️ 스테이징 기능 플래그 (Feature Flags)</div>
+      <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:10px; font-size:12px;">
+        <div style="background:#0b0f19; padding:10px; border-radius:6px; border:1px solid #1f293d;">
+          <div style="color:#94a3b8;">DEBUG_LOGGING</div>
+          <div style="color:#10b981; font-weight:bold;">ENABLED (Verbose)</div>
+        </div>
+        <div style="background:#0b0f19; padding:10px; border-radius:6px; border:1px solid #1f293d;">
+          <div style="color:#94a3b8;">MOCK_PAYMENT_GW</div>
+          <div style="color:#38bdf8; font-weight:bold;">ACTIVE (Sandbox)</div>
+        </div>
+        <div style="background:#0b0f19; padding:10px; border-radius:6px; border:1px solid #1f293d;">
+          <div style="color:#94a3b8;">DATABASE_TARGET</div>
+          <div style="color:#fbbf24; font-weight:bold;">db-staging-replica</div>
+        </div>
+        <div style="background:#0b0f19; padding:10px; border-radius:6px; border:1px solid #1f293d;">
+          <div style="color:#94a3b8;">CANARY_WEIGHT</div>
+          <div style="color:#ffffff; font-weight:bold;">0% (Staging-Only)</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <footer class="v-footer">
+    KT Cloud 5기 클라우드 인프라 엔지니어링 실습 포털 · Staging CI/CD Environment · ${host}:${port}${path}
+  </footer>
+
+  <script>
+    async function runStagingCheck() {
+      const btn = document.getElementById('btn-stage');
+      btn.innerText = '진단 중...';
+      try {
+        const res = await fetch('/api/simulator/browse?host=${host}&port=${port}&path=${encodeURIComponent(path)}&ajax=1&_t=' + Date.now());
+        const data = await res.json();
+        if (data.ok) {
+          alert('✅ [스테이징 진단 완료] 파드 ' + data.pod + ' (' + data.podIp + ') 가 정상 응답했습니다. (지연시간: ' + data.latencyMs + 'ms)');
+        }
+      } catch (e) {
+        alert('진단 실패: ' + e.message);
+      } finally {
+        btn.innerText = '🧪 스테이징 헬스체크';
+      }
+    }
+  </script>
+</body>
+</html>`;
+
+  return new Response(html, {
+    status: 200,
+    headers: {
+      'content-type': 'text/html; charset=UTF-8',
+      'cache-control': 'no-store, no-cache, must-revalidate',
+      'X-Virtual-Host': `${host}:${port}${path}`
+    }
+  });
+}
+
+// 4. Custom / Generic Ingress Domain Page
+function renderGenericServicePage({ host, port, path, service, targetPort, chosenPod, net, lab }) {
+  const lbVip = net.loadBalancer?.vip || '211.252.85.10';
+  const html = `<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>KT Cloud 5기 - ${host}</title>
+  <style>${commonVirtualStyles()}</style>
+</head>
+<body>
+  ${commonVirtualNav(host, port, path)}
+  <div class="v-container">
+    <div class="v-card">
+      <span class="badge green">● 200 OK Active</span>
+      <span class="badge blue">호스트: ${host}:${port}</span>
+      <h1 style="font-size:22px; font-weight:800; margin-top:8px; color:#ffffff;">🌐 ${host} 가상 웹 서비스</h1>
+      <p style="font-size:13px; color:#94a3b8; margin-top:4px;">사용자 정의 Ingress 라우팅 규칙에 따라 파드로 트래픽이 전달되었습니다.</p>
+    </div>
+    <div class="v-card">
+      <div class="info-grid">
+        <div class="info-box"><div class="info-label">타겟 서비스</div><div class="info-val" style="color:#38bdf8;">${service}:${targetPort}</div></div>
+        <div class="info-box"><div class="info-label">응답 파드</div><div class="info-val" style="color:#10b981;">${chosenPod.name}</div></div>
+        <div class="info-box"><div class="info-label">파드 IP</div><div class="info-val" style="color:#a855f7;">${chosenPod.ip}</div></div>
+        <div class="info-box"><div class="info-label">L7 Ingress VIP</div><div class="info-val" style="color:#fbbf24;">${lbVip}</div></div>
+      </div>
+    </div>
+  </div>
+  <footer class="v-footer">KT Cloud 5기 클라우드 인프라 실습 · ${host}:${port}${path}</footer>
+</body>
+</html>`;
+  return new Response(html, {
+    status: 200,
+    headers: { 'content-type': 'text/html; charset=UTF-8', 'cache-control': 'no-store' }
+  });
+}
+
+// 5. [예외] 502 Bad Gateway (Cloudflare Argo Tunnel Disconnected)
+function render502BadGatewayResponse({ host, port, path, net, lab }) {
+  const lbVip = net.loadBalancer?.vip || '211.252.85.10';
+  const html = `<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>502 Bad Gateway - Cloudflare Argo Tunnel</title>
+  <style>
+    ${commonVirtualStyles()}
+    .err-box {
+      background: #1e1b4b; border: 1px solid #dc2626; border-radius: 12px; padding: 24px; margin-bottom: 20px;
+    }
+  </style>
+</head>
+<body>
+  ${commonVirtualNav(host, port, path)}
+
+  <div class="v-container">
+    <div class="err-box">
+      <span class="badge red">● 502 Bad Gateway</span>
+      <h1 style="font-size:24px; font-weight:800; color:#f87171; margin-top:8px;">🚇 Cloudflare Argo Tunnel: Origin Unreachable</h1>
+      <p style="font-size:13.5px; color:#cbd5e1; margin-top:6px;">
+        Cloudflare 엣지 네트워크와 KT Cloud 가상 클러스터 인프라를 연결하는 터널 데몬(<code>cloudflared</code>) 세션이 단절되어 오리진(VIP: ${lbVip})으로 통신할 수 없습니다.
+      </p>
+    </div>
+
+    <!-- 패킷 단절 다이어그램 -->
+    <div class="v-card">
+      <div class="v-card-title" style="margin-bottom:12px;">🔍 네트워크 세션 연결 상태 진단</div>
+      <div style="background:#0b0f19; border:1px solid #1f293d; border-radius:8px; padding:16px; font-family:monospace; font-size:13px; line-height:1.8;">
+        <div>[브라우저 클라이언트] ➔ 🟢 OK (연결 정상)</div>
+        <div>[Cloudflare Anycast 엣지] ➔ 🟢 OK (엣지 캐시 활성)</div>
+        <div>[Argo Hybrid Tunnel] ➔ <span style="color:#ef4444; font-weight:bold;">🔴 DISCONNECTED (터널 세션 단절 / 타임아웃)</span></div>
+        <div>[KT Cloud L7 Ingress ALB] ➔ <span style="color:#64748b;">⚪ UNREACHABLE (${lbVip}:${port})</span></div>
+      </div>
+    </div>
+
+    <!-- 문제 해결 가이드 -->
+    <div class="v-card">
+      <div class="v-card-title" style="margin-bottom:12px;">🛠️ 실전 트러블슈팅 조치 방법</div>
+      <div style="font-size:13px; color:#cbd5e1; line-height:1.7;">
+        1. 시뮬레이터 콘솔 우측 [🌐 네트워크 & 7계층] 탭의 <b>[🚇 Cloudflare 하이브리드 터널]</b> 패널에서 <b>[터널 재연결]</b> 버튼을 클릭하세요.<br>
+        2. 가상 터미널 콘솔에서 터널 데몬 복구 명령을 실행하세요:
+        <div class="code-view" style="margin:8px 0;">systemctl restart cloudflared && tunnel status</div>
+        3. 터널 상태가 <code>● CONNECTED</code>로 복구된 후 브라우저를 새로고침하세요.
+      </div>
+    </div>
+  </div>
+
+  <footer class="v-footer">
+    Cloudflare Argo Tunnel Error 502 · Host: ${host}:${port}${path} · Origin VIP: ${lbVip}
+  </footer>
+</body>
+</html>`;
+
+  return new Response(html, {
+    status: 502,
+    headers: {
+      'content-type': 'text/html; charset=UTF-8',
+      'cache-control': 'no-store, no-cache, must-revalidate',
+      'X-Tunnel-Status': 'DISCONNECTED',
+      'X-Error-Code': '502 Bad Gateway'
+    }
+  });
+}
+
+// 6. [예외] 503 Service Unavailable (No Healthy Upstream Pods / Target Pool Unhealthy)
+function render503ServiceUnavailableResponse({ host, port, path, targetService, targetPort, candidatePods, unhealthyNodes, targetPool, net, lab }) {
+  const lbVip = net.loadBalancer?.vip || '211.252.85.10';
+  const poolListHtml = targetPool.map(p => `
+    <div style="display:flex; justify-content:space-between; font-family:monospace; font-size:12px; padding:4px 0; border-bottom:1px solid #151d2f;">
+      <span>• ${p.target} [${p.nodeName}]</span>
+      <span style="color:${p.status.includes('Healthy') ? '#10b981' : '#f87171'}; font-weight:bold;">${p.status}</span>
+    </div>
+  `).join('');
+
+  const html = `<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>503 Service Unavailable - Ingress ALB</title>
+  <style>${commonVirtualStyles()}</style>
+</head>
+<body>
+  ${commonVirtualNav(host, port, path)}
+
+  <div class="v-container">
+    <div class="v-card" style="border-color:#ef4444; background:#1c1017;">
+      <span class="badge red">● 503 Service Unavailable</span>
+      <h1 style="font-size:24px; font-weight:800; color:#f87171; margin-top:8px;">타겟 서비스 가용 파드 부재 (No Healthy Upstream Pods)</h1>
+      <p style="font-size:13.5px; color:#cbd5e1; margin-top:6px;">
+        Ingress 라우팅 대상 서비스(<code>${targetService}:${targetPort}</code>)에 매핑된 파드가 없거나, L7 로드밸런서 타겟 풀의 모든 백엔드 노드가 헬스체크 실패(Unhealthy) 상태입니다.
+      </p>
+    </div>
+
+    <!-- 타겟 풀 상태 테이블 -->
+    <div class="v-card">
+      <div class="v-card-title" style="margin-bottom:10px;">🎯 L7 로드밸런서 타겟 풀 상태 (VIP: ${lbVip})</div>
+      <div style="background:#0b0f19; border:1px solid #1f293d; border-radius:8px; padding:12px;">
+        ${poolListHtml || '<div style="color:#94a3b8;">등록된 타겟 엔드포인트가 없습니다.</div>'}
+      </div>
+      <div style="font-size:12px; color:#94a3b8; margin-top:8px;">
+        가용 실행 파드 수: <b style="color:#ffffff;">${candidatePods.length}개</b> | 장애 노드: <b style="color:#f87171;">${unhealthyNodes.join(', ') || '없음'}</b>
+      </div>
+    </div>
+
+    <!-- 트러블슈팅 가이드 -->
+    <div class="v-card">
+      <div class="v-card-title" style="margin-bottom:12px;">🛠️ 실전 트러블슈팅 가이드</div>
+      <div style="font-size:13px; color:#cbd5e1; line-height:1.7;">
+        1. 파드 상태 및 엔드포인트 목록을 점검하세요:
+        <div class="code-view" style="margin:6px 0;">kubectl get pods -o wide && kubectl get endpoints ${targetService}</div>
+        2. 파드가 스케일 인(0)되어 있다면 즉시 스케일 아웃을 수행하세요:
+        <div class="code-view" style="margin:6px 0;">kubectl scale deploy ${targetService.replace('-service', '-deploy')} --replicas=2</div>
+        3. 노드가 NotReady 상태이거나 Cordon되어 있다면 노드 상태를 복구하세요:
+        <div class="code-view" style="margin:6px 0;">kubectl uncordon &lt;node-name&gt;</div>
+      </div>
+    </div>
+  </div>
+
+  <footer class="v-footer">
+    Ingress Controller 503 Service Unavailable · Service: ${targetService} · Host: ${host}:${port}${path}
+  </footer>
+</body>
+</html>`;
+
+  return new Response(html, {
+    status: 503,
+    headers: {
+      'content-type': 'text/html; charset=UTF-8',
+      'cache-control': 'no-store, no-cache, must-revalidate',
+      'X-Error-Code': '503 Service Unavailable'
+    }
+  });
+}
+
+// 7. [예외] 404 Not Found (Ingress Route Unregistered)
+function render404NotFoundResponse({ host, port, path, registeredRules, net, lab }) {
+  const lbVip = net.loadBalancer?.vip || '211.252.85.10';
+  const validRulesHtml = registeredRules.map(r => `
+    <tr>
+      <td style="color:#818cf8; font-weight:700;">${r.host}</td>
+      <td><b>:${r.port || 80}</b></td>
+      <td>${r.path || '/'}</td>
+      <td style="color:#38bdf8;">${r.service}</td>
+      <td><span class="badge ${r.ssl ? 'green' : 'blue'}">${r.ssl ? 'TLS Valid' : 'HTTP'}</span></td>
+      <td><a href="/vhost/${r.host}:${r.port || 80}${r.path || '/'}" class="btn-action" style="padding:3px 8px; font-size:11px; text-decoration:none;">이동</a></td>
+    </tr>
+  `).join('');
+
+  const html = `<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>404 Not Found - Kubernetes Ingress Controller</title>
+  <style>
+    ${commonVirtualStyles()}
+    .sim-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .sim-table th, .sim-table td { padding: 8px 12px; text-align: left; border-bottom: 1px solid #1f293d; }
+    .sim-table th { background: #0b0f19; color: #94a3b8; font-size: 11px; }
+  </style>
+</head>
+<body>
+  ${commonVirtualNav(host, port, path)}
+
+  <div class="v-container">
+    <div class="v-card" style="border-color:#f59e0b; background:#1c170d;">
+      <span class="badge amber">● 404 Not Found</span>
+      <h1 style="font-size:24px; font-weight:800; color:#fbbf24; margin-top:8px;">Ingress 라우팅 규칙 미등록 호스트 (default backend - 404)</h1>
+      <p style="font-size:13.5px; color:#cbd5e1; margin-top:6px;">
+        요청하신 호스트 <code>${host}:${port}${path}</code>에 일치하는 Ingress 라우팅 규칙이 정의되어 있지 않습니다.
+      </p>
+    </div>
+
+    <!-- 현재 실등록된 유효 Ingress 도메인 목록 -->
+    <div class="v-card">
+      <div class="v-card-title" style="margin-bottom:12px;">📋 현재 클러스터에 실등록된 유효 Ingress 규칙 목록</div>
+      <div style="overflow-x:auto;">
+        <table class="sim-table">
+          <thead>
+            <tr><th>도메인 (HOST)</th><th>포트</th><th>경로</th><th>타겟 서비스</th><th>SSL</th><th>바로가기</th></tr>
+          </thead>
+          <tbody>
+            ${validRulesHtml || '<tr><td colspan="6" style="text-align:center; color:#94a3b8;">등록된 규칙이 없습니다.</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+      <div style="font-size:12px; color:#94a3b8; margin-top:12px;">
+        💡 신규 도메인을 연결하려면 시뮬레이터 콘솔에서 <b>[+ 도메인/포트 매핑 추가]</b> 버튼을 클릭하여 호스트를 등록하세요.
+      </div>
+    </div>
+  </div>
+
+  <footer class="v-footer">
+    Kubernetes Ingress default backend · Host: ${host}:${port}${path} · VIP: ${lbVip}
+  </footer>
+</body>
+</html>`;
+
+  return new Response(html, {
+    status: 404,
+    headers: {
+      'content-type': 'text/html; charset=UTF-8',
+      'cache-control': 'no-store, no-cache, must-revalidate',
+      'X-Error-Code': '404 Not Found'
+    }
+  });
+}
+
+// 8. [예외] 400 Bad Request (HTTPS 전용 포트에 평문 HTTP 접근)
+function render400HttpsRequiredResponse({ host, port, path }) {
+  const httpsUrl = `https://${host}${port === 443 ? '' : (':' + port)}${path}`;
+  const html = `<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>400 Bad Request - HTTPS Required</title>
+  <style>${commonVirtualStyles()}</style>
+</head>
+<body>
+  <div class="v-container" style="max-width:640px; margin-top:60px;">
+    <div class="v-card" style="border-color:#f59e0b;">
+      <span class="badge amber">● 400 Bad Request</span>
+      <h1 style="font-size:20px; font-weight:700; color:#fbbf24; margin-top:8px;">The plain HTTP request was sent to HTTPS port</h1>
+      <p style="font-size:13px; color:#cbd5e1; margin-top:6px;">
+        포트 <b>${port}</b>는 TLS 1.3 암호화가 강제되는 HTTPS 전용 포트입니다. 평문(HTTP) 프로토콜로 직접 접근할 수 없습니다.
+      </p>
+      <div style="margin-top:16px;">
+        <a href="${httpsUrl}" class="btn-action">🔒 HTTPS로 안전하게 이동</a>
+      </div>
+    </div>
+  </div>
+</body>
+</html>`;
+  return new Response(html, {
+    status: 400,
+    headers: { 'content-type': 'text/html; charset=UTF-8', 'cache-control': 'no-store' }
+  });
 }
 
 // 프론트엔드 HTML / CSS / JS 렌더러
@@ -4048,6 +5135,7 @@ export function renderSimulatorPage(user) {
           <span class="op-title" id="active-lab-title">기본 클러스터</span>
           <button class="btn sm primary" onclick="openAddNodeModal()">➕ VM 노드 추가</button>
           <button class="btn sm" onclick="openModal('deploy-modal')">📦 파드 배포</button>
+          <button class="btn sm" onclick="openVirtualBrowser('app.ktci5.kr', 80, '/')" style="background:#0284c7; border-color:#0ea5e9; color:#fff; font-weight:700;">🌐 가상 웹 브라우저</button>
         </div>
 
         <div style="display:flex; align-items:center; gap:8px;">
@@ -4088,7 +5176,7 @@ export function renderSimulatorPage(user) {
             <button class="chip-btn" onclick="runChip('tunnel status')">tunnel status</button>
             <button class="chip-btn" onclick="runChip('curl -H &quot;Host: app.ktci5.kr&quot; http://211.252.85.10')">curl app.ktci5.kr</button>
             <button class="chip-btn" onclick="runChip('curl -H &quot;Host: dev.ktci5.kr&quot; http://211.252.85.10:443')">curl dev.ktci5.kr</button>
-            <button class="chip-btn" onclick="runChip('curl -H &quot;Host: api.ktci5.kr&quot; http://211.252.85.10')">curl api.ktci5.kr</button>
+            <button class="chip-btn" onclick="runChip('curl -H &quot;Host: api.ktci5.kr&quot; http://211.252.85.10/api')">curl api.ktci5.kr</button>
             <button class="chip-btn" onclick="runChip('help')">help</button>
           </div>
           <div class="term-input-row">
@@ -4239,7 +5327,10 @@ export function renderSimulatorPage(user) {
             <div class="panel-card">
               <div class="panel-header">
                 <span class="panel-title">🏷️ 도메인 및 포트 기반 라우팅 (Host & Port Routing)</span>
-                <button class="btn sm" onclick="openModal('domain-modal')">+ 도메인/포트 매핑 추가</button>
+                <div style="display:flex; gap:6px;">
+                  <button class="btn sm" onclick="openVirtualBrowser('app.ktci5.kr', 80, '/')" style="background:#0284c7; border-color:#0ea5e9; color:#fff; font-weight:700;">🌐 가상 브라우저 열기</button>
+                  <button class="btn sm" onclick="openModal('domain-modal')">+ 도메인/포트 매핑 추가</button>
+                </div>
               </div>
               <div style="overflow-x:auto;">
                 <table class="sim-table">
@@ -4491,6 +5582,78 @@ export function renderSimulatorPage(user) {
           <button type="submit" class="btn sm primary">도메인/포트 매핑</button>
         </div>
       </form>
+    </div>
+  </div>
+
+  <!-- 모달 5: 실시간 가상 웹 브라우저 뷰어 (Live Virtual Web Browser) -->
+  <div class="modal-overlay" id="virtual-browser-modal">
+    <div class="modal" style="max-width: 980px; width: 94vw; height: 86vh; display: flex; flex-direction: column; padding: 0; overflow: hidden; background: #0b0f19; border: 1px solid #1e293b; border-radius: 12px; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.85);">
+      
+      <!-- 윈도우 상단 타이틀바 / 탭 바 -->
+      <div style="background: #111827; border-bottom: 1px solid #1f293d; padding: 10px 14px; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-shrink: 0;">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span style="display: inline-block; width: 12px; height: 12px; border-radius: 50%; background: #ef4444; cursor: pointer;" onclick="closeModal('virtual-browser-modal')" title="닫기"></span>
+          <span style="display: inline-block; width: 12px; height: 12px; border-radius: 50%; background: #f59e0b;"></span>
+          <span style="display: inline-block; width: 12px; height: 12px; border-radius: 50%; background: #10b981;"></span>
+          <span style="font-size: 12px; font-weight: 700; color: #cbd5e1; margin-left: 8px; display: flex; align-items: center; gap: 6px;">
+            🌐 KT Cloud L7 Ingress 가상 웹 브라우저
+          </span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span id="vbrowser-status-badge" style="font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px; background: rgba(16,185,129,0.15); color: #10b981; border: 1px solid #059669;">
+            ● 200 OK
+          </span>
+          <button class="btn sm" onclick="closeModal('virtual-browser-modal')" style="padding: 2px 8px; background: transparent; border: none; color: #94a3b8; font-size: 14px; cursor: pointer;">✕</button>
+        </div>
+      </div>
+
+      <!-- 브라우저 주소창 & 툴바 -->
+      <div style="background: #0f172a; border-bottom: 1px solid #1e293b; padding: 8px 12px; display: flex; align-items: center; gap: 8px; flex-shrink: 0;">
+        <button class="btn sm" onclick="reloadVirtualBrowser()" title="새로고침" style="padding: 5px 9px;">🔄</button>
+        
+        <div style="flex: 1; display: flex; align-items: center; background: #1e293b; border: 1px solid #334155; border-radius: 6px; padding: 4px 10px; gap: 6px;">
+          <span id="vbrowser-ssl-icon" style="font-size: 12px;">🔒</span>
+          <input type="text" id="vbrowser-url-input" style="flex: 1; background: transparent; border: none; outline: none; color: #f8fafc; font-size: 12px; font-family: monospace;" placeholder="http://app.ktci5.kr:80/" onkeydown="if(event.key==='Enter') navigateVirtualBrowser()" />
+          <button class="btn sm primary" onclick="navigateVirtualBrowser()" style="padding: 2px 8px; font-size: 11px;">이동</button>
+        </div>
+
+        <button class="btn sm" onclick="copyVirtualBrowserUrl()" title="URL 복사" style="white-space: nowrap;">📋 복사</button>
+        <button class="btn sm" onclick="openVirtualBrowserNewTab()" title="새 탭에서 열기" style="white-space: nowrap;">↗ 새 탭</button>
+      </div>
+
+      <!-- 빠른 바로가기 북마크 바 -->
+      <div style="background: #0b0f19; border-bottom: 1px solid #1e293b; padding: 6px 12px; display: flex; align-items: center; gap: 6px; overflow-x: auto; flex-shrink: 0;" id="vbrowser-presets-bar">
+        <span style="font-size: 11px; color: #64748b; margin-right: 4px; white-space: nowrap;">실등록 규칙:</span>
+        <button class="chip-btn" id="vbm-app" onclick="openVirtualBrowser('app.ktci5.kr', 80, '/')">🏢 app.ktci5.kr:80 (/)</button>
+        <button class="chip-btn" id="vbm-api" onclick="openVirtualBrowser('api.ktci5.kr', 80, '/api')">⚡ api.ktci5.kr:80 (/api)</button>
+        <button class="chip-btn" id="vbm-dev" onclick="openVirtualBrowser('dev.ktci5.kr', 443, '/')">🧪 dev.ktci5.kr:443 (/)</button>
+      </div>
+
+      <!-- 브라우저 콘텐츠 영역 (Iframe) -->
+      <div style="flex: 1; position: relative; background: #090d16; overflow: hidden;">
+        <iframe id="vbrowser-iframe" style="width: 100%; height: 100%; border: none; background: #090d16;" onload="onVBrowserLoaded()"></iframe>
+        <div id="vbrowser-loading" style="display: none; position: absolute; inset: 0; background: rgba(11,15,25,0.85); backdrop-filter: blur(2px); align-items: center; justify-content: center; color: #38bdf8; font-size: 13px; font-weight: 600;">
+          <div style="text-align: center;">
+            <div style="font-size: 26px; margin-bottom: 8px;">⏳</div>
+            <div>L7 Ingress ALB ➔ 타겟 서비스 파드 라우팅 중...</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 하단 네트워크 & 라우팅 진단 상태바 -->
+      <div style="background: #111827; border-top: 1px solid #1f293d; padding: 6px 14px; display: flex; align-items: center; justify-content: space-between; font-size: 11px; color: #94a3b8; flex-shrink: 0; flex-wrap: wrap; gap: 6px;">
+        <div style="display: flex; align-items: center; gap: 12px;">
+          <span>L7 Ingress VIP: <b id="vbrowser-vip" style="color: #cbd5e1;">211.252.85.10</b></span>
+          <span>•</span>
+          <span id="vbrowser-hop-info">홉: Hub(L1) ➔ Switch(L2) ➔ Router(L3) ➔ ALB(L4) ➔ Ingress(L7)</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <span id="vbrowser-tunnel-indicator">터널: <b style="color:#10b981;">CONNECTED</b></span>
+          <span>•</span>
+          <span id="vbrowser-latency-indicator">지연시간: <b style="color:#fbbf24;">2.1ms</b></span>
+        </div>
+      </div>
+
     </div>
   </div>
 
@@ -4888,7 +6051,12 @@ export function renderSimulatorPage(user) {
           <td>\${r.path || '/'}</td>
           <td><span style="color:#38bdf8;">\${r.service}</span></td>
           <td><span style="color:#10b981;">\${r.ssl ? 'TLS Valid' : 'HTTP'}</span></td>
-          <td><button class="chip-btn" onclick="runChip('\${curlCmd}')" title="\${titleText}">호출</button></td>
+          <td>
+            <div style="display:flex; gap:6px; align-items:center;">
+              <button class="chip-btn" onclick="runChip('\${curlCmd}')" title="\${titleText}">호출</button>
+              <button class="chip-btn" style="background:#0284c7; color:#ffffff; font-weight:700; border-color:#0ea5e9;" onclick="openVirtualBrowser('\${r.host}', \${testPort}, '\${r.path || \'/\'}')" title="실제 웹 브라우저 페이지 열기">🌐 열기</button>
+            </div>
+          </td>
         </tr>
       \`;
       }).join('');
@@ -5079,6 +6247,152 @@ export function renderSimulatorPage(user) {
         }
       } catch (err) { alert('도메인 추가 실패: ' + err.message); }
     }
+
+    // 7-1. 실시간 가상 웹 브라우저 뷰어 제어
+    window.currentVBrowser = {
+      host: 'app.ktci5.kr',
+      port: 80,
+      path: '/'
+    };
+
+    window.openVirtualBrowser = function(host, port, path) {
+      host = host || 'app.ktci5.kr';
+      port = port ? parseInt(port, 10) : (host.startsWith('dev') ? 443 : 80);
+      path = path || '/';
+
+      window.currentVBrowser = { host, port, path };
+      openModal('virtual-browser-modal');
+
+      const proto = port === 443 ? 'https' : 'http';
+      const portStr = (port === 80 && proto === 'http') || (port === 443 && proto === 'https') ? '' : (':' + port);
+      const fullUrl = proto + '://' + host + portStr + path;
+
+      const input = document.getElementById('vbrowser-url-input');
+      if (input) input.value = fullUrl;
+
+      const sslIcon = document.getElementById('vbrowser-ssl-icon');
+      if (sslIcon) sslIcon.innerText = proto === 'https' ? '🔒' : '🌐';
+
+      document.querySelectorAll('#vbrowser-presets-bar .chip-btn').forEach(b => b.classList.remove('active'));
+      if (host.startsWith('app')) document.getElementById('vbm-app')?.classList.add('active');
+      else if (host.startsWith('api')) document.getElementById('vbm-api')?.classList.add('active');
+      else if (host.startsWith('dev')) document.getElementById('vbm-dev')?.classList.add('active');
+
+      loadVirtualBrowserPage(host, port, path);
+    };
+
+    function loadVirtualBrowserPage(host, port, path) {
+      const loader = document.getElementById('vbrowser-loading');
+      if (loader) loader.style.display = 'flex';
+
+      const iframe = document.getElementById('vbrowser-iframe');
+      const labId = currentLab?.id || 'lab-default';
+      const browseUrl = '/api/simulator/browse?host=' + encodeURIComponent(host) + '&port=' + port + '&path=' + encodeURIComponent(path) + '&labId=' + encodeURIComponent(labId) + '&_t=' + Date.now();
+      
+      iframe.src = browseUrl;
+
+      if (currentLab?.network) {
+        const net = currentLab.network;
+        const vipEl = document.getElementById('vbrowser-vip');
+        if (vipEl) vipEl.innerText = net.loadBalancer?.vip || '211.252.85.10';
+
+        const tOk = net.tunnel?.status === 'CONNECTED';
+        const tInd = document.getElementById('vbrowser-tunnel-indicator');
+        if (tInd) tInd.innerHTML = '터널: <b style="color:' + (tOk ? '#10b981' : '#ef4444') + ';">' + (net.tunnel?.status || 'CONNECTED') + '</b>';
+      }
+    }
+
+    window.reloadVirtualBrowser = function() {
+      if (window.currentVBrowser) {
+        loadVirtualBrowserPage(window.currentVBrowser.host, window.currentVBrowser.port, window.currentVBrowser.path);
+      }
+    };
+
+    window.navigateVirtualBrowser = function() {
+      const input = document.getElementById('vbrowser-url-input');
+      if (!input) return;
+      let raw = input.value.trim();
+      if (!raw) return;
+      if (!raw.startsWith('http://') && !raw.startsWith('https://')) {
+        raw = 'http://' + raw;
+      }
+      try {
+        const u = new URL(raw);
+        const host = u.hostname;
+        let port = u.port ? parseInt(u.port, 10) : (u.protocol === 'https:' ? 443 : 80);
+        const path = u.pathname + (u.search || '');
+        window.currentVBrowser = { host, port, path };
+        loadVirtualBrowserPage(host, port, path);
+      } catch (e) {
+        alert('올바른 URL을 입력해주세요 (예: http://app.ktci5.kr:80/)');
+      }
+    };
+
+    window.copyVirtualBrowserUrl = function() {
+      const input = document.getElementById('vbrowser-url-input');
+      if (input && input.value) {
+        navigator.clipboard.writeText(input.value).then(() => {
+          showToast('URL이 클립보드에 복사되었습니다.');
+        }).catch(() => {
+          showToast('URL: ' + input.value);
+        });
+      }
+    };
+
+    window.openVirtualBrowserNewTab = function() {
+      if (window.currentVBrowser) {
+        const { host, port, path } = window.currentVBrowser;
+        window.open('/vhost/' + host + (port && port !== 80 && port !== 443 ? (':' + port) : '') + path, '_blank');
+      }
+    };
+
+    window.onVBrowserLoaded = function() {
+      const loader = document.getElementById('vbrowser-loading');
+      if (loader) loader.style.display = 'none';
+
+      const badge = document.getElementById('vbrowser-status-badge');
+      const isTunnelDown = currentLab?.network?.tunnel?.status !== 'CONNECTED';
+      if (isTunnelDown) {
+        if (badge) {
+          badge.innerText = '● 502 Bad Gateway';
+          badge.style.color = '#ef4444';
+          badge.style.background = 'rgba(239, 68, 68, 0.15)';
+          badge.style.borderColor = '#b91c1c';
+        }
+        return;
+      }
+
+      const rules = currentLab?.network?.ingress?.rules || [];
+      const isRegistered = rules.some(r => r.host === window.currentVBrowser?.host);
+      if (!isRegistered) {
+        if (badge) {
+          badge.innerText = '● 404 Not Found';
+          badge.style.color = '#f59e0b';
+          badge.style.background = 'rgba(245, 158, 11, 0.15)';
+          badge.style.borderColor = '#d97706';
+        }
+        return;
+      }
+
+      const targetPool = currentLab?.network?.loadBalancer?.targetPool || [];
+      const hasHealthy = targetPool.some(p => p.status.includes('Healthy'));
+      if (!hasHealthy && targetPool.length > 0) {
+        if (badge) {
+          badge.innerText = '● 503 Unavailable';
+          badge.style.color = '#ef4444';
+          badge.style.background = 'rgba(239, 68, 68, 0.15)';
+          badge.style.borderColor = '#b91c1c';
+        }
+        return;
+      }
+
+      if (badge) {
+        badge.innerText = '● 200 OK';
+        badge.style.color = '#10b981';
+        badge.style.background = 'rgba(16, 185, 129, 0.15)';
+        badge.style.borderColor = '#059669';
+      }
+    };
 
     function toggleDurationValInput(unit) {
       const g = document.getElementById('deploy-val-group');
