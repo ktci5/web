@@ -49,6 +49,7 @@ import { renderProjectPage } from './projects.js';
 import { loadCourseIndex, loadCourse, loadNotes, loadAll, linkResolver, markdown, renderCourseList, renderCourseIndex, renderCourseChapter, renderSearch, COURSE_CSS } from './course.js';
 import { PORTAL_HTML } from './portal_html.js';
 import { STATIC_CHANGELOG } from './updates_data.js';
+import { renderSimulatorPage, handleSimulatorApi } from './simulator.js';
 
 const DISCORD_API = 'https://discord.com/api/v10';
 const USER_AGENT = 'DiscordBot (https://ktci5.kr, 1.0)';
@@ -102,6 +103,19 @@ export default {
       return page
         ? html(page)
         : errorPage('아직 준비되지 않은 프로젝트입니다.', 404);
+    }
+
+    // K8s 협업 가상 시뮬레이터 API (/api/simulator/*)
+    if (path.startsWith('/api/simulator')) {
+      const userId = await verifyPass(request, env);
+      if (!userId) {
+        return new Response(JSON.stringify({ ok: false, error: '인증이 필요합니다. /discord/verify 로 로그인해주세요.' }), {
+          status: 401,
+          headers: { 'content-type': 'application/json; charset=UTF-8' }
+        });
+      }
+      const user = await resolveUser(userId, env);
+      return handleSimulatorApi(request, path, env, user);
     }
 
     if (request.method === 'POST') {
@@ -175,6 +189,19 @@ export default {
       case '/updates':
       case '/study/updates':
         return guarded(request, env, updatesPage);
+      case '/study/simulator':
+      case '/study/lab':
+      case '/simulator':
+        return guarded(request, env, async (e) => {
+          const userId = await verifyPass(request, e);
+          const user = await resolveUser(userId, e);
+          return new Response(renderSimulatorPage(user), {
+            headers: {
+              'content-type': 'text/html; charset=UTF-8',
+              'cache-control': 'no-store',
+            },
+          });
+        });
       case '/study/calendar':
         return guarded(request, env, studyCalendarPage);
       case '/api/calendar/events':
@@ -289,6 +316,23 @@ async function verifyPass(request, env) {
   if (!(Number(exp) > Math.floor(Date.now() / 1000))) return null;
   const expected = await passSignature(env, `${userId}.${exp}`);
   return sig === expected ? userId : null;
+}
+
+async function resolveUser(userId, env) {
+  if (!userId) return { id: 'anon', name: '수강생' };
+  if (userId === PREVIEW_USER) return { id: 'preview', name: '운영진' };
+  try {
+    const roster = await loadRoster(env);
+    if (roster && roster.members) {
+      const match = roster.members.find((m) => m.id === userId);
+      if (match && match.name) return { id: userId, name: match.name };
+    }
+    const claims = await loadClaims(env);
+    for (const [name, uid] of Object.entries(claims)) {
+      if (uid === userId) return { id: userId, name };
+    }
+  } catch (e) {}
+  return { id: userId, name: '5기수강생' };
 }
 
 // 인증하지 않은 사람은 인증 흐름으로 보냈다가 끝나면 돌아오게 합니다.
@@ -525,6 +569,13 @@ async function studyIndexPage(env) {
         <h2>🛠️ 스터디 도구 & 심층 가이드</h2>
       </div>
       <div class="tool-grid">
+        <a class="t-card" href="/study/simulator">
+          <div class="t-icon">🖥️</div>
+          <div class="t-body">
+            <div class="t-title">K8s 협업 가상 랩 (시뮬레이터) <span class="tag">NEW</span></div>
+            <p class="t-desc">가상 클러스터 생성·자원 할당부터 수정 권한(ON/OFF) 기반 실시간 협업 터미널까지 직접 제어하는 실습 샌드박스.</p>
+          </div>
+        </a>
         <a class="t-card" href="/study/course/k8s/install">
           <div class="t-icon">☸️</div>
           <div class="t-body">
@@ -3489,6 +3540,7 @@ function renderDoc({ title, heading, sections, html: raw, extraCss = '' }) {
         <a href="/study" class="top-logo">📖 KT-CI5 스터디 Hub</a>
         <nav class="top-nav">
           <a href="/study/course" class="nav-item">📘 강의 정리</a>
+          <a href="/study/simulator" class="nav-item" style="color:#818cf8;border-color:rgba(99,102,241,0.4);">☸️ K8s 가상 랩</a>
           <a href="/study/calendar" class="nav-item">🗓️ 캘린더</a>
           <a href="/study/cheatsheet" class="nav-item">⚡ 치트시트</a>
           <a href="/study/linux" class="nav-item">🐧 리눅스 가이드</a>
@@ -3502,10 +3554,11 @@ function renderDoc({ title, heading, sections, html: raw, extraCss = '' }) {
   const bottomNav = `
     <div class="bottom-nav-bar">
       <a href="/study" class="bnav-btn">← 스터디 Hub</a>
+      <a href="/study/simulator" class="bnav-btn highlight">☸️ K8s 가상 랩</a>
       <a href="/study/course" class="bnav-btn">📘 강의 정리</a>
       <a href="/study/cheatsheet" class="bnav-btn">⚡ 치트시트</a>
       <a href="/study/linux" class="bnav-btn">🐧 리눅스 가이드</a>
-      <a href="/study/calendar" class="bnav-btn highlight">🗓️ 스터디 캘린더</a>
+      <a href="/study/calendar" class="bnav-btn">🗓️ 스터디 캘린더</a>
       <a href="/guide" class="bnav-btn">💬 채널 가이드 →</a>
     </div>
   `;
