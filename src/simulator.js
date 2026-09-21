@@ -9,36 +9,83 @@
 
 export const SIMULATOR_TITLE = 'K8s 상용 인프라 & 협업 가상 랩 콘솔';
 
-// 기본 네트워크 템플릿
+// 기본 네트워크 템플릿 (OSI 7단계 레이어 및 VPN, 터널, 로드밸런싱, 라우터, 스위치, 허브 통합)
 function createDefaultNetwork() {
   return {
+    layers: {
+      l7_application: { name: 'L7 응용 계층', status: 'ACTIVE', desc: '도메인 라우팅, SSL/TLS Ingress & HTTP 리버스 프록시' },
+      l6_presentation: { name: 'L6 표현 계층', status: 'ACTIVE', desc: 'TLS 1.3 암호화/복호화 (Let\'s Encrypt Valid), gzip 압축' },
+      l5_session: { name: 'L5 세션 계층', status: 'ACTIVE', desc: 'WireGuard Mesh / Cloudflare Argo Session Keep-Alive' },
+      l4_transport: { name: 'L4 전송 계층', status: 'ACTIVE', desc: 'TCP 포트 포워딩 (VIP:80, VIP:443 ➔ NodePort:30080)' },
+      l3_network: { name: 'L3 네트워크 계층', status: 'ACTIVE', desc: '가상 라우터 (vRouter) CIDR 10.10.0.0/16 ➔ 172.20.0.0/16 NAT' },
+      l2_datalink: { name: 'L2 데이터링크 계층', status: 'ACTIVE', desc: 'L2 가상 브릿지 스위치 (vSwitch VLAN 100), MAC 테이블' },
+      l1_physical: { name: 'L1 물리 계층', status: 'ACTIVE', desc: '가상 허브 포트 (10Gbps Virtual NIC Link Up)' }
+    },
+    vpn: {
+      name: 'kt-corp-ipsec-vpn',
+      type: 'IPsec / WireGuard Site-to-Site VPN',
+      status: 'CONNECTED', // 'CONNECTED' | 'DISCONNECTED'
+      clientSubnet: '192.168.100.0/24',
+      serverEndpoint: 'vpn.ktci5.kr:51820',
+      connectedClients: 8,
+      throughputMbps: 120,
+      latencyMs: 4.2
+    },
+    tunnel: {
+      name: 'kt-hybrid-argo-tunnel',
+      provider: 'Cloudflare Tunnel (argo) / WireGuard Mesh',
+      status: 'CONNECTED', // 'CONNECTED' | 'DISCONNECTED'
+      endpoint: 'tunnel.ktci5.kr ➔ 10.10.10.12 (KT Cloud DBO)',
+      throughputMbps: 480,
+      latencyMs: 3.5,
+      encryption: 'ChaCha20-Poly1305'
+    },
     loadBalancer: {
       name: 'kt-cloud-alb-01',
       vip: '211.252.85.10',
       type: 'KT Cloud L7 Application Load Balancer',
       status: 'Healthy',
-      algorithm: 'RoundRobin',
+      algorithm: 'RoundRobin', // 'RoundRobin' | 'LeastConnection' | 'IPHash'
       ssl: 'TLSv1.3 (Let\'s Encrypt Valid)',
       targetPool: [
-        { target: '10.10.10.20:30080', status: 'Healthy', latencyMs: 2.1 },
-        { target: '10.10.10.12:30080', status: 'Healthy', latencyMs: 1.8 }
+        { target: '10.10.10.20:30080', status: 'Healthy', latencyMs: 2.1, weight: 50 },
+        { target: '10.10.10.12:30080', status: 'Healthy', latencyMs: 1.8, weight: 50 }
       ]
     },
     ingress: {
       domain: 'ktci5.kr',
       rules: [
-        { host: 'app.ktci5.kr', path: '/', service: 'web-service:80', ssl: true },
-        { host: 'api.ktci5.kr', path: '/api', service: 'api-service:8080', ssl: true }
+        { host: 'app.ktci5.kr', path: '/', port: 80, targetPort: 80, service: 'web-service:80', ssl: true, protocol: 'HTTP/1.1 & HTTP/2' },
+        { host: 'api.ktci5.kr', path: '/api', port: 443, targetPort: 8080, service: 'api-service:8080', ssl: true, protocol: 'HTTPS' }
       ]
     },
-    tunnel: {
-      name: 'kt-hybrid-argo-tunnel',
-      provider: 'Cloudflare Tunnel (argo) / WireGuard Mesh',
-      status: 'CONNECTED', // 'CONNECTED' | 'DISCONNECTED' | 'DEGRADED'
-      endpoint: 'tunnel.ktci5.kr ➔ 10.10.10.12 (KT Cloud DBO)',
-      throughputMbps: 480,
-      latencyMs: 3.5,
-      encryption: 'ChaCha20-Poly1305'
+    router: {
+      name: 'kt-vrouter-core-01',
+      cidr: '10.10.0.0/16',
+      gateway: '10.10.0.1',
+      status: 'ONLINE',
+      routes: [
+        { dest: '0.0.0.0/0', nextHop: '211.252.85.1', iface: 'eth0 (Internet)' },
+        { dest: '10.10.10.0/24', nextHop: 'DIRECT', iface: 'eth1 (VLAN100-Nodes)' },
+        { dest: '172.20.0.0/16', nextHop: '10.10.10.12', iface: 'eth2 (Overlay-Calico)' }
+      ]
+    },
+    switch: {
+      name: 'kt-vswitch-dist-01',
+      type: 'Managed L2 Open vSwitch',
+      vlan: 100,
+      status: 'FORWARDING',
+      ports: [
+        { port: 1, node: 'master1', ip: '10.10.10.12', mac: '52:54:00:12:34:56', speed: '10Gbps', state: 'UP' },
+        { port: 2, node: 'w1', ip: '10.10.10.20', mac: '52:54:00:12:34:57', speed: '10Gbps', state: 'UP' }
+      ]
+    },
+    hub: {
+      name: 'kt-l1-virtual-hub',
+      status: 'LINK_UP',
+      broadcastDomain: 'br-nodes-broadcast',
+      collisions: 0,
+      signalStrengthPct: 100
     }
   };
 }
@@ -338,8 +385,17 @@ export async function getLabDetail(env, id) {
       }
     }
     // 네트워크 객체 및 디스크 보완 (기존 랩 호환성)
-    if (lab && !lab.network) {
-      lab.network = createDefaultNetwork();
+    if (lab) {
+      if (!lab.network) {
+        lab.network = createDefaultNetwork();
+      } else {
+        const def = createDefaultNetwork();
+        if (!lab.network.vpn) lab.network.vpn = def.vpn;
+        if (!lab.network.router) lab.network.router = def.router;
+        if (!lab.network.switch) lab.network.switch = def.switch;
+        if (!lab.network.hub) lab.network.hub = def.hub;
+        if (!lab.network.layers) lab.network.layers = def.layers;
+      }
     }
     if (lab && lab.nodes) {
       for (const n of lab.nodes) {
@@ -477,24 +533,29 @@ export function evalK8sCommand(cmdLine, lab, user) {
   // 1. HELP
   if (tokens[0] === 'help' || line === '?') {
     return {
-      output: `\x1b[36;1m☸️ 사용 가능한 쿠버네티스 & 인프라 명령어 목록:\x1b[0m
-  • \x1b[33mk get nodes [-o wide]\x1b[0m        : 노드 목록 및 IP 조회
-  • \x1b[33mk get pods [-o wide]\x1b[0m         : 파드 상태 및 할당 노드 조회
-  • \x1b[33mk get svc / k get ingress\x1b[0m    : 서비스 및 Ingress 도메인 라우팅 조회
-  • \x1b[33mk top nodes / k top pods\x1b[0m      : 가상 CPU/메모리 실시간 사용률 조회
-  • \x1b[33mdf -h\x1b[0m                         : 가상 노드 스토리지/디스크 용량 점검
-  • \x1b[33mtunnel status\x1b[0m                 : 하이브리드 클라우드 터널 상태 및 지연시간 조회
-  • \x1b[33mk run <이름> --image=<이미지>\x1b[0m  : 단일 파드 생성
+      output: `\x1b[36;1m☸️ 사용 가능한 쿠버네티스 & 7단계 네트워크 인프라 명령어 목록:\x1b[0m
+  • \x1b[33mk get nodes [-o wide]\x1b[0m        : 노드 목록 및 사설 IP 조회
+  • \x1b[33mk get pods [-o wide]\x1b[0m         : 파드 상태, 컨테이너 IP, 할당 노드 조회
+  • \x1b[33mk get svc / k get ingress\x1b[0m    : 서비스 및 Ingress 도메인/포트 라우팅 테이블
+  • \x1b[33mk top nodes / k top pods\x1b[0m      : 가상 CPU/메모리 실시간 사용량 모니터링
+  • \x1b[33mdf -h\x1b[0m                         : 가상 노드 스토리지/블록 디스크 용량 점검
+  • \x1b[33mnetstat -tuln\x1b[0m                 : L4 전송 계층 오픈 포트(VIP:80, 443, 30080, 51820) 리슨 상태
+  • \x1b[33mip route / route -n\x1b[0m           : L3 가상 라우터(vRouter) 라우팅 테이블 및 게이트웨이
+  • \x1b[33mbrctl show / ovs-vsctl\x1b[0m       : L2 가상 브릿지 스위치(vSwitch) 포트 & MAC 포워딩
+  • \x1b[33mvpn status\x1b[0m                    : IPsec / WireGuard Site-to-Site VPN 터널링 상태
+  • \x1b[33mtunnel status\x1b[0m                 : Cloudflare 하이브리드 아르고 터널 상태 및 대역폭
+  • \x1b[33mlayers\x1b[0m                        : OSI 7계층 (L1 허브 ~ L7 응용) 실시간 연동 진단
+  • \x1b[33mk run <이름> --image=<이미지>\x1b[0m  : 단일 파드 즉시 생성 (스케줄링)
   • \x1b[33mk create deploy <이름> --image=<이미지> --replicas=<N>\x1b[0m : 디플로이먼트 생성
-  • \x1b[33mk scale deploy <이름> --replicas=<N>\x1b[0m                   : 레플리카 수 조정
+  • \x1b[33mk scale deploy <이름> --replicas=<N>\x1b[0m                   : 레플리카 수 스케일링
   • \x1b[33mk expose deploy <이름> --port=80 --type=NodePort\x1b[0m       : NodePort 서비스 노출
   • \x1b[33mk taint nodes <노드> <키>:<효과>[-]\x1b[0m                  : 노드 Taint 설정/해제
   • \x1b[33mk label nodes <노드> <키>=<값>[-]\x1b[0m                   : 노드 라벨 부여/삭제
   • \x1b[33mk cordon <노드> / k uncordon <노드>\x1b[0m                 : 노드 스케줄링 제어
   • \x1b[33mk drain <노드> --ignore-daemonsets\x1b[0m                 : 노드 파드 비우기(Drain)
   • \x1b[33mk delete pod/deploy/svc <이름>\x1b[0m                         : 리소스 삭제
-  • \x1b[33mcurl [-H "Host: ..."] <IP/도메인>\x1b[0m                    : L7 로드밸런서 및 도메인 호출 테스트
-  • \x1b[33mclear\x1b[0m                                                 : 화면 지우기`,
+  • \x1b[33mcurl [-H "Host: ..."] <IP/도메인>[:포트]\x1b[0m            : L7 로드밸런서, 도메인, 포트 호출 테스트
+  • \x1b[33mclear\x1b[0m                                                 : 터미널 화면 지우기`,
       labChanged: false
     };
   }
@@ -515,7 +576,68 @@ export function evalK8sCommand(cmdLine, lab, user) {
     return { output: out.trimEnd(), labChanged: false };
   }
 
-  // 3. TUNNEL STATUS
+  // 3. NETSTAT -TULN (L4 전송 계층 포트 리슨)
+  if (line.startsWith('netstat') || line.startsWith('ss -tuln')) {
+    const net = lab.network || createDefaultNetwork();
+    let out = 'Proto Recv-Q Send-Q Local Address           Foreign Address         State       Layer/Service\n';
+    out += `tcp        0      0 0.0.0.0:80              0.0.0.0:*               LISTEN      L7 ALB (HTTP Ingress)\n`;
+    out += `tcp        0      0 0.0.0.0:443             0.0.0.0:*               LISTEN      L7 ALB (HTTPS TLS1.3)\n`;
+    for (const svc of (lab.services || [])) {
+      if (svc.nodePort) {
+        out += `tcp        0      0 0.0.0.0:${svc.nodePort}          0.0.0.0:*               LISTEN      K8s NodePort (${svc.name})\n`;
+      }
+    }
+    out += `udp        0      0 0.0.0.0:51820           0.0.0.0:*                           VPN/WireGuard (kt-corp-vpn)\n`;
+    out += `tcp        0      0 127.0.0.1:6443          0.0.0.0:*               LISTEN      kube-apiserver\n`;
+    return { output: out.trimEnd(), labChanged: false };
+  }
+
+  // 4. IP ROUTE / ROUTE -N (L3 네트워크 계층)
+  if (line === 'ip route' || line === 'route -n' || line === 'netstat -r') {
+    const r = lab.network?.router || createDefaultNetwork().router;
+    let out = `Kernel IP routing table (Router: ${r.name}, Gateway: ${r.gateway})\n`;
+    out += 'Destination     Gateway         Genmask         Flags Metric Ref    Use Iface\n';
+    out += '0.0.0.0         211.252.85.1    0.0.0.0         UG    100    0        0 eth0 (WAN)\n';
+    out += '10.10.0.0       0.0.0.0         255.255.0.0     U     0      0        0 eth1 (vSwitch-VLAN100)\n';
+    out += '172.20.0.0      10.10.10.12     255.255.0.0     UG    10     0        0 eth2 (Calico-Overlay)\n';
+    out += '192.168.100.0   10.10.10.12     255.255.255.0   UG    20     0        0 wg0 (VPN-Subnet)\n';
+    return { output: out.trimEnd(), labChanged: false };
+  }
+
+  // 5. BRCTL SHOW / OVS-VSCTL (L2 데이터링크 계층)
+  if (line.startsWith('brctl') || line.startsWith('ovs') || line === 'bridge link') {
+    const sw = lab.network?.switch || createDefaultNetwork().switch;
+    let out = `bridge name     bridge id               STP enabled     interfaces\n`;
+    out += `${sw.name.padEnd(16)}8000.525400123456       no              `;
+    const ifaces = (sw.ports || []).map(p => `vport${p.port}-${p.node}`).join('\n' + ''.padEnd(40));
+    out += ifaces + '\n\n';
+    out += `L2 Forwarding MAC Database (VLAN ${sw.vlan}):\n`;
+    out += `Port  MAC Address        Node       Speed    Status\n`;
+    for (const p of (sw.ports || [])) {
+      out += `${String(p.port).padEnd(6)}${p.mac.padEnd(19)}${p.node.padEnd(11)}${p.speed.padEnd(9)}${p.state}\n`;
+    }
+    return { output: out.trimEnd(), labChanged: false };
+  }
+
+  // 6. VPN STATUS
+  if (line === 'vpn status' || line === 'wg show') {
+    const v = lab.network?.vpn || createDefaultNetwork().vpn;
+    const isOk = v.status === 'CONNECTED';
+    return {
+      output: `\x1b[36;1m🔒 KT Cloud Corporate Site-to-Site VPN:\x1b[0m
+  • Name:        ${v.name}
+  • Protocol:    ${v.type}
+  • Status:      ${isOk ? '\x1b[32;1m● CONNECTED (Active)\x1b[0m' : '\x1b[31;1m● DISCONNECTED\x1b[0m'}
+  • Endpoint:    ${v.serverEndpoint}
+  • Subnet:      ${v.clientSubnet}
+  • Peers:       ${v.connectedClients} Connected Clients
+  • Throughput:  ${isOk ? v.throughputMbps + ' Mbps' : '0 Mbps'}
+  • Latency:     ${isOk ? v.latencyMs + ' ms' : 'N/A'}`,
+      labChanged: false
+    };
+  }
+
+  // 7. TUNNEL STATUS
   if (line === 'tunnel status' || line === 'cloudflared tunnel info') {
     const t = lab.network?.tunnel || createDefaultNetwork().tunnel;
     const isOk = t.status === 'CONNECTED';
@@ -532,10 +654,26 @@ export function evalK8sCommand(cmdLine, lab, user) {
     };
   }
 
-  // 4. CURL 테스트 (L7 로드밸런서, Ingress 도메인, NodePort 지원)
+  // 8. LAYERS (OSI 7단계 계층 진단)
+  if (line === 'layers' || line === 'osi' || line === 'osi 7') {
+    const net = lab.network || createDefaultNetwork();
+    const l = net.layers || createDefaultNetwork().layers;
+    let out = '\x1b[36;1m🌐 KT Cloud OSI 7-Layer Network Architecture Status:\x1b[0m\n';
+    out += `  • \x1b[35;1m[L7 응용]\x1b[0m     ALB/Ingress 도메인 라우팅 (app.ktci5.kr, api.ktci5.kr) ➔ \x1b[32mACTIVE\x1b[0m\n`;
+    out += `  • \x1b[35;1m[L6 표현]\x1b[0m     TLSv1.3 SSL 암호화 & GZIP 압축 ➔ \x1b[32mENCRYPTED\x1b[0m\n`;
+    out += `  • \x1b[35;1m[L5 세션]\x1b[0m     Cloudflare Argo / WireGuard Mesh 세션 유지 ➔ \x1b[32mESTABLISHED\x1b[0m\n`;
+    out += `  • \x1b[35;1m[L4 전송]\x1b[0m     TCP 포트 포워딩 (VIP:80, 443 ➔ NodePort:30080) ➔ \x1b[32mLISTENING\x1b[0m\n`;
+    out += `  • \x1b[35;1m[L3 네트워크]\x1b[0m vRouter 10.10.0.0/16 ➔ Calico 172.20.0.0/16 NAT 라우팅 ➔ \x1b[32mROUTED\x1b[0m\n`;
+    out += `  • \x1b[35;1m[L2 데이터링크]\x1b[0m Open vSwitch (VLAN 100, 10Gbps 가상 NIC MAC 테이블) ➔ \x1b[32mFORWARDING\x1b[0m\n`;
+    out += `  • \x1b[35;1m[L1 물리]\x1b[0m     KT Cloud DBO 가상 백본 허브 (10Gbps Virtual Link Up) ➔ \x1b[32mLINK_UP\x1b[0m\n`;
+    return { output: out.trimEnd(), labChanged: false };
+  }
+
+  // 9. CURL 테스트 (L7 로드밸런서, Ingress 도메인, NodePort, VPN 지원)
   if (tokens[0] === 'curl') {
     const net = lab.network || createDefaultNetwork();
     const isTunnelDown = net.tunnel?.status === 'DISCONNECTED';
+    const isVpnDown = net.vpn?.status === 'DISCONNECTED';
     
     // 도메인 헤더 추출
     let targetHost = '';
@@ -567,10 +705,10 @@ export function evalK8sCommand(cmdLine, lab, user) {
 
     // L7 로드밸런서 VIP 또는 도메인 매칭
     const isLbVip = hostOrIp === net.loadBalancer?.vip;
-    const isDomainMatch = targetHost && net.ingress?.rules?.some((r) => r.host === targetHost);
+    const isDomainMatch = targetHost && net.ingress?.rules?.some((r) => r.host === targetHost || (r.port && r.port === port));
 
     if (isLbVip || isDomainMatch) {
-      const matchedRule = net.ingress?.rules?.find((r) => r.host === targetHost) || net.ingress?.rules?.[0];
+      const matchedRule = net.ingress?.rules?.find((r) => r.host === targetHost || r.port === port) || net.ingress?.rules?.[0];
       const targetService = matchedRule?.service?.split(':')[0] || 'web-service';
       
       const targetPods = lab.pods?.filter((p) => p.status === 'Running' && (p.name.includes('web') || p.name.includes('api')));
@@ -581,10 +719,11 @@ export function evalK8sCommand(cmdLine, lab, user) {
         return {
           output: `\x1b[32mHTTP/1.1 200 OK\x1b[0m
 Date: ${new Date().toUTCString()}
-Server: KT-Cloud-ALB/2.4 (L7 Reverse Proxy)
-X-Forwarded-Host: ${targetHost || 'app.ktci5.kr'}
+Server: KT-Cloud-ALB/2.4 (L7 Reverse Proxy & Ingress)
+X-Forwarded-Host: ${targetHost || 'app.ktci5.kr'}:${port}
 X-Forwarded-Proto: https
 X-Backend-Server: ${chosenPod.ip}:80 (${chosenPod.node})
+X-Network-Path: Hub(L1) ➔ vSwitch(L2:VLAN100) ➔ vRouter(L3:NAT) ➔ ALB(L4:Port${port}) ➔ TLS1.3(L6) ➔ Ingress(L7)
 Content-Type: text/html; charset=UTF-8
 
 <!DOCTYPE html>
@@ -592,9 +731,10 @@ Content-Type: text/html; charset=UTF-8
 <head><title>KT Cloud 5기 상용 인프라 서비스</title></head>
 <body style="font-family:sans-serif;padding:30px;text-align:center;">
 <h1>🚀 Production Service via KT Cloud L7 ALB</h1>
-<p>Domain: <b>${targetHost || 'app.ktci5.kr'}</b> ➔ Ingress VIP: <b>${net.loadBalancer?.vip}</b></p>
+<p>Domain: <b>${targetHost || 'app.ktci5.kr'}</b> (Port: <b>${port}</b>) ➔ Ingress VIP: <b>${net.loadBalancer?.vip}</b></p>
 <p>Routed Pod: <span style="color:#10b981;font-weight:bold;">${chosenPod.name}</span> (Node: <b>${chosenPod.node}</b>)</p>
-<p>SSL Status: <b>${net.loadBalancer?.ssl}</b> | Tunnel: <b>${net.tunnel?.status}</b></p>
+<p>SSL Status: <b>${net.loadBalancer?.ssl}</b> | Tunnel: <b>${net.tunnel?.status}</b> | VPN: <b>${net.vpn?.status || 'CONNECTED'}</b></p>
+<p style="font-size:12px;color:#64748b;">OSI 7-Layer Routing: Hub(L1) ➔ Switch(L2) ➔ Router(L3) ➔ Port ${port}(L4) ➔ Session(L5) ➔ TLS(L6) ➔ App(L7)</p>
 </body>
 </html>`,
           labChanged: false
@@ -1176,7 +1316,122 @@ export async function handleSimulatorApi(request, path, env, user) {
       return new Response(JSON.stringify({ ok: true, node, lab }), { headers: jsonHeaders });
     }
 
-    // 7. PATCH /api/simulator/labs/:id/network : 네트워크 설정 (LB 알고리즘, 터널 토글, 도메인 연결)
+    // 6-1. DELETE /api/simulator/labs/:id/nodes/:nodeName : VM 노드 삭제 & 파드 재배치
+    if (action && action.startsWith('nodes/') && method === 'DELETE') {
+      if (!lab.editable) return new Response(JSON.stringify({ ok: false, error: '수정 권한이 OFF 상태입니다.' }), { headers: jsonHeaders, status: 403 });
+      const nodeName = action.split('/')[1];
+      const idx = (lab.nodes || []).findIndex(n => n.name === nodeName);
+      if (idx === -1) return new Response(JSON.stringify({ ok: false, error: '노드를 찾을 수 없습니다.' }), { headers: jsonHeaders, status: 404 });
+      if (lab.nodes[idx].role === 'control-plane') {
+        return new Response(JSON.stringify({ ok: false, error: '마스터 노드(control-plane)는 삭제할 수 없습니다.' }), { headers: jsonHeaders, status: 400 });
+      }
+
+      const deletedNode = lab.nodes.splice(idx, 1)[0];
+      // 해당 노드에 있던 파드 재스케줄링
+      rescheduleAll(lab);
+
+      lab.activityLogs.unshift({
+        time: timeStr,
+        user: userName,
+        action: `🗑️ 워커 노드 VM '${nodeName}' (${deletedNode.ip}) 반납/삭제 완료`
+      });
+
+      await saveLabDetail(env, lab);
+      return new Response(JSON.stringify({ ok: true, lab }), { headers: jsonHeaders });
+    }
+
+    // 6-2. POST /api/simulator/labs/:id/workloads : GUI 파드 / 디플로이먼트 배포 (초/분/시간 단위 수명 & 랜덤 활동 설정)
+    if (action === 'workloads' && method === 'POST') {
+      if (!lab.editable) return new Response(JSON.stringify({ ok: false, error: '수정 권한이 OFF 상태입니다.' }), { headers: jsonHeaders, status: 403 });
+      let body = {};
+      try { body = await request.json(); } catch {}
+
+      const name = (body.name || `app-${Date.now().toString(36).slice(-4)}`).trim().toLowerCase().replace(/[^a-z0-9-]/g, '-');
+      const image = body.image || 'nginx:1.25';
+      const replicas = Math.min(Math.max(1, parseInt(body.replicas || '1', 10)), 12);
+      const cpuReqM = parseInt(body.cpuReqM || '100', 10);
+      const disktype = body.disktype || '';
+      const exposeNodePort = Boolean(body.exposeNodePort);
+      const durationUnit = body.durationUnit || 'forever'; // 'sec' | 'min' | 'hour' | 'forever' | 'random'
+      const durationValue = parseInt(body.durationValue || '30', 10);
+
+      // 지속 시간 계산 (초 단위)
+      let lifeSeconds = 0;
+      if (durationUnit === 'sec') lifeSeconds = Math.max(5, durationValue);
+      else if (durationUnit === 'min') lifeSeconds = Math.max(1, durationValue) * 60;
+      else if (durationUnit === 'hour') lifeSeconds = Math.max(1, durationValue) * 3600;
+      else if (durationUnit === 'random') lifeSeconds = Math.floor(Math.random() * 90) + 15; // 15초 ~ 105초 랜덤 라이프사이클
+
+      const expiresAt = lifeSeconds > 0 ? Date.now() + (lifeSeconds * 1000) : null;
+      const isRandomBurst = Boolean(body.randomBurst || durationUnit === 'random');
+
+      if (!lab.pods) lab.pods = [];
+      if (!lab.deployments) lab.deployments = [];
+      if (!lab.services) lab.services = [];
+
+      lab.deployments.push({
+        name,
+        replicas,
+        image,
+        labels: { app: name },
+        cpuReqM,
+        expiresAt,
+        lifeSeconds,
+        isRandomBurst
+      });
+
+      for (let i = 0; i < replicas; i++) {
+        const podSuffix = Math.random().toString(36).substring(2, 7);
+        const podName = `${name}-${podSuffix}`;
+        const newPod = {
+          name: podName,
+          namespace: 'default',
+          node: 'None',
+          status: 'Pending',
+          ip: 'None',
+          image,
+          cpuReqM,
+          ramReqMi: Math.round(cpuReqM * 1.28),
+          labels: { app: name },
+          nodeSelector: disktype ? { disktype } : undefined,
+          restarts: 0,
+          age: '1s',
+          createdAt: Date.now(),
+          expiresAt,
+          lifeSeconds,
+          isRandomBurst,
+          rpsLoad: isRandomBurst ? Math.floor(Math.random() * 40) + 10 : 20
+        };
+        schedulePod(newPod, lab);
+        lab.pods.push(newPod);
+      }
+
+      if (exposeNodePort) {
+        const nextPort = 30000 + Math.floor(Math.random() * 2000);
+        const randIp = `10.96.${Math.floor(Math.random() * 200) + 10}.${Math.floor(Math.random() * 200) + 10}`;
+        lab.services.push({
+          name: `${name}-svc`,
+          type: 'NodePort',
+          clusterIp: randIp,
+          nodePort: nextPort,
+          port: 80,
+          targetPort: 80,
+          selector: { app: name }
+        });
+      }
+
+      const lifeDesc = durationUnit === 'forever' ? '지속 동작' : durationUnit === 'random' ? `랜덤 버스트 라이프사이클 (${lifeSeconds}초)` : `${durationValue} ${durationUnit} 후 자동 정리`;
+      lab.activityLogs.unshift({
+        time: timeStr,
+        user: userName,
+        action: `📦 워크로드 '${name}' (${replicas} 파드, ${lifeDesc}${isRandomBurst ? ', 랜덤 트래픽' : ''}) 배포 완료`
+      });
+
+      await saveLabDetail(env, lab);
+      return new Response(JSON.stringify({ ok: true, lab }), { headers: jsonHeaders, status: 201 });
+    }
+
+    // 7. PATCH /api/simulator/labs/:id/network : 네트워크 설정 (OSI 7단계, VPN 토글, LB 알고리즘, 터널 토글, 도메인/포트 연결)
     if (action === 'network' && (method === 'PATCH' || method === 'POST')) {
       if (!lab.editable) return new Response(JSON.stringify({ ok: false, error: '수정 권한이 OFF 상태입니다.' }), { headers: jsonHeaders, status: 403 });
       let body = {};
@@ -1193,17 +1448,44 @@ export async function handleSimulatorApi(request, path, env, user) {
         });
       }
 
+      if (body.toggleVpn !== undefined) {
+        if (!lab.network.vpn) lab.network.vpn = createDefaultNetwork().vpn;
+        lab.network.vpn.status = lab.network.vpn.status === 'CONNECTED' ? 'DISCONNECTED' : 'CONNECTED';
+        lab.activityLogs.unshift({
+          time: timeStr,
+          user: userName,
+          action: `🔒 [KT Cloud VPN] 상태 변경 ➔ ${lab.network.vpn.status}`
+        });
+      }
+
+      if (body.updateLbAlgorithm) {
+        if (!lab.network.loadBalancer) lab.network.loadBalancer = createDefaultNetwork().loadBalancer;
+        lab.network.loadBalancer.algorithm = body.updateLbAlgorithm;
+        lab.activityLogs.unshift({
+          time: timeStr,
+          user: userName,
+          action: `⚖️ [L7 로드밸런서] 분산 알고리즘 ➔ '${body.updateLbAlgorithm}' 변경 완료`
+        });
+      }
+
       if (body.addDomain) {
+        if (!lab.network.ingress) lab.network.ingress = createDefaultNetwork().ingress;
+        if (!lab.network.ingress.rules) lab.network.ingress.rules = [];
+        const port = parseInt(body.addDomain.port || '80', 10);
+        const targetPort = parseInt(body.addDomain.targetPort || '80', 10);
         lab.network.ingress.rules.push({
           host: body.addDomain.host,
           path: body.addDomain.path || '/',
-          service: body.addDomain.service || 'web-service:80',
-          ssl: true
+          port,
+          targetPort,
+          service: body.addDomain.service || `web-service:${targetPort}`,
+          ssl: port === 443 || Boolean(body.addDomain.ssl),
+          protocol: port === 443 ? 'HTTPS (TLS1.3)' : 'HTTP/1.1'
         });
         lab.activityLogs.unshift({
           time: timeStr,
           user: userName,
-          action: `🌐 [도메인 바인딩] '${body.addDomain.host}' ➔ '${body.addDomain.service}' Ingress 매핑 & SSL 발급 완료`
+          action: `🌐 [도메인/포트 라우팅] '${body.addDomain.host}:${port}' ➔ '${body.addDomain.service}' Ingress 매핑 & SSL 바인딩 완료`
         });
       }
 
@@ -1625,25 +1907,55 @@ export function renderSimulatorPage(user) {
         <div class="pane-topology" id="pane-topology">
           
           <div class="topo-tabs-bar">
-            <button class="tab-btn active" id="tab-btn-topo" onclick="switchRightTab('topo')">📊 클러스터 & 파드</button>
-            <button class="tab-btn" id="tab-btn-network" onclick="switchRightTab('network')">🌐 네트워크 & LB / 터널</button>
+            <button class="tab-btn active" id="tab-btn-topo" onclick="switchRightTab('topo')">📊 클러스터 & 실시간 처리량</button>
+            <button class="tab-btn" id="tab-btn-network" onclick="switchRightTab('network')">🌐 네트워크 & 7계층 (OSI) / VPN</button>
             <button class="tab-btn" id="tab-btn-hardware" onclick="switchRightTab('hardware')">⚙️ 하드웨어 증설 (CPU/RAM/디스크)</button>
             <button class="tab-btn" id="tab-btn-scenario" onclick="switchRightTab('scenario')">🚨 상용 시나리오 & 트러블슈팅</button>
           </div>
 
-          <!-- 서브탭 1: 토폴로지 & 파드 -->
+          <!-- 서브탭 1: 토폴로지 & 파드 & 실시간 처리량 집계 -->
           <div class="topo-tab-content" id="tab-content-topo">
             <div class="panel-card">
               <div class="panel-header">
-                <span class="panel-title">🎛️ 가상 트래픽 발생기 (RPS)</span>
+                <span class="panel-title">🎛️ 실시간 가상 트래픽 발생기 (Traffic Generator)</span>
                 <span style="font-size:11px; font-family:monospace; color:#818cf8; font-weight:700;" id="traffic-val">180 req/s</span>
               </div>
               <input type="range" class="form-control" style="padding:0; height:18px; accent-color:#6366f1; cursor:pointer;" id="traffic-slider" min="0" max="3000" step="50" value="180" onchange="updateTraffic(this.value)" />
             </div>
 
+            <!-- 실시간 처리량 집계 패널 (Master vs Worker Telemetry) -->
+            <div class="panel-card" style="border-left: 3px solid #6366f1;">
+              <div class="panel-header">
+                <span class="panel-title">📈 실시간 노드 처리량 집계 (Throughput & Node Telemetry)</span>
+                <span style="font-size:10px; color:#10b981; font-family:monospace;" id="telemetry-refresh-indicator">● LIVE 1s</span>
+              </div>
+              <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap:8px; font-family:monospace; font-size:11px;" id="telemetry-stats-grid">
+                <div style="background:#0b0f19; padding:8px; border-radius:6px; border:1px solid #1f293d;">
+                  <div style="color:#94a3b8; font-size:10px;">총 인입 트래픽</div>
+                  <div style="color:#818cf8; font-size:13px; font-weight:bold;" id="stat-total-rps">180 RPS</div>
+                  <div style="color:#64748b; font-size:9.5px;" id="stat-total-bandwidth">~2.88 Mbps</div>
+                </div>
+                <div style="background:#0b0f19; padding:8px; border-radius:6px; border:1px solid #1f293d;">
+                  <div style="color:#94a3b8; font-size:10px;">Control-Plane 부하</div>
+                  <div style="color:#38bdf8; font-size:13px; font-weight:bold;" id="stat-master-rps">27 RPS</div>
+                  <div style="color:#64748b; font-size:9.5px;">API Server Tx/Rx</div>
+                </div>
+                <div style="background:#0b0f19; padding:8px; border-radius:6px; border:1px solid #1f293d;">
+                  <div style="color:#94a3b8; font-size:10px;">Worker 파드 처리량</div>
+                  <div style="color:#10b981; font-size:13px; font-weight:bold;" id="stat-worker-rps">153 RPS</div>
+                  <div style="color:#64748b; font-size:9.5px;" id="stat-worker-rps-per-pod">파드당 ~76.5 RPS</div>
+                </div>
+                <div style="background:#0b0f19; padding:8px; border-radius:6px; border:1px solid #1f293d;">
+                  <div style="color:#94a3b8; font-size:10px;">네트워크 패킷율</div>
+                  <div style="color:#f59e0b; font-size:13px; font-weight:bold;" id="stat-total-pps">3,240 PPS</div>
+                  <div style="color:#64748b; font-size:9.5px;">L2 vSwitch Forwarding</div>
+                </div>
+              </div>
+            </div>
+
             <div class="panel-card">
               <div class="panel-header">
-                <span class="panel-title">🖥️ 인프라 VM 노드 상태</span>
+                <span class="panel-title">🖥️ 인프라 VM 노드 상태 및 실시간 처리율</span>
                 <button class="btn sm primary" onclick="openAddNodeModal()">+ 노드 추가</button>
               </div>
               <div class="node-grid" id="node-grid-container"></div>
@@ -1651,13 +1963,13 @@ export function renderSimulatorPage(user) {
 
             <div class="panel-card">
               <div class="panel-header">
-                <span class="panel-title">📦 워크로드 파드 (Pods)</span>
-                <button class="btn sm" onclick="openModal('deploy-modal')">+ 파드 배포</button>
+                <span class="panel-title">📦 워크로드 파드 (Pods & Lifecycle)</span>
+                <button class="btn sm primary" onclick="openModal('deploy-modal')">+ 파드 배포 (초/분/랜덤 동작)</button>
               </div>
               <div style="overflow-x:auto;">
                 <table class="sim-table">
                   <thead>
-                    <tr><th>NAME</th><th>NODE</th><th>STATUS</th><th>IP</th><th>IMAGE</th><th>ACTION</th></tr>
+                    <tr><th>NAME</th><th>NODE</th><th>STATUS</th><th>IP</th><th>IMAGE</th><th>LIFECYCLE/수명</th><th>ACTION</th></tr>
                   </thead>
                   <tbody id="pod-table-body"></tbody>
                 </table>
@@ -1670,53 +1982,147 @@ export function renderSimulatorPage(user) {
             </div>
           </div>
 
-          <!-- 서브탭 2: 네트워크 & 로드밸런서 & 터널 -->
+          <!-- 서브탭 2: 네트워크 & 7계층 (OSI) / VPN / 라우터 / 스위치 / 허브 -->
           <div class="topo-tab-content" id="tab-content-network" style="display:none;">
-            <!-- L7 ALB 카드 -->
+            
+            <!-- OSI 7계층 전체 진단 배너 -->
+            <div class="panel-card" style="border-left: 3px solid #10b981;">
+              <div class="panel-header">
+                <span class="panel-title">🌐 OSI 7단계 네트워크 레이어 아키텍처 스택 (L1 ~ L7)</span>
+                <button class="chip-btn" onclick="executeCommand('layers')">터미널 layers 진단</button>
+              </div>
+              <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap:6px; font-size:10.5px;">
+                <div style="background:#0b0f19; border:1px solid #1f293d; border-radius:5px; padding:6px;">
+                  <b style="color:#ec4899;">L7 응용</b><br><span style="color:#94a3b8;">ALB Ingress &amp; HTTP</span><br><span style="color:#10b981;">● ACTIVE</span>
+                </div>
+                <div style="background:#0b0f19; border:1px solid #1f293d; border-radius:5px; padding:6px;">
+                  <b style="color:#a855f7;">L6 표현</b><br><span style="color:#94a3b8;">TLS 1.3 암호화</span><br><span style="color:#10b981;">● ENCRYPTED</span>
+                </div>
+                <div style="background:#0b0f19; border:1px solid #1f293d; border-radius:5px; padding:6px;">
+                  <b style="color:#6366f1;">L5 세션</b><br><span style="color:#94a3b8;">Argo / WireGuard</span><br><span style="color:#10b981;">● ESTABLISHED</span>
+                </div>
+                <div style="background:#0b0f19; border:1px solid #1f293d; border-radius:5px; padding:6px;">
+                  <b style="color:#3b82f6;">L4 전송</b><br><span style="color:#94a3b8;">TCP 80, 443, NodePort</span><br><span style="color:#10b981;">● LISTENING</span>
+                </div>
+                <div style="background:#0b0f19; border:1px solid #1f293d; border-radius:5px; padding:6px;">
+                  <b style="color:#14b8a6;">L3 네트워크</b><br><span style="color:#94a3b8;">vRouter 10.10.0.1</span><br><span style="color:#10b981;">● ROUTED</span>
+                </div>
+                <div style="background:#0b0f19; border:1px solid #1f293d; border-radius:5px; padding:6px;">
+                  <b style="color:#f59e0b;">L2 데이터링크</b><br><span style="color:#94a3b8;">vSwitch VLAN 100</span><br><span style="color:#10b981;">● FORWARDING</span>
+                </div>
+                <div style="background:#0b0f19; border:1px solid #1f293d; border-radius:5px; padding:6px;">
+                  <b style="color:#10b981;">L1 물리</b><br><span style="color:#94a3b8;">10Gbps Virtual Link</span><br><span style="color:#10b981;">● LINK_UP</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- L7 ALB & 분산 알고리즘 제어 카드 -->
             <div class="panel-card">
               <div class="panel-header">
-                <span class="panel-title">🌐 KT Cloud L7 로드밸런서 (Application Load Balancer)</span>
-                <span class="status-pill status-running" id="lb-status-pill">● 헬스체크 정상</span>
+                <span class="panel-title">⚖️ L7 로드밸런서 (Application Load Balancer)</span>
+                <div style="display:flex; align-items:center; gap:6px;">
+                  <select class="form-control" style="width:auto; padding:2px 6px; font-size:10.5px;" id="lb-algo-select" onchange="changeLbAlgorithm(this.value)">
+                    <option value="RoundRobin">Round Robin (순환 분산)</option>
+                    <option value="LeastConnection">Least Connection (최소 접속)</option>
+                    <option value="IPHash">IP Hash (클라이언트 고정)</option>
+                  </select>
+                  <span class="status-pill status-running" id="lb-status-pill">● 헬스체크 정상</span>
+                </div>
               </div>
               <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; font-size:11.5px; margin-bottom:8px;">
                 <div>공인 VIP: <b style="color:#818cf8;" id="lb-vip">211.252.85.10</b></div>
-                <div>분산 알고리즘: <b>Round Robin</b></div>
-                <div>SSL 종료: <b style="color:#10b981;">TLSv1.3 (유효함)</b></div>
+                <div>분산 알고리즘: <b id="lb-algo-text">Round Robin</b></div>
+                <div>SSL 종료: <b style="color:#10b981;">TLSv1.3 (Let's Encrypt)</b></div>
                 <div>헬스체크: <code>HTTP /healthz 200 OK</code></div>
               </div>
               <div style="background:#0b0f19; border:1px solid #1f293d; border-radius:6px; padding:8px;">
-                <div style="font-size:11px; color:#94a3b8; margin-bottom:4px;">🎯 타겟 풀 헬스체크 (Target Pool)</div>
+                <div style="font-size:11px; color:#94a3b8; margin-bottom:4px;">🎯 타겟 풀 헬스체크 및 실시간 가중치</div>
                 <div id="lb-target-pool-list" style="display:flex; flex-direction:column; gap:4px;"></div>
               </div>
             </div>
 
-            <!-- Ingress & 도메인 바인딩 카드 -->
+            <!-- Ingress & 도메인 및 포트 기반 라우팅 카드 -->
             <div class="panel-card">
               <div class="panel-header">
-                <span class="panel-title">🏷️ Ingress 도메인 라우팅 (Host-based Routing)</span>
-                <button class="btn sm" onclick="openModal('domain-modal')">+ 도메인 추가</button>
+                <span class="panel-title">🏷️ 도메인 및 포트 기반 라우팅 (Host & Port Routing)</span>
+                <button class="btn sm" onclick="openModal('domain-modal')">+ 도메인/포트 매핑 추가</button>
               </div>
               <div style="overflow-x:auto;">
                 <table class="sim-table">
-                  <thead><tr><th>도메인 (HOST)</th><th>경로 (PATH)</th><th>타겟 서비스</th><th>SSL</th><th>테스트</th></tr></thead>
+                  <thead><tr><th>도메인 (HOST)</th><th>포트</th><th>경로</th><th>타겟 서비스</th><th>SSL</th><th>테스트</th></tr></thead>
                   <tbody id="domain-table-body"></tbody>
                 </table>
               </div>
             </div>
 
-            <!-- 하이브리드 터널링 카드 -->
-            <div class="panel-card">
-              <div class="panel-header">
-                <span class="panel-title">🚇 Cloudflare 하이브리드 터널 (WireGuard/Argo Mesh)</span>
-                <button class="btn sm" onclick="toggleTunnelStatus()" id="tunnel-toggle-btn">터널 토글</button>
+            <!-- VPN & 하이브리드 터널링 카드 (L5 세션 / 보안 터널) -->
+            <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px;">
+              <!-- Site-to-Site VPN -->
+              <div class="panel-card">
+                <div class="panel-header">
+                  <span class="panel-title">🔒 KT Cloud 기업 VPN (IPsec/WireGuard)</span>
+                  <button class="btn sm" onclick="toggleVpnStatus()" id="vpn-toggle-btn">VPN 토글</button>
+                </div>
+                <div style="font-size:11px; line-height:1.6;">
+                  <div>상태: <b id="vpn-status-text" style="color:#10b981;">● CONNECTED</b></div>
+                  <div>엔드포인트: <code id="vpn-endpoint">vpn.ktci5.kr:51820</code></div>
+                  <div>클라이언트 서브넷: <code id="vpn-subnet">192.168.100.0/24</code></div>
+                  <div>접속 피어 수: <b id="vpn-peers">8 Connected Peers</b></div>
+                  <div>대역폭: <b id="vpn-throughput">120 Mbps</b></div>
+                </div>
               </div>
-              <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; font-size:11.5px;">
-                <div>터널 상태: <b id="tunnel-status-text" style="color:#10b981;">● CONNECTED</b></div>
-                <div>왕복 지연시간: <b id="tunnel-latency">3.5 ms</b></div>
-                <div>대역폭: <b id="tunnel-throughput">480 Mbps</b></div>
-                <div>암호화: <b>ChaCha20-Poly1305</b></div>
+
+              <!-- 하이브리드 터널 -->
+              <div class="panel-card">
+                <div class="panel-header">
+                  <span class="panel-title">🚇 Cloudflare 하이브리드 터널 (Argo Mesh)</span>
+                  <button class="btn sm" onclick="toggleTunnelStatus()" id="tunnel-toggle-btn">터널 토글</button>
+                </div>
+                <div style="font-size:11px; line-height:1.6;">
+                  <div>터널 상태: <b id="tunnel-status-text" style="color:#10b981;">● CONNECTED</b></div>
+                  <div>왕복 지연시간: <b id="tunnel-latency">3.5 ms</b></div>
+                  <div>대역폭: <b id="tunnel-throughput">480 Mbps</b></div>
+                  <div>암호화: <b>ChaCha20-Poly1305</b></div>
+                  <div>라우팅: <code>tunnel.ktci5.kr ➔ DBO</code></div>
+                </div>
               </div>
             </div>
+
+            <!-- L3 vRouter & L2 vSwitch & L1 Hub 하위 계층 카드 -->
+            <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px;">
+              <!-- L3 가상 라우터 -->
+              <div class="panel-card">
+                <div class="panel-header">
+                  <span class="panel-title">🔀 L3 가상 라우터 (vRouter)</span>
+                  <button class="chip-btn" onclick="executeCommand('ip route')">ip route</button>
+                </div>
+                <div style="font-size:11px; margin-bottom:6px;">
+                  <div>게이트웨이: <code id="router-gw">10.10.0.1</code> | CIDR: <code>10.10.0.0/16</code></div>
+                </div>
+                <div style="background:#0b0f19; border:1px solid #1f293d; border-radius:4px; padding:6px; font-family:monospace; font-size:10.5px;" id="router-routes-list">
+                  <div>0.0.0.0/0 ➔ 211.252.85.1 (WAN-eth0)</div>
+                  <div>10.10.10.0/24 ➔ DIRECT (VLAN100-eth1)</div>
+                  <div>172.20.0.0/16 ➔ 10.10.10.12 (Calico-eth2)</div>
+                </div>
+              </div>
+
+              <!-- L2 가상 스위치 & L1 허브 -->
+              <div class="panel-card">
+                <div class="panel-header">
+                  <span class="panel-title">🔌 L2 Open vSwitch &amp; L1 허브</span>
+                  <button class="chip-btn" onclick="executeCommand('brctl show')">brctl show</button>
+                </div>
+                <div style="font-size:11px; margin-bottom:6px;">
+                  <div>스위치: <b>kt-vswitch-dist-01</b> (VLAN 100)</div>
+                  <div>L1 물리 링크: <span style="color:#10b981;">● LINK_UP (10Gbps, 충돌 0회)</span></div>
+                </div>
+                <div style="background:#0b0f19; border:1px solid #1f293d; border-radius:4px; padding:6px; font-family:monospace; font-size:10.5px;" id="switch-ports-list">
+                  <div>Port 1: 52:54:00:12:34:56 [master1] 10Gbps UP</div>
+                  <div>Port 2: 52:54:00:12:34:57 [w1] 10Gbps UP</div>
+                </div>
+              </div>
+            </div>
+
           </div>
 
           <!-- 서브탭 3: 하드웨어 증설 (CPU/RAM/디스크) -->
@@ -1843,21 +2249,40 @@ export function renderSimulatorPage(user) {
     </div>
   </div>
 
-  <!-- 모달 3: 파드 배포 -->
+  <!-- 모달 3: 파드 배포 (초/분/시간 단위 수명 & 랜덤 동작) -->
   <div class="modal-overlay" id="deploy-modal">
     <div class="modal">
       <h2>📦 새 파드 / 디플로이먼트 배포</h2>
-      <p class="desc">GUI 폼으로 워크로드를 정의하고 스케줄링 배포합니다.</p>
+      <p class="desc">GUI 폼으로 초/분/시간 단위 수명 및 랜덤 활동 워크로드를 배포합니다.</p>
       <form onsubmit="handleDeployWorkload(event)">
-        <div class="form-group"><label>워크로드 명칭</label><input type="text" class="form-control" id="deploy-form-name" placeholder="예: order-service" required /></div>
+        <div class="form-group"><label>워크로드 명칭</label><input type="text" class="form-control" id="deploy-form-name" placeholder="예: web-app, payment-api" required /></div>
         <div class="form-row">
-          <div class="form-group"><label>이미지</label><input type="text" class="form-control" id="deploy-form-image" value="nginx:1.25" required /></div>
-          <div class="form-group"><label>레플리카(Pod 수)</label><input type="number" class="form-control" id="deploy-form-replicas" min="1" max="10" value="2" required /></div>
+          <div class="form-group"><label>컨테이너 이미지</label><input type="text" class="form-control" id="deploy-form-image" value="nginx:1.25" required /></div>
+          <div class="form-group"><label>레플리카(파드 수)</label><input type="number" class="form-control" id="deploy-form-replicas" min="1" max="10" value="2" required /></div>
         </div>
         <div class="form-row">
           <div class="form-group"><label>CPU Request</label><select class="form-control" id="deploy-form-cpu"><option value="100">100m</option><option value="200">200m</option><option value="500">500m</option></select></div>
           <div class="form-group"><label>노드 타겟 (nodeSelector)</label><select class="form-control" id="deploy-form-disk"><option value="">조건 없음</option><option value="ssd">disktype=ssd</option><option value="hdd">disktype=hdd</option></select></div>
         </div>
+        
+        <!-- 동작 수명 및 랜덤 동작 설정 -->
+        <div class="form-row" style="background:#0b0f19; padding:8px; border-radius:6px; border:1px solid #1f293d; margin-bottom:10px;">
+          <div class="form-group" style="margin-bottom:0;">
+            <label>동작 주기 / 수명 (Lifecycle)</label>
+            <select class="form-control" id="deploy-form-unit" onchange="toggleDurationValInput(this.value)">
+              <option value="forever">영구 지속 (Daemon/Service)</option>
+              <option value="sec">초 단위 동작 (테스트 잡)</option>
+              <option value="min" selected>분 단위 동작 (배치 작업)</option>
+              <option value="hour">시간 단위 동작</option>
+              <option value="random">🎲 랜덤 라이프사이클 &amp; 버스트 트래픽</option>
+            </select>
+          </div>
+          <div class="form-group" style="margin-bottom:0;" id="deploy-val-group">
+            <label>지속 수치 (시간값)</label>
+            <input type="number" class="form-control" id="deploy-form-duration" value="5" min="1" max="3600" />
+          </div>
+        </div>
+
         <div class="form-group"><label class="checkbox-label"><input type="checkbox" id="deploy-form-nodeport" checked /> NodePort 서비스 동시 생성</label></div>
         <div class="modal-actions">
           <button type="button" class="btn sm" onclick="closeModal('deploy-modal')">취소</button>
@@ -1867,17 +2292,23 @@ export function renderSimulatorPage(user) {
     </div>
   </div>
 
-  <!-- 모달 4: 도메인 추가 -->
+  <!-- 모달 4: 도메인 및 포트 매핑 추가 -->
   <div class="modal-overlay" id="domain-modal">
     <div class="modal">
-      <h2>🌐 Ingress 도메인 연결 바인딩</h2>
-      <p class="desc">L7 로드밸런서에 새 서브도메인을 연결하고 타겟 서비스로 라우팅합니다.</p>
+      <h2>🌐 Ingress 도메인 및 포트 매핑</h2>
+      <p class="desc">L7 로드밸런서에 호스트 도메인과 인입 포트, 타겟 서비스를 바인딩합니다.</p>
       <form onsubmit="handleAddDomain(event)">
-        <div class="form-group"><label>도메인 (FQDN)</label><input type="text" class="form-control" id="domain-form-host" placeholder="예: shop.ktci5.kr, admin.ktci5.kr" required /></div>
-        <div class="form-group"><label>타겟 서비스</label><input type="text" class="form-control" id="domain-form-svc" value="web-service:80" required /></div>
+        <div class="form-row">
+          <div class="form-group"><label>도메인 (FQDN)</label><input type="text" class="form-control" id="domain-form-host" placeholder="예: order.ktci5.kr, admin.ktci5.kr" required /></div>
+          <div class="form-group"><label>인입 포트 (Port)</label><input type="number" class="form-control" id="domain-form-port" value="80" required /></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>경로 (Path)</label><input type="text" class="form-control" id="domain-form-path" value="/" required /></div>
+          <div class="form-group"><label>타겟 서비스 (Service:Port)</label><input type="text" class="form-control" id="domain-form-svc" value="web-service:80" required /></div>
+        </div>
         <div class="modal-actions">
           <button type="button" class="btn sm" onclick="closeModal('domain-modal')">취소</button>
-          <button type="submit" class="btn sm primary">도메인 매핑</button>
+          <button type="submit" class="btn sm primary">도메인/포트 매핑</button>
         </div>
       </form>
     </div>
@@ -2043,11 +2474,35 @@ export function renderSimulatorPage(user) {
       document.getElementById('traffic-slider').value = lab.trafficRps || 0;
       document.getElementById('traffic-val').innerText = (lab.trafficRps || 0) + ' req/s';
 
-      // 1) 노드 카드
+      // 1) 실시간 처리량 집계 (Throughput & Telemetry Aggregation)
+      const rps = lab.trafficRps || 0;
+      const activeWorkers = (lab.nodes || []).filter(n => n.role === 'worker' && n.status === 'Ready' && !n.unschedulable).length || 1;
+      const runningPods = (lab.pods || []).filter(p => p.status === 'Running').length || 1;
+      
+      const masterRps = Math.round(rps * 0.15); // K8s API 서버 트래픽
+      const workerTotalRps = rps - masterRps;
+      const workerRpsPerPod = (workerTotalRps / runningPods).toFixed(1);
+      const totalBandwidthMbps = ((rps * 16) / 1000).toFixed(2); // 평균 16KB 페이로드 가정
+      const totalPps = (rps * 18).toLocaleString(); // 패킷/초
+
+      document.getElementById('stat-total-rps').innerText = rps + ' RPS';
+      document.getElementById('stat-total-bandwidth').innerText = '~' + totalBandwidthMbps + ' Mbps';
+      document.getElementById('stat-master-rps').innerText = masterRps + ' RPS';
+      document.getElementById('stat-worker-rps').innerText = workerTotalRps + ' RPS';
+      document.getElementById('stat-worker-rps-per-pod').innerText = '파드당 ~' + workerRpsPerPod + ' RPS';
+      document.getElementById('stat-total-pps').innerText = totalPps + ' PPS';
+
+      // 2) 노드 카드 & 실시간 노드별 처리량
       document.getElementById('node-grid-container').innerHTML = (lab.nodes || []).map(node => {
         const hosted = (lab.pods || []).filter(p => p.node === node.name && p.status === 'Running');
-        const baseCpu = 180 + hosted.length * 80;
-        const trafficCpu = Math.round(((lab.trafficRps || 0) / 3000) * 800);
+        const isMaster = node.role === 'control-plane';
+
+        // 노드별 분산 트래픽 계산
+        const nodeRps = isMaster ? masterRps : Math.round(workerTotalRps / activeWorkers);
+        const nodeMbps = ((nodeRps * 16) / 1000).toFixed(2);
+
+        const baseCpu = isMaster ? (220 + hosted.length * 50) : (160 + hosted.length * 70);
+        const trafficCpu = Math.round((nodeRps / 1500) * 800);
         const cpuM = Math.min(node.cpuTotalM, baseCpu + trafficCpu);
         const cpuPct = Math.round((cpuM / node.cpuTotalM) * 100);
 
@@ -2063,19 +2518,20 @@ export function renderSimulatorPage(user) {
         const taintsHtml = (node.taints || []).map(t => \`<span class="node-tag taint">\${t.key.split('/').pop()}:\${t.effect}</span>\`).join('');
         const labelsHtml = Object.entries(node.labels || {}).filter(([k]) => !k.includes('kubernetes.io')).map(([k, v]) => \`<span class="node-tag">\${k}=\${v}</span>\`).join('');
         const disksHtml = (node.disks || []).map(d => \`<span class="node-tag disk">💽 \${d.name}: \${d.usedGb}/\${d.sizeGb}G</span>\`).join('');
-
-        const isMaster = node.role === 'control-plane';
         const hasTaint = node.taints && node.taints.length > 0;
 
         return \`
           <div class="node-card \${(node.status !== 'Ready' || isDiskPressure) ? 'not-ready' : ''}">
             <div class="node-top">
-              <span class="node-name">🖥️ \${node.name}</span>
+              <span class="node-name">🖥️ \${node.name} (\${node.role})</span>
               <span class="status-pill \${(node.status === 'Ready' && !isDiskPressure) ? 'status-running' : 'status-pending'}">
                 \${isDiskPressure ? 'DiskPressure' : node.status}\${node.unschedulable ? ',NoSched' : ''}
               </span>
             </div>
-            <div style="font-size:10.5px; color:#64748b; font-family:monospace; margin-bottom:5px;">IP: \${node.ip}</div>
+            <div style="font-size:10.5px; color:#64748b; font-family:monospace; margin-bottom:5px; display:flex; justify-content:space-between;">
+              <span>IP: \${node.ip}</span>
+              <span style="color:#818cf8; font-weight:bold;">⚡ \${nodeRps} RPS (\${nodeMbps} Mbps)</span>
+            </div>
             
             <div class="meter-row">
               <div class="meter-label"><span>CPU</span><span>\${cpuM}m / \${node.cpuTotalM}m (\${cpuPct}%)</span></div>
@@ -2105,31 +2561,52 @@ export function renderSimulatorPage(user) {
         \`;
       }).join('');
 
-      // 2) 파드 테이블
-      document.getElementById('pod-table-body').innerHTML = (lab.pods || []).map(pod => \`
-        <tr>
-          <td style="color:#f8fafc; font-weight:600;">\${escapeHtml(pod.name)}</td>
-          <td>\${pod.node}</td>
-          <td><span class="status-pill \${pod.status === 'Running' ? 'status-running' : 'status-pending'}">\${pod.status}</span></td>
-          <td>\${pod.ip}</td>
-          <td>\${pod.image}</td>
-          <td><button class="chip-btn" onclick="executeCommand('k delete pod \${pod.name}')" style="color:#f87171;">삭제</button></td>
-        </tr>
-      \`).join('');
+      // 3) 파드 테이블 & 수명 카운트다운
+      const now = Date.now();
+      document.getElementById('pod-table-body').innerHTML = (lab.pods || []).map(pod => {
+        let lifeStr = '<span style="color:#94a3b8;">영구 지속</span>';
+        if (pod.expiresAt) {
+          const remainSec = Math.max(0, Math.round((pod.expiresAt - now) / 1000));
+          if (remainSec > 0) {
+            lifeStr = \`<span style="color:#f59e0b; font-weight:bold;">⏱️ \${remainSec}s 남음</span>\`;
+          } else {
+            lifeStr = '<span style="color:#ef4444; font-weight:bold;">종료 완료</span>';
+          }
+        } else if (pod.isRandomBurst) {
+          lifeStr = '<span style="color:#a855f7;">🎲 랜덤 버스트</span>';
+        }
 
-      // 3) 감사 피드
+        return \`
+          <tr>
+            <td style="color:#f8fafc; font-weight:600;">\${escapeHtml(pod.name)}</td>
+            <td>\${pod.node}</td>
+            <td><span class="status-pill \${pod.status === 'Running' ? 'status-running' : 'status-pending'}">\${pod.status}</span></td>
+            <td>\${pod.ip}</td>
+            <td>\${pod.image}</td>
+            <td>\${lifeStr}</td>
+            <td><button class="chip-btn" onclick="executeCommand('k delete pod \${pod.name}')" style="color:#f87171;">삭제</button></td>
+          </tr>
+        \`;
+      }).join('');
+
+      // 4) 감사 피드
       document.getElementById('activity-log-container').innerHTML = (lab.activityLogs || []).slice(0, 15).map(l => \`
         <div><span style="color:#64748b;">\${l.time}</span> <span style="color:#818cf8; font-weight:600;">[\${escapeHtml(l.user)}]</span> \${escapeHtml(l.action)}</div>
       \`).join('');
 
-      // 4) 네트워크 탭 렌더링
+      // 5) 네트워크 탭 (OSI 7계층, ALB, Ingress, VPN, 터널, 라우터, 스위치)
       const net = lab.network || createDefaultNetwork();
       document.getElementById('lb-vip').innerText = net.loadBalancer?.vip || '211.252.85.10';
+      document.getElementById('lb-algo-text').innerText = net.loadBalancer?.algorithm || 'Round Robin';
+      if (document.getElementById('lb-algo-select')) {
+        document.getElementById('lb-algo-select').value = net.loadBalancer?.algorithm || 'RoundRobin';
+      }
+
       const poolList = document.getElementById('lb-target-pool-list');
       poolList.innerHTML = (net.loadBalancer?.targetPool || []).map(p => {
         const isH = p.status.includes('Healthy');
         return \`<div style="display:flex; justify-content:space-between; font-size:11px;">
-          <span>• \${p.target}</span>
+          <span>• \${p.target} (가중치: \${p.weight || 50}%)</span>
           <span style="color:\${isH ? '#10b981' : '#f87171'}; font-weight:bold;">\${p.status} (\${p.latencyMs}ms)</span>
         </div>\`;
       }).join('');
@@ -2137,13 +2614,26 @@ export function renderSimulatorPage(user) {
       document.getElementById('domain-table-body').innerHTML = (net.ingress?.rules || []).map(r => \`
         <tr>
           <td style="color:#818cf8; font-weight:700;">\${r.host}</td>
+          <td><b>:\${r.port || 80}</b></td>
           <td>\${r.path}</td>
           <td>\${r.service}</td>
-          <td><span style="color:#10b981;">TLS Valid</span></td>
-          <td><button class="chip-btn" onclick="runChip('curl -H &quot;Host: \${r.host}&quot; http://\${net.loadBalancer?.vip}')">호출 테스트</button></td>
+          <td><span style="color:#10b981;">\${r.ssl ? 'TLS Valid' : 'HTTP'}</span></td>
+          <td><button class="chip-btn" onclick="runChip('curl -H &quot;Host: \${r.host}&quot; http://\${net.loadBalancer?.vip}:\${r.port || 80}')">호출</button></td>
         </tr>
       \`).join('');
 
+      // VPN 상태
+      const isVpnOk = net.vpn?.status === 'CONNECTED';
+      const vText = document.getElementById('vpn-status-text');
+      vText.innerText = isVpnOk ? '● CONNECTED' : '● DISCONNECTED';
+      vText.style.color = isVpnOk ? '#10b981' : '#ef4444';
+      document.getElementById('vpn-endpoint').innerText = net.vpn?.serverEndpoint || 'vpn.ktci5.kr:51820';
+      document.getElementById('vpn-subnet').innerText = net.vpn?.clientSubnet || '192.168.100.0/24';
+      document.getElementById('vpn-peers').innerText = (net.vpn?.connectedClients || 8) + ' Connected Peers';
+      document.getElementById('vpn-throughput').innerText = isVpnOk ? ((net.vpn?.throughputMbps || 120) + ' Mbps') : '0 Mbps';
+      document.getElementById('vpn-toggle-btn').innerText = isVpnOk ? 'VPN 단절 토글' : 'VPN 재연결';
+
+      // 터널 상태
       const isTunnelOk = net.tunnel?.status === 'CONNECTED';
       const tText = document.getElementById('tunnel-status-text');
       tText.innerText = isTunnelOk ? '● CONNECTED' : '● DISCONNECTED';
@@ -2152,7 +2642,21 @@ export function renderSimulatorPage(user) {
       document.getElementById('tunnel-throughput').innerText = isTunnelOk ? (net.tunnel?.throughputMbps + ' Mbps') : '0 Mbps';
       document.getElementById('tunnel-toggle-btn').innerText = isTunnelOk ? '터널 단절 시뮬레이션' : '터널 재연결';
 
-      // 5) 하드웨어 탭 렌더링
+      // 라우터 및 스위치 상태
+      if (net.router) {
+        document.getElementById('router-gw').innerText = net.router.gateway || '10.10.0.1';
+        document.getElementById('router-routes-list').innerHTML = (net.router.routes || []).map(r => \`
+          <div>\${r.dest} ➔ \${r.nextHop} (\${r.iface})</div>
+        \`).join('');
+      }
+
+      if (net.switch) {
+        document.getElementById('switch-ports-list').innerHTML = (net.switch.ports || []).map(p => \`
+          <div>Port \${p.port}: \${p.mac} [\${p.node}] \${p.speed} \${p.state}</div>
+        \`).join('');
+      }
+
+      // 6) 하드웨어 탭 렌더링
       document.getElementById('hardware-nodes-list').innerHTML = (lab.nodes || []).map(node => \`
         <div style="background:#0f1523; border:1px solid #1f293d; border-radius:6px; padding:10px;">
           <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
@@ -2226,7 +2730,7 @@ export function renderSimulatorPage(user) {
       } catch (err) { alert('디스크 추가 실패: ' + err.message); }
     }
 
-    // 7. 네트워크 및 터널 API
+    // 7. 네트워크 및 터널 / VPN / 로드밸런서 API
     async function toggleTunnelStatus() {
       if (!currentLab) return;
       try {
@@ -2243,25 +2747,70 @@ export function renderSimulatorPage(user) {
       } catch (err) { alert('터널 변경 실패: ' + err.message); }
     }
 
+    async function toggleVpnStatus() {
+      if (!currentLab) return;
+      try {
+        const res = await fetch(\`/api/simulator/labs/\${currentLab.id}/network\`, {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ toggleVpn: true })
+        });
+        const data = await res.json();
+        if (data.ok) {
+          currentLab = data.lab;
+          renderAll(currentLab);
+        }
+      } catch (err) { alert('VPN 변경 실패: ' + err.message); }
+    }
+
+    async function changeLbAlgorithm(algorithm) {
+      if (!currentLab) return;
+      try {
+        const res = await fetch(\`/api/simulator/labs/\${currentLab.id}/network\`, {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ updateLbAlgorithm: algorithm })
+        });
+        const data = await res.json();
+        if (data.ok) {
+          currentLab = data.lab;
+          renderAll(currentLab);
+        }
+      } catch (err) { alert('알고리즘 변경 실패: ' + err.message); }
+    }
+
     async function handleAddDomain(e) {
       e.preventDefault();
       if (!currentLab) return;
       const host = document.getElementById('domain-form-host').value.trim();
+      const port = parseInt(document.getElementById('domain-form-port').value || '80', 10);
+      const path = document.getElementById('domain-form-path').value.trim() || '/';
       const svc = document.getElementById('domain-form-svc').value.trim();
       try {
         const res = await fetch(\`/api/simulator/labs/\${currentLab.id}/network\`, {
           method: 'PATCH',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ addDomain: { host, service: svc } })
+          body: JSON.stringify({ addDomain: { host, port, path, service: svc } })
         });
         const data = await res.json();
         if (data.ok) {
           closeModal('domain-modal');
           currentLab = data.lab;
           renderAll(currentLab);
-          appendTermLog(\`\\n<span style="color:#10b981;font-weight:700;">🌐 [Ingress Binding] 도메인 '\${host}'이(가) 서비스 '\${svc}'에 매핑되었습니다.</span>\\n\`);
+          appendTermLog(\`\\n<span style="color:#10b981;font-weight:700;">🌐 [Ingress Binding] 도메인/포트 '\${host}:\${port}'이(가) 서비스 '\${svc}'에 매핑되었습니다.</span>\\n\`);
         }
       } catch (err) { alert('도메인 추가 실패: ' + err.message); }
+    }
+
+    function toggleDurationValInput(unit) {
+      const g = document.getElementById('deploy-val-group');
+      if (unit === 'forever' || unit === 'random') {
+        g.style.opacity = '0.4';
+        g.querySelector('input').disabled = true;
+      } else {
+        g.style.opacity = '1';
+        g.querySelector('input').disabled = false;
+      }
     }
 
     // 8. 상용 시나리오 주입
@@ -2386,19 +2935,21 @@ export function renderSimulatorPage(user) {
       const cpu = document.getElementById('deploy-form-cpu').value;
       const disktype = document.getElementById('deploy-form-disk').value;
       const exposeNodePort = document.getElementById('deploy-form-nodeport').checked;
+      const durationUnit = document.getElementById('deploy-form-unit').value;
+      const durationValue = document.getElementById('deploy-form-duration').value;
 
       try {
         const res = await fetch(\`/api/simulator/labs/\${currentLab.id}/workloads\`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ name, image, replicas, cpuReqM: cpu, disktype, exposeNodePort })
+          body: JSON.stringify({ name, image, replicas, cpuReqM: cpu, disktype, exposeNodePort, durationUnit, durationValue })
         });
         const data = await res.json();
         if (data.ok) {
           closeModal('deploy-modal');
           currentLab = data.lab;
           renderAll(currentLab);
-          appendTermLog(\`\\n<span style="color:#10b981;font-weight:700;">📦 워크로드 '\${name}' 배포 완료</span>\\n\`);
+          appendTermLog(\`\\n<span style="color:#10b981;font-weight:700;">📦 워크로드 '\${name}' 배포 완료 (\${durationUnit} 설정)</span>\\n\`);
         } else { alert(data.error); }
       } catch (err) { alert('배포 오류: ' + err.message); }
     }
@@ -2450,8 +3001,15 @@ export function renderSimulatorPage(user) {
       } catch (err) { alert('생성 오류: ' + err.message); }
     }
 
+    let localTicker = null;
     function startPolling(labId) {
       stopPolling();
+      // 1초 단위 로컬 카운트다운 및 처리량 지터(jitter) 렌더러
+      localTicker = setInterval(() => {
+        if (!currentLab || currentLab.id !== labId) return;
+        renderAll(currentLab);
+      }, 1000);
+
       pollInterval = setInterval(async () => {
         if (!currentLab || currentLab.id !== labId) return;
         try {
@@ -2470,6 +3028,7 @@ export function renderSimulatorPage(user) {
 
     function stopPolling() {
       if (pollInterval) { clearInterval(pollInterval); pollInterval = null; }
+      if (localTicker) { clearInterval(localTicker); localTicker = null; }
     }
 
     function formatAnsi(text) {
