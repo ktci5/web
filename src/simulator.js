@@ -56,6 +56,7 @@ function createDefaultNetwork() {
       domain: 'ktci5.kr',
       rules: [
         { host: 'app.ktci5.kr', path: '/', port: 80, targetPort: 80, service: 'web-service:80', ssl: true, protocol: 'HTTP/1.1 & HTTP/2' },
+        { host: 'api.ktci5.kr', path: '/api', port: 80, targetPort: 8080, service: 'api-service:8080', ssl: true, protocol: 'HTTP/1.1 & HTTP/2' },
         { host: 'dev.ktci5.kr', path: '/', port: 443, targetPort: 8080, service: 'dev-service:8080', ssl: true, protocol: 'HTTPS (TLS1.3)' },
         { host: '*.ktci5.kr', path: '/', port: 80, targetPort: 80, service: 'web-service:80', ssl: true, protocol: 'HTTP/1.1 & HTTP/2 (Wildcard)' }
       ]
@@ -217,6 +218,19 @@ export const DEFAULT_LABS = [
         labels: { 'k8s-app': 'kube-dns' },
         restarts: 0,
         age: '5d'
+      },
+      {
+        name: 'api-deploy-77d9c8d55-p2w9k',
+        namespace: 'default',
+        node: 'w1',
+        status: 'Running',
+        ip: '172.20.1.9',
+        image: 'python:3.11-alpine',
+        cpuReqM: 100,
+        ramReqMi: 128,
+        labels: { app: 'api' },
+        restarts: 0,
+        age: '1d'
       }
     ],
     deployments: [
@@ -225,6 +239,12 @@ export const DEFAULT_LABS = [
         replicas: 2,
         image: 'nginx:1.25',
         labels: { app: 'web' }
+      },
+      {
+        name: 'api-deploy',
+        replicas: 1,
+        image: 'python:3.11-alpine',
+        labels: { app: 'api' }
       }
     ],
     services: [
@@ -238,6 +258,15 @@ export const DEFAULT_LABS = [
         selector: { app: 'web' }
       },
       {
+        name: 'api-service',
+        type: 'NodePort',
+        clusterIp: '10.96.100.70',
+        nodePort: 30082,
+        port: 8080,
+        targetPort: 8080,
+        selector: { app: 'api' }
+      },
+      {
         name: 'dev-service',
         type: 'NodePort',
         clusterIp: '10.96.100.60',
@@ -248,7 +277,7 @@ export const DEFAULT_LABS = [
       }
     ],
     activityLogs: [
-      { time: '02:00:00', user: '운영진', action: 'KT Cloud L7 ALB (VIP: 211.252.85.10) 및 실등록 도메인(app.ktci5.kr, dev.ktci5.kr) 연동 완료' },
+      { time: '02:00:00', user: '운영진', action: 'KT Cloud L7 ALB (VIP: 211.252.85.10) 및 도메인(app, api, dev, *.ktci5.kr) 연동 완료' },
       { time: '02:01:15', user: '운영진', action: 'Cloudflare 하이브리드 터널(암호화 전송) 활성화' }
     ]
   },
@@ -463,10 +492,11 @@ export async function getLabDetail(env, id) {
         if (!lab.network.layers) lab.network.layers = def.layers;
         if (!lab.network.ingress) lab.network.ingress = def.ingress;
 
-        // Ingress 도메인 보정: app.ktci5.kr, dev.ktci5.kr 및 *.ktci5.kr 와일드카드 보장
+        // Ingress 도메인 보정: app.ktci5.kr, api.ktci5.kr, dev.ktci5.kr 및 *.ktci5.kr 와일드카드 보장
         if (lab.network.ingress?.rules) {
-          if (!lab.network.ingress.rules.some(r => r.host === 'app.ktci5.kr')) {
-            lab.network.ingress.rules.unshift({
+          const rules = lab.network.ingress.rules;
+          if (!rules.some(r => r.host === 'app.ktci5.kr')) {
+            rules.unshift({
               host: 'app.ktci5.kr',
               path: '/',
               port: 80,
@@ -476,8 +506,19 @@ export async function getLabDetail(env, id) {
               protocol: 'HTTP/1.1 & HTTP/2'
             });
           }
-          if (!lab.network.ingress.rules.some(r => r.host === 'dev.ktci5.kr')) {
-            lab.network.ingress.rules.push({
+          if (!rules.some(r => r.host === 'api.ktci5.kr')) {
+            rules.splice(1, 0, {
+              host: 'api.ktci5.kr',
+              path: '/api',
+              port: 80,
+              targetPort: 8080,
+              service: 'api-service:8080',
+              ssl: true,
+              protocol: 'HTTP/1.1 & HTTP/2'
+            });
+          }
+          if (!rules.some(r => r.host === 'dev.ktci5.kr')) {
+            rules.push({
               host: 'dev.ktci5.kr',
               path: '/',
               port: 443,
@@ -487,8 +528,8 @@ export async function getLabDetail(env, id) {
               protocol: 'HTTPS (TLS1.3)'
             });
           }
-          if (!lab.network.ingress.rules.some(r => r.host === '*.ktci5.kr')) {
-            lab.network.ingress.rules.push({
+          if (!rules.some(r => r.host === '*.ktci5.kr')) {
+            rules.push({
               host: '*.ktci5.kr',
               path: '/',
               port: 80,
@@ -498,6 +539,34 @@ export async function getLabDetail(env, id) {
               protocol: 'HTTP/1.1 & HTTP/2 (Wildcard)'
             });
           }
+        }
+        // 서비스 보정: api-service가 없으면 추가
+        if (lab.services && !lab.services.some(s => s.name === 'api-service')) {
+          lab.services.push({
+            name: 'api-service',
+            type: 'NodePort',
+            clusterIp: '10.96.100.70',
+            nodePort: 30082,
+            port: 8080,
+            targetPort: 8080,
+            selector: { app: 'api' }
+          });
+        }
+        // 파드 보정: api-deploy 파드가 없으면 추가
+        if (lab.pods && !lab.pods.some(p => p.labels?.app === 'api')) {
+          lab.pods.push({
+            name: 'api-deploy-77d9c8d55-p2w9k',
+            namespace: 'default',
+            node: 'w1',
+            status: 'Running',
+            ip: '172.20.1.9',
+            image: 'python:3.11-alpine',
+            cpuReqM: 100,
+            ramReqMi: 128,
+            labels: { app: 'api' },
+            restarts: 0,
+            age: '1d'
+          });
         }
       }
     }
@@ -826,7 +895,11 @@ export function evalK8sCommand(cmdLine, lab, user) {
     }
 
     const targetUrl = tokens[tokens.length - 1];
-    let hostOrIp = targetUrl.replace(/^https?:\/\//, '').split('/')[0];
+    let urlWithoutScheme = targetUrl.replace(/^https?:\/\//, '');
+    const firstSlashIdx = urlWithoutScheme.indexOf('/');
+    const reqPath = firstSlashIdx !== -1 ? urlWithoutScheme.slice(firstSlashIdx) : '/';
+
+    let hostOrIp = (firstSlashIdx !== -1 ? urlWithoutScheme.slice(0, firstSlashIdx) : urlWithoutScheme);
     let port = 80;
     if (hostOrIp.includes(':')) {
       const p = hostOrIp.split(':');
@@ -851,7 +924,7 @@ export function evalK8sCommand(cmdLine, lab, user) {
     // 3) L7 로드밸런서 VIP 직접 호출인 경우 지원
     const registeredRules = net.ingress?.rules || [];
     const isDomainMatch = Boolean(targetHost && registeredRules.some((r) => r.host === targetHost));
-    const isKtciDomain = Boolean(targetHost && (targetHost.endsWith('.ktci5.kr') || targetHost === 'ktci5.kr'));
+    const isKtciDomain = Boolean(targetHost && (targetHost.endsWith('.ktci5.kr') || targetHost === 'ktci5.kr' || targetHost === '*.ktci5.kr'));
     const isLbVip = !targetHost && (hostOrIp === net.loadBalancer?.vip);
 
     if (targetHost && !isDomainMatch && !isKtciDomain) {
@@ -862,28 +935,53 @@ export function evalK8sCommand(cmdLine, lab, user) {
     }
 
     if (isLbVip || isDomainMatch || isKtciDomain) {
-      let matchedRule = registeredRules.find((r) => (targetHost && r.host === targetHost) || r.port === port);
-      const subPrefix = targetHost ? targetHost.split('.')[0] : 'app';
+      // Ingress 규칙 매칭 우선순위:
+      // 1) 호스트 & 경로(Path) 일치
+      // 2) 호스트 정확 일치
+      // 3) 와일드카드 (*.ktci5.kr) 규칙
+      // 4) 포트 일치 규칙
+      let matchedRule = null;
+      if (targetHost) {
+        matchedRule = registeredRules.find(r => r.host === targetHost && (r.path === reqPath || (r.path !== '/' && reqPath.startsWith(r.path))))
+                   || registeredRules.find(r => r.host === targetHost)
+                   || (isKtciDomain ? registeredRules.find(r => r.host === '*.ktci5.kr') : null);
+      }
+      if (!matchedRule) {
+        matchedRule = registeredRules.find(r => r.port === port) || registeredRules[0];
+      }
+
+      const subPrefix = (targetHost && targetHost !== '*.ktci5.kr') ? targetHost.split('.')[0] : 'app';
       const isDevHost = targetHost === 'dev.ktci5.kr' || subPrefix === 'dev' || port === 443;
-      
+      const isApiHost = targetHost === 'api.ktci5.kr' || subPrefix === 'api' || reqPath.startsWith('/api') || matchedRule?.service?.includes('api');
+      const isWildcardMatch = Boolean(targetHost && (matchedRule?.host === '*.ktci5.kr' || targetHost === '*.ktci5.kr'));
+
       if (!matchedRule) {
         matchedRule = {
           host: targetHost,
-          path: '/',
+          path: reqPath,
           port: port,
           targetPort: port === 443 ? 8080 : 80,
           service: `${subPrefix}-service:${port === 443 ? 8080 : 80}`
         };
       }
 
-      const targetService = matchedRule?.service?.split(':')[0] || (isDevHost ? 'dev-service' : 'web-service');
+      const targetService = matchedRule?.service?.split(':')[0] || (isDevHost ? 'dev-service' : (isApiHost ? 'api-service' : 'web-service'));
+      const targetPortNum = matchedRule?.targetPort || (matchedRule?.service?.split(':')[1] ? parseInt(matchedRule.service.split(':')[1], 10) : 80);
       
       const allRunningPods = lab.pods?.filter((p) => p.status === 'Running') || [];
-      let candidatePods = allRunningPods.filter((p) => 
-        p.name.includes(subPrefix) || (targetService && p.name.includes(targetService.split('-')[0]))
-      );
+      const svcObj = lab.services?.find(s => s.name === targetService);
+      const svcSelectorApp = svcObj?.selector?.app;
+
+      let candidatePods = [];
+      if (svcSelectorApp) {
+        candidatePods = allRunningPods.filter(p => p.labels?.app === svcSelectorApp);
+      }
       if (candidatePods.length === 0) {
-        candidatePods = allRunningPods.filter((p) => p.name.includes('web') || p.name.includes('dev') || p.name.includes('api') || p.name.includes('app'));
+        const svcPrefix = targetService.split('-')[0];
+        candidatePods = allRunningPods.filter(p => p.name.includes(svcPrefix) || p.labels?.app === svcPrefix);
+      }
+      if (candidatePods.length === 0) {
+        candidatePods = allRunningPods.filter(p => p.name.includes('web') || p.name.includes('dev') || p.name.includes('api'));
       }
       if (candidatePods.length === 0) {
         candidatePods = allRunningPods;
@@ -905,16 +1003,20 @@ export function evalK8sCommand(cmdLine, lab, user) {
         }
         const podsToSelect = healthyPods.length > 0 ? healthyPods : candidatePods;
         const chosenPod = podsToSelect[Math.floor(Math.random() * podsToSelect.length)];
-        const effectiveHost = targetHost || (isDevHost ? 'dev.ktci5.kr' : 'app.ktci5.kr');
+        const effectiveHost = targetHost || (isDevHost ? 'dev.ktci5.kr' : (isApiHost ? 'api.ktci5.kr' : 'app.ktci5.kr'));
 
-        let serviceTitle = '🚀 Production Service via KT Cloud L7 ALB';
-        if (effectiveHost.startsWith('dev.')) {
+        let serviceTitle = '🚀 Production Web Service via KT Cloud L7 ALB';
+        if (effectiveHost.startsWith('dev.') || matchedRule?.service?.includes('dev')) {
           serviceTitle = '🧪 Development & Staging Service via KT Cloud L7 ALB';
-        } else if (effectiveHost.startsWith('api.')) {
+        } else if (effectiveHost.startsWith('api.') || isApiHost) {
           serviceTitle = '⚡ REST API Backend Service via KT Cloud L7 ALB';
+        } else if (isWildcardMatch) {
+          serviceTitle = `🌐 ${subPrefix.toUpperCase()} Application (*.ktci5.kr 와일드카드) via KT Cloud L7 ALB`;
         } else if (!effectiveHost.startsWith('app.')) {
-          serviceTitle = `🌐 ${subPrefix.toUpperCase()} Application (*.ktci5.kr) via KT Cloud L7 ALB`;
+          serviceTitle = `🌐 ${subPrefix.toUpperCase()} Application via KT Cloud L7 ALB`;
         }
+
+        const apiBox = isApiHost ? `\n<div style="margin:20px auto;max-width:520px;background:#0f172a;color:#38bdf8;padding:15px;border-radius:8px;text-align:left;font-family:monospace;font-size:13px;line-height:1.6;">\n{\n  "status": "ACTIVE",\n  "service": "${targetService}",\n  "domain": "${effectiveHost}",\n  "path": "${reqPath}",\n  "backend": "${chosenPod.ip}:${targetPortNum}",\n  "node": "${chosenPod.node}",\n  "message": "KT Cloud 5기 REST API 백엔드 서비스 정상 가동 중"\n}\n</div>` : '';
 
         return {
           output: `\x1b[32mHTTP/1.1 200 OK\x1b[0m
@@ -922,7 +1024,9 @@ Date: ${new Date().toUTCString()}
 Server: KT-Cloud-ALB/2.4 (L7 Reverse Proxy & Ingress)
 X-Forwarded-Host: ${effectiveHost}:${port}
 X-Forwarded-Proto: ${port === 443 ? 'https' : 'http'}
-X-Backend-Server: ${chosenPod.ip}:${matchedRule?.targetPort || 80} (${chosenPod.node})
+X-Target-Service: ${targetService}:${targetPortNum}
+X-Ingress-Rule: ${matchedRule?.host || effectiveHost}${matchedRule?.path || '/'} ➔ ${matchedRule?.service || targetService}
+X-Backend-Server: ${chosenPod.ip}:${targetPortNum} (${chosenPod.node})
 X-Network-Path: Hub(L1) ➔ vSwitch(L2:VLAN100) ➔ vRouter(L3:NAT) ➔ ALB(L4:Port${port}) ➔ TLS1.3(L6) ➔ Ingress(L7)
 Content-Type: text/html; charset=UTF-8
 
@@ -931,9 +1035,10 @@ Content-Type: text/html; charset=UTF-8
 <head><title>KT Cloud 5기 - ${effectiveHost}</title></head>
 <body style="font-family:sans-serif;padding:30px;text-align:center;">
 <h1>${serviceTitle}</h1>
-<p>Domain: <b>${effectiveHost}</b> (Port: <b>${port}</b>) ➔ Ingress VIP: <b>${net.loadBalancer?.vip}</b></p>
-<p>Routed Pod: <span style="color:#10b981;font-weight:bold;">${chosenPod.name}</span> (Node: <b>${chosenPod.node}</b>)</p>
-<p>SSL Status: <b>${net.loadBalancer?.ssl}</b> | Tunnel: <b>${net.tunnel?.status}</b> | VPN: <b>${net.vpn?.status || 'CONNECTED'}</b></p>
+<p style="font-size:16px;">Domain: <b style="color:#6366f1;">${effectiveHost}</b> (Port: <b>${port}</b>, Path: <b>${reqPath}</b>) ➔ Ingress VIP: <b>${net.loadBalancer?.vip}</b></p>
+<p>Target Service: <b style="color:#0284c7;">${targetService}</b> (Service Port: <b>${targetPortNum}</b>) ${isWildcardMatch ? '<span style="color:#10b981;font-weight:bold;">[*.ktci5.kr 와일드카드 매핑]</span>' : ''}</p>
+<p>Routed Pod: <span style="color:#10b981;font-weight:bold;">${chosenPod.name}</span> (Node: <b>${chosenPod.node}</b>, Pod IP: <b>${chosenPod.ip}</b>)</p>
+<p>SSL Status: <b>${net.loadBalancer?.ssl || 'TLS Valid'}</b> | Tunnel: <b>${net.tunnel?.status}</b> | VPN: <b>${net.vpn?.status || 'CONNECTED'}</b></p>${apiBox}
 <p style="font-size:12px;color:#64748b;">OSI 7-Layer Routing: Hub(L1) ➔ Switch(L2) ➔ Router(L3) ➔ Port ${port}(L4) ➔ Session(L5) ➔ TLS(L6) ➔ App(L7)</p>
 </body>
 </html>`,
@@ -4789,16 +4894,26 @@ export function renderSimulatorPage(user) {
         </div>\`;
       }).join('');
 
-      document.getElementById('domain-table-body').innerHTML = (net.ingress?.rules || []).map(r => \`
+      document.getElementById('domain-table-body').innerHTML = (net.ingress?.rules || []).map(r => {
+        const isWild = r.host === '*.ktci5.kr' || (r.host && r.host.startsWith('*.'));
+        const testHost = isWild ? 'shop.ktci5.kr' : r.host;
+        const testPort = r.port || 80;
+        const portPart = testPort === 80 ? '' : (':' + testPort);
+        const pathPart = (r.path && r.path !== '/') ? r.path : '';
+        const vip = net.loadBalancer?.vip || '211.252.85.10';
+        const curlCmd = 'curl -H &quot;Host: ' + testHost + '&quot; http://' + vip + portPart + pathPart;
+        const titleText = isWild ? '와일드카드 가상 앱 호출 (shop.ktci5.kr)' : (r.host + ' 호출');
+        return \`
         <tr>
           <td style="color:#818cf8; font-weight:700;">\${r.host}</td>
-          <td><b>:\${r.port || 80}</b></td>
-          <td>\${r.path}</td>
-          <td>\${r.service}</td>
+          <td><b>:\${testPort}</b></td>
+          <td>\${r.path || '/'}</td>
+          <td><span style="color:#38bdf8;">\${r.service}</span></td>
           <td><span style="color:#10b981;">\${r.ssl ? 'TLS Valid' : 'HTTP'}</span></td>
-          <td><button class="chip-btn" onclick="runChip('curl -H &quot;Host: \${r.host}&quot; http://\${net.loadBalancer?.vip}:\${r.port || 80}')">호출</button></td>
+          <td><button class="chip-btn" onclick="runChip('\${curlCmd}')" title="\${titleText}">호출</button></td>
         </tr>
-      \`).join('');
+      \`;
+      }).join('');
 
       // VPN 상태
       const isVpnOk = net.vpn?.status === 'CONNECTED';
