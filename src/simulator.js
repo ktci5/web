@@ -526,6 +526,29 @@ export function evalK8sCommand(cmdLine, lab, user) {
   const line = cmdLine.trim();
   if (!line) return { output: '', labChanged: false };
 
+  // 파이프(|) 지원 (예: kubectl describe nodes master1 | grep -i taint)
+  if (line.includes('|')) {
+    const pipeParts = line.split('|');
+    const primaryCmd = pipeParts[0].trim();
+    const filterCmd = pipeParts.slice(1).join('|').trim();
+
+    const res = evalK8sCommand(primaryCmd, lab, user);
+    if (!res.output) return res;
+
+    const filterTokens = filterCmd.split(/\s+/);
+    if (filterTokens[0] === 'grep') {
+      const isCaseInsensitive = filterTokens.includes('-i');
+      const isInverse = filterTokens.includes('-v');
+      const pattern = filterTokens.find(t => t !== 'grep' && t !== '-i' && t !== '-v' && !t.startsWith('-'));
+      if (pattern) {
+        const regex = new RegExp(pattern, isCaseInsensitive ? 'i' : '');
+        const filteredLines = res.output.split('\n').filter(l => isInverse ? !regex.test(l) : regex.test(l));
+        return { output: filteredLines.join('\n'), labChanged: res.labChanged };
+      }
+    }
+    return res;
+  }
+
   let tokens = line.split(/\s+/);
   if (tokens[0] === 'k') tokens[0] = 'kubectl';
 
@@ -789,61 +812,269 @@ Content-Length: 512
 
   const sub = tokens[1];
 
-  // 5. GET INGRESS
-  if (sub === 'get' && tokens[2] && (tokens[2].startsWith('ing') || tokens[2] === 'ingress')) {
-    const net = lab.network || createDefaultNetwork();
-    let out = 'NAME              CLASS   HOSTS                      ADDRESS         PORTS     AGE\n';
-    out += `kt-ingress-alb    nginx   app.ktci5.kr,api.ktci5.kr  ${net.loadBalancer?.vip.padEnd(16)}80, 443   5d\n`;
-    return { output: out.trimEnd(), labChanged: false };
+  // 5. GET RESOURCES (nodes/no, pods/po, svc/service, deploy/deployment, ingress, all)
+  if (sub === 'get' && tokens[2]) {
+    const isWide = line.includes('-o wide');
+    const targetRaw = tokens[2].toLowerCase();
+    const targets = targetRaw.split(',');
+
+    const getNodesOutput = () => {
+      let out = isWide
+        ? 'NAME      STATUS                     ROLES           AGE   VERSION   INTERNAL-IP   OS-IMAGE             KERNEL-VERSION\n'
+        : 'NAME      STATUS                     ROLES           AGE   VERSION\n';
+
+      for (const n of (lab.nodes || [])) {
+        let statusStr = n.status;
+        const osDisk = n.disks?.[0];
+        if (osDisk && (osDisk.usedGb / osDisk.sizeGb) > 0.90) {
+          statusStr = 'Ready,DiskPressure';
+        }
+        if (n.unschedulable) {
+          statusStr = `${n.status},SchedulingDisabled`;
+        }
+        const roles = n.role === 'control-plane' ? 'control-plane' : '<none>';
+        if (isWide) {
+          out += `${n.name.padEnd(10)}${statusStr.padEnd(27)}${roles.padEnd(16)}5d    v1.28.2   ${n.ip.padEnd(14)}Ubuntu 22.04.3 LTS   5.15.0-89-generic\n`;
+        } else {
+          out += `${n.name.padEnd(10)}${statusStr.padEnd(27)}${roles.padEnd(16)}5d    v1.28.2\n`;
+        }
+      }
+      return out.trimEnd();
+    };
+
+    const getPodsOutput = () => {
+      let out = isWide
+        ? 'NAME                            READY   STATUS    RESTARTS   AGE   IP           NODE      NOMINATED NODE\n'
+        : 'NAME                            READY   STATUS    RESTARTS   AGE\n';
+
+      if (!lab.pods || lab.pods.length === 0) {
+        return 'No resources found in default namespace.';
+      }
+
+      for (const p of lab.pods) {
+        const ready = p.status === 'Running' ? '1/1' : '0/1';
+        const statusColored = p.status === 'Running' ? `\x1b[32m${p.status}\x1b[0m` : `\x1b[33m${p.status}\x1b[0m`;
+        if (isWide) {
+          out += `${p.name.padEnd(32)}${ready.padEnd(8)}${statusColored.padEnd(18)}${String(p.restarts).padEnd(11)}${p.age.padEnd(6)}${p.ip.padEnd(13)}${p.node.padEnd(10)}<none>\n`;
+        } else {
+          out += `${p.name.padEnd(32)}${ready.padEnd(8)}${statusColored.padEnd(18)}${String(p.restarts).padEnd(11)}${p.age}\n`;
+        }
+      }
+      return out.trimEnd();
+    };
+
+    const getSvcOutput = () => {
+      let out = isWide
+        ? 'NAME          TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)          AGE   SELECTOR\n'
+        : 'NAME          TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)          AGE\n';
+
+      if (isWide) {
+        out += `${'kubernetes'.padEnd(14)}${'ClusterIP'.padEnd(12)}${'10.96.0.1'.padEnd(16)}${'<none>'.padEnd(14)}${'443/TCP'.padEnd(17)}5d    <none>\n`;
+      } else {
+        out += `${'kubernetes'.padEnd(14)}${'ClusterIP'.padEnd(12)}${'10.96.0.1'.padEnd(16)}${'<none>'.padEnd(14)}${'443/TCP'.padEnd(17)}5d\n`;
+      }
+
+      const services = lab.services || [];
+      for (const s of services) {
+        const portStr = s.nodePort ? `${s.port}:${s.nodePort}/TCP` : `${s.port}/TCP`;
+        const selectorStr = s.selector ? Object.entries(s.selector).map(([k, v]) => `${k}=${v}`).join(',') : '<none>';
+        if (isWide) {
+          out += `${s.name.padEnd(14)}${s.type.padEnd(12)}${(s.clusterIp || '10.96.142.88').padEnd(16)}${'<none>'.padEnd(14)}${portStr.padEnd(17)}3d    ${selectorStr}\n`;
+        } else {
+          out += `${s.name.padEnd(14)}${s.type.padEnd(12)}${(s.clusterIp || '10.96.142.88').padEnd(16)}${'<none>'.padEnd(14)}${portStr.padEnd(17)}3d\n`;
+        }
+      }
+      return out.trimEnd();
+    };
+
+    const getDeployOutput = () => {
+      let out = isWide
+        ? 'NAME          READY   UP-TO-DATE   AVAILABLE   AGE   CONTAINERS   IMAGES\n'
+        : 'NAME          READY   UP-TO-DATE   AVAILABLE   AGE\n';
+
+      const deploys = lab.deployments || [];
+      if (deploys.length === 0) {
+        return 'No resources found in default namespace.';
+      }
+      for (const d of deploys) {
+        const runningCount = lab.pods?.filter(p => p.name.startsWith(d.name) && p.status === 'Running').length || 0;
+        const readyStr = `${runningCount}/${d.replicas}`;
+        if (isWide) {
+          out += `${d.name.padEnd(14)}${readyStr.padEnd(8)}${String(d.replicas).padEnd(13)}${String(runningCount).padEnd(12)}3d    nginx        ${d.image || 'nginx:latest'}\n`;
+        } else {
+          out += `${d.name.padEnd(14)}${readyStr.padEnd(8)}${String(d.replicas).padEnd(13)}${String(runningCount).padEnd(12)}3d\n`;
+        }
+      }
+      return out.trimEnd();
+    };
+
+    const getIngressOutput = () => {
+      const net = lab.network || createDefaultNetwork();
+      let out = 'NAME              CLASS   HOSTS                      ADDRESS         PORTS     AGE\n';
+      out += `kt-ingress-alb    nginx   app.ktci5.kr,api.ktci5.kr  ${net.loadBalancer?.vip.padEnd(16)}80, 443   5d\n`;
+      return out.trimEnd();
+    };
+
+    if (targets.includes('all')) {
+      return {
+        output: [getPodsOutput(), getSvcOutput(), getDeployOutput()].join('\n\n'),
+        labChanged: false
+      };
+    }
+
+    const resList = [];
+    for (const t of targets) {
+      if (t === 'no' || t === 'node' || t === 'nodes') {
+        resList.push(getNodesOutput());
+      } else if (t === 'po' || t === 'pod' || t === 'pods') {
+        resList.push(getPodsOutput());
+      } else if (t === 'svc' || t === 'service' || t === 'services') {
+        resList.push(getSvcOutput());
+      } else if (t === 'deploy' || t === 'deployment' || t === 'deployments') {
+        resList.push(getDeployOutput());
+      } else if (t.startsWith('ing') || t === 'ingress') {
+        resList.push(getIngressOutput());
+      }
+    }
+
+    if (resList.length > 0) {
+      return { output: resList.join('\n\n'), labChanged: false };
+    }
   }
 
-  // 6. GET NODES
-  if (sub === 'get' && tokens[2] && tokens[2].startsWith('node')) {
-    const isWide = line.includes('-o wide');
-    let out = isWide
-      ? 'NAME      STATUS                     ROLES           AGE   VERSION   INTERNAL-IP   OS-IMAGE             KERNEL-VERSION\n'
-      : 'NAME      STATUS                     ROLES           AGE   VERSION\n';
+  // 6. DESCRIBE RESOURCES (nodes/no, pods/po, svc/service, deploy/deployment)
+  if (sub === 'describe') {
+    const kind = (tokens[2] || '').toLowerCase();
+    const name = tokens[3];
 
-    for (const n of lab.nodes) {
-      let statusStr = n.status;
-      const osDisk = n.disks?.[0];
-      if (osDisk && (osDisk.usedGb / osDisk.sizeGb) > 0.90) {
-        statusStr = 'Ready,DiskPressure';
+    // DESCRIBE NODE
+    if (kind === 'nodes' || kind === 'node' || kind === 'no') {
+      const targetNode = name ? lab.nodes?.find(n => n.name === name) : lab.nodes?.[0];
+      if (!targetNode) {
+        const avail = lab.nodes?.map(n => n.name).join(', ') || 'none';
+        return { output: `Error from server (NotFound): nodes "${name}" not found. (가용 노드: ${avail})`, labChanged: false };
       }
-      if (n.unschedulable) {
-        statusStr = `${n.status},SchedulingDisabled`;
-      }
-      const roles = n.role === 'control-plane' ? 'control-plane' : '<none>';
-      if (isWide) {
-        out += `${n.name.padEnd(10)}${statusStr.padEnd(27)}${roles.padEnd(16)}5d    v1.28.2   ${n.ip.padEnd(14)}Ubuntu 22.04.3 LTS   5.15.0-89-generic\n`;
-      } else {
-        out += `${n.name.padEnd(10)}${statusStr.padEnd(27)}${roles.padEnd(16)}5d    v1.28.2\n`;
-      }
+      const taintsStr = (targetNode.taints && targetNode.taints.length > 0)
+        ? targetNode.taints.map(t => `${t.key}:${t.effect}`).join(',')
+        : '<none>';
+
+      const labelsStr = targetNode.labels
+        ? Object.entries(targetNode.labels).map(([k, v]) => `${k}=${v}`).join('\n                    ')
+        : 'kubernetes.io/hostname=' + targetNode.name;
+
+      const hostedPods = lab.pods?.filter(p => p.node === targetNode.name) || [];
+      let podsTable = hostedPods.length > 0
+        ? '  Namespace  Name                            CPU Requests  Memory Requests\n  ---------  ----                            ------------  ---------------\n' +
+          hostedPods.map(p => `  default    ${p.name.padEnd(32)}${String(p.cpuReqM || 100) + 'm'}           ${String(p.ramReqMi || 128) + 'Mi'}`).join('\n')
+        : '  <none>';
+
+      const osDisk = targetNode.disks?.[0];
+      const hasDiskPres = targetNode.diskPressure || (osDisk && (osDisk.usedGb / osDisk.sizeGb) > 0.85);
+
+      let out = `Name:               ${targetNode.name}
+Roles:              ${targetNode.role || '<none>'}
+Labels:             ${labelsStr}
+Annotations:        kubeadm.alpha.kubernetes.io/cri-socket: unix:///run/containerd/containerd.sock
+                    node.alpha.kubernetes.io/ttl: 0
+CreationTimestamp:  Tue, 16 Sep 2026 09:00:00 +0900
+Taints:             ${taintsStr}
+Logging:            Ready
+Unschedulable:      ${targetNode.unschedulable ? 'true' : 'false'}
+Conditions:
+  Type             Status  Reason                       Message
+  ----             ------  ------                       -------
+  MemoryPressure   False   KubeletHasSufficientMemory   kubelet has sufficient memory available
+  DiskPressure     ${hasDiskPres ? 'True' : 'False'}   KubeletHasNoDiskPressure     kubelet disk condition
+  PIDPressure      False   KubeletHasSufficientPID      kubelet has sufficient PID available
+  Ready            ${targetNode.status === 'Ready' ? 'True' : 'False'}    KubeletReady                 kubelet is posting ready status
+Addresses:
+  InternalIP:  ${targetNode.ip}
+  Hostname:    ${targetNode.name}
+Capacity:
+  cpu:                ${(targetNode.cpuTotalM || 4000) / 1000}
+  ephemeral-storage:  100Gi
+  hugepages-2Mi:      0
+  memory:             ${targetNode.ramTotalMi || 8192}Mi
+  pods:               110
+Allocatable:
+  cpu:                ${(targetNode.cpuTotalM || 4000) / 1000}
+  ephemeral-storage:  90Gi
+  hugepages-2Mi:      0
+  memory:             ${Math.round((targetNode.ramTotalMi || 8192) * 0.95)}Mi
+  pods:               110
+Non-terminated Pods:  (${hostedPods.length} in total)
+${podsTable}
+Allocated resources:
+  Resource           Requests
+  --------           --------
+  cpu                ${hostedPods.reduce((a, p) => a + (p.cpuReqM || 100), 0)}m
+  memory             ${hostedPods.reduce((a, p) => a + (p.ramReqMi || 128), 0)}Mi
+Events:              <none>`;
+      return { output: out, labChanged: false };
     }
-    return { output: out.trimEnd(), labChanged: false };
-  }
 
-  // 7. GET PODS
-  if (sub === 'get' && tokens[2] && tokens[2].startsWith('pod')) {
-    const isWide = line.includes('-o wide');
-    let out = isWide
-      ? 'NAME                            READY   STATUS    RESTARTS   AGE   IP           NODE      NOMINATED NODE\n'
-      : 'NAME                            READY   STATUS    RESTARTS   AGE\n';
-
-    if (!lab.pods || lab.pods.length === 0) {
-      return { output: 'No resources found in default namespace.', labChanged: false };
-    }
-
-    for (const p of lab.pods) {
-      const ready = p.status === 'Running' ? '1/1' : '0/1';
-      const statusColored = p.status === 'Running' ? `\x1b[32m${p.status}\x1b[0m` : `\x1b[33m${p.status}\x1b[0m`;
-      if (isWide) {
-        out += `${p.name.padEnd(32)}${ready.padEnd(8)}${statusColored.padEnd(18)}${String(p.restarts).padEnd(11)}${p.age.padEnd(6)}${p.ip.padEnd(13)}${p.node.padEnd(10)}<none>\n`;
-      } else {
-        out += `${p.name.padEnd(32)}${ready.padEnd(8)}${statusColored.padEnd(18)}${String(p.restarts).padEnd(11)}${p.age}\n`;
+    // DESCRIBE POD
+    if (kind === 'pods' || kind === 'pod' || kind === 'po') {
+      const targetPod = name ? lab.pods?.find(p => p.name === name) : lab.pods?.[0];
+      if (!targetPod) {
+        return { output: `Error from server (NotFound): pods "${name}" not found`, labChanged: false };
       }
+      const isPending = targetPod.status === 'Pending';
+      const eventMsg = isPending
+        ? `Warning  FailedScheduling  default-scheduler  0/${lab.nodes?.length || 2} nodes are available: 1 node(s) had untolerated taint, 1 node(s) didn't match Pod's node affinity/selector.`
+        : `Normal   Scheduled         default-scheduler  Successfully assigned default/${targetPod.name} to ${targetPod.node}`;
+
+      let out = `Name:             ${targetPod.name}
+Namespace:        default
+Priority:         0
+Service Accounts: default
+Node:             ${targetPod.node}/${lab.nodes?.find(n => n.name === targetPod.node)?.ip || '<none>'}
+Start Time:       Tue, 22 Sep 2026 07:00:00 +0900
+Labels:           ${targetPod.labels ? Object.entries(targetPod.labels).map(([k, v]) => `${k}=${v}`).join(',') : 'run=' + targetPod.name}
+Status:           ${targetPod.status}
+IP:               ${targetPod.ip || 'None'}
+Containers:
+  ${targetPod.name.split('-')[0]}:
+    Container ID:   containerd://simulated-${targetPod.name}
+    Image:          ${targetPod.image || 'nginx:latest'}
+    State:          ${targetPod.status === 'Running' ? 'Running' : 'Waiting'}
+    Ready:          ${targetPod.status === 'Running' ? 'True' : 'False'}
+    Restart Count:  ${targetPod.restarts || 0}
+    Requests:
+      cpu:          ${targetPod.cpuReqM || 100}m
+      memory:       ${targetPod.ramReqMi || 128}Mi
+Conditions:
+  Type              Status
+  Initialized       True
+  Ready             ${targetPod.status === 'Running' ? 'True' : 'False'}
+  ContainersReady   ${targetPod.status === 'Running' ? 'True' : 'False'}
+  PodScheduled      ${isPending ? 'False' : 'True'}
+Events:
+  Type     Reason            Age   From               Message
+  ----     ------            ----  ----               -------
+  ${eventMsg}`;
+      return { output: out, labChanged: false };
     }
-    return { output: out.trimEnd(), labChanged: false };
+
+    // DESCRIBE SERVICE
+    if (kind === 'svc' || kind === 'service' || kind === 'services') {
+      const targetSvc = name ? lab.services?.find(s => s.name === name) : lab.services?.[0];
+      if (!targetSvc) {
+        return { output: `Error from server (NotFound): services "${name}" not found`, labChanged: false };
+      }
+      let out = `Name:              ${targetSvc.name}
+Namespace:         default
+Labels:            <none>
+Selector:          ${targetSvc.selector ? Object.entries(targetSvc.selector).map(([k, v]) => `${k}=${v}`).join(',') : '<none>'}
+Type:              ${targetSvc.type}
+IP:                ${targetSvc.clusterIp}
+Port:              http  ${targetSvc.port}/TCP
+TargetPort:        ${targetSvc.targetPort || 80}/TCP
+NodePort:          http  ${targetSvc.nodePort || '<none>'}/TCP
+Endpoints:         ${lab.pods?.filter(p => p.status === 'Running').map(p => `${p.ip}:${targetSvc.targetPort || 80}`).join(',') || '<none>'}
+Events:            <none>`;
+      return { output: out, labChanged: false };
+    }
   }
 
   // 8. TOP NODES / PODS
@@ -894,7 +1125,10 @@ Content-Length: 512
   if (sub === 'cordon' && tokens[2]) {
     const nodeName = tokens[2];
     const node = lab.nodes?.find((n) => n.name === nodeName);
-    if (!node) return { output: `Error from server (NotFound): nodes "${nodeName}" not found`, labChanged: false };
+    if (!node) {
+      const avail = lab.nodes?.map(n => n.name).join(', ') || 'none';
+      return { output: `Error from server (NotFound): nodes "${nodeName}" not found. (가용 노드: ${avail})`, labChanged: false };
+    }
     node.unschedulable = true;
     lab.activityLogs.unshift({ time: timeStr, user: userName, action: `노드 '${nodeName}' 스케줄링 비활성화 (cordoned)` });
     return { output: `node/${nodeName} cordoned`, labChanged: true };
@@ -903,7 +1137,10 @@ Content-Length: 512
   if (sub === 'uncordon' && tokens[2]) {
     const nodeName = tokens[2];
     const node = lab.nodes?.find((n) => n.name === nodeName);
-    if (!node) return { output: `Error from server (NotFound): nodes "${nodeName}" not found`, labChanged: false };
+    if (!node) {
+      const avail = lab.nodes?.map(n => n.name).join(', ') || 'none';
+      return { output: `Error from server (NotFound): nodes "${nodeName}" not found. (가용 노드: ${avail})`, labChanged: false };
+    }
     node.unschedulable = false;
     rescheduleAll(lab);
     lab.activityLogs.unshift({ time: timeStr, user: userName, action: `노드 '${nodeName}' 스케줄링 재개 (uncordoned)` });
@@ -913,7 +1150,10 @@ Content-Length: 512
   if (sub === 'drain' && tokens[2]) {
     const nodeName = tokens[2];
     const node = lab.nodes?.find((n) => n.name === nodeName);
-    if (!node) return { output: `Error from server (NotFound): nodes "${nodeName}" not found`, labChanged: false };
+    if (!node) {
+      const avail = lab.nodes?.map(n => n.name).join(', ') || 'none';
+      return { output: `Error from server (NotFound): nodes "${nodeName}" not found. (가용 노드: ${avail})`, labChanged: false };
+    }
     node.unschedulable = true;
 
     let evicted = 0;
@@ -1062,7 +1302,10 @@ Content-Length: 512
     if (!nodeName || !taintExpr) return { output: 'error: node name and taint expression required', labChanged: false };
 
     const node = lab.nodes?.find((n) => n.name === nodeName);
-    if (!node) return { output: `nodes "${nodeName}" not found`, labChanged: false };
+    if (!node) {
+      const avail = lab.nodes?.map(n => n.name).join(', ') || 'none';
+      return { output: `Error from server (NotFound): nodes "${nodeName}" not found. (가용 노드: ${avail})`, labChanged: false };
+    }
 
     if (!node.taints) node.taints = [];
 
@@ -1087,7 +1330,10 @@ Content-Length: 512
     if (!nodeName || !labelExpr) return { output: 'error: node name and label expression required', labChanged: false };
 
     const node = lab.nodes?.find((n) => n.name === nodeName);
-    if (!node) return { output: `nodes "${nodeName}" not found`, labChanged: false };
+    if (!node) {
+      const avail = lab.nodes?.map(n => n.name).join(', ') || 'none';
+      return { output: `Error from server (NotFound): nodes "${nodeName}" not found. (가용 노드: ${avail})`, labChanged: false };
+    }
 
     if (!node.labels) node.labels = {};
 
@@ -1482,8 +1728,8 @@ export function analyzeTerminalCommand(cmd = '', lab = null) {
   };
 }
 
-/// AI 인프라 코파일럿 핵심 엔진 (교안 데이터 & 현재 터미널 명령어 & 화면 상태 연계 답변)
-export function generateAiCopilotAdvice(prompt = '', topic = 'general', lab = null, context = {}) {
+/// AI 인프라 코파일럿 핵심 엔진 (경량 오픈소스 Llama-3.2-1B & 교안 지식 베이스 기반 답변)
+export async function generateAiCopilotAdvice(prompt = '', topic = 'general', lab = null, context = {}, env = null) {
   const p = (prompt || '').toLowerCase().trim();
   const lastCmd = (context.lastCommand || '').trim();
   const currentCmd = (context.currentCommand || '').trim();
@@ -1513,6 +1759,7 @@ export function generateAiCopilotAdvice(prompt = '', topic = 'general', lab = nu
   const masterNode = nodes.find(n => n.role === 'control-plane') || nodes[0] || { name: 'master1', ip: '10.10.10.12' };
   const workerNodes = nodes.filter(n => n.role === 'worker');
   const firstWorker = workerNodes[0] || masterNode || { name: 'w1', ip: '10.10.10.20' };
+  const targetWorkerName = firstWorker.name;
   const nodeNames = nodes.map(n => n.name).join(', ') || 'master1, w1';
   const pendingPods = pods.filter(p => p.status === 'Pending');
   const runningPods = pods.filter(p => p.status === 'Running');
@@ -1527,7 +1774,6 @@ export function generateAiCopilotAdvice(prompt = '', topic = 'general', lab = nu
   // ============================================================
   const activeIssues = [];
   if (lab) {
-    // 디스크 압박(DiskPressure) 및 수동 격리(Cordoned) 감지
     nodes.forEach(n => {
       const osDisk = n.disks?.[0];
       const diskUsedPct = osDisk ? Math.round((osDisk.usedGb / osDisk.sizeGb) * 100) : (n.diskPressure ? 92 : 36);
@@ -1538,8 +1784,8 @@ export function generateAiCopilotAdvice(prompt = '', topic = 'general', lab = nu
           level: 'CRITICAL',
           badge: '디스크 고갈 (DiskPressure)',
           target: n.name,
-          screenResult: `화면의 노드 [${n.name}] 디스크 사용량이 ${diskUsedPct}%로 85% 임계치를 초과하여 Kubelet 스케줄링이 자동 격리(Cordon)되었습니다.`,
-          hint: `[교안 04장 LVM 스토리지 증설] GUI 노드 카드의 [+ 100GB SSD 디스크 Hot-Add]를 클릭하여 스토리지를 증설한 후 터미널에서 'kubectl uncordon ${n.name}'을 실행하세요.`,
+          screenResult: `화면의 노드 [${n.name}] 디스크 사용량이 ${diskUsedPct}%로 임계치(85%)를 초과하여 자동 격리되었습니다.`,
+          hint: `GUI 노드 카드의 [+ 100GB SSD Hot-Add]를 클릭하여 디스크를 증설한 후 'kubectl uncordon ${n.name}'을 실행하세요.`,
           fixCmd: `kubectl uncordon ${n.name}`,
           modalId: null
         });
@@ -1548,29 +1794,27 @@ export function generateAiCopilotAdvice(prompt = '', topic = 'general', lab = nu
           level: 'WARN',
           badge: '노드 스케줄링 차단 (Cordoned)',
           target: n.name,
-          screenResult: `화면의 노드 [${n.name}]가 현재 수동 격리(SchedulingDisabled) 상태로 신규 워크로드가 스케줄링되지 않습니다.`,
-          hint: `'kubectl uncordon ${n.name}' 명령을 실행하여 정상 스케줄링 상태로 즉시 복구해보세요.`,
+          screenResult: `화면의 노드 [${n.name}]가 현재 수동 격리(SchedulingDisabled) 상태로 신규 파드가 배치되지 않습니다.`,
+          hint: `'kubectl uncordon ${n.name}' 명령을 실행하여 정상 스케줄링 상태로 복구하세요.`,
           fixCmd: `kubectl uncordon ${n.name}`,
           modalId: null
         });
       }
 
-      // vCPU 고부하 감지
       const cpuPct = n.cpuTotalM > 0 ? Math.round(((n.cpuAllocated || 0) / n.cpuTotalM) * 100) : 0;
       if (cpuPct >= 80) {
         activeIssues.push({
           level: 'WARN',
           badge: 'vCPU 임계치 초과',
           target: n.name,
-          screenResult: `화면의 노드 [${n.name}] vCPU 사용률이 ${cpuPct}%에 달해 워크로드 처리 한계에 임박했습니다.`,
-          hint: `노드 카드 상단의 [+2C (Hot-Add)] 버튼을 클릭하여 무중단 vCPU 확장을 시도하세요.`,
+          screenResult: `화면의 노드 [${n.name}] vCPU 사용률이 ${cpuPct}%에 달해 처리 한계에 임박했습니다.`,
+          hint: `노드 카드의 [+2C (Hot-Add)] 버튼을 클릭하여 무중단 vCPU 확장을 시도하세요.`,
           fixCmd: `kubectl top nodes`,
           modalId: null
         });
       }
     });
 
-    // 파드 Pending 감지
     if (pendingPods.length > 0) {
       const isSchedulingLab = lab.id === 'scheduling-lab';
       activeIssues.push({
@@ -1578,37 +1822,35 @@ export function generateAiCopilotAdvice(prompt = '', topic = 'general', lab = nu
         badge: '파드 Pending 대기',
         target: pendingPods.map(p => p.name).join(', '),
         screenResult: isSchedulingLab
-          ? `화면의 파드 ${pendingPods.length}개가 'disktype=ssd' 라벨을 요구하지만 워커 노드 [${firstWorker.name}]에 해당 라벨이 없어 Pending 상태로 멈춰 있습니다.`
-          : `화면의 파드 ${pendingPods.length}개가 클러스터 내 가용 자원 부족 또는 nodeSelector 불일치로 배치되지 못하고 있습니다.`,
+          ? `화면의 파드 ${pendingPods.length}개가 'disktype=ssd' 라벨을 요구하지만 워커 노드 [${targetWorkerName}]에 해당 라벨이 없어 Pending 대기 중입니다.`
+          : `화면의 파드 ${pendingPods.length}개가 클러스터 내 가용 자원 부족 또는 조건 불일치로 배치 대기 중입니다.`,
         hint: isSchedulingLab
-          ? `[교안 07장 Step 8-3] 'kubectl label nodes ${firstWorker.name} disktype=ssd' 명령을 실행하여 워커 노드에 라벨을 부여하면 즉시 파드가 가동(Running)됩니다.`
-          : `'kubectl describe pod ${pendingPods[0].name}'으로 이벤트를 확인하고 노드 리소스를 증설하세요.`,
-        fixCmd: isSchedulingLab ? `kubectl label nodes ${firstWorker.name} disktype=ssd` : `kubectl describe pod ${pendingPods[0].name}`,
+          ? `[교안 07장 Step 8-3] 'kubectl label nodes ${targetWorkerName} disktype=ssd'를 실행하여 노드에 라벨을 부여하면 즉시 파드가 가동됩니다.`
+          : `'kubectl describe pod ${pendingPods[0].name}'으로 이벤트를 확인하고 노드 자원을 확인하세요.`,
+        fixCmd: isSchedulingLab ? `kubectl label nodes ${targetWorkerName} disktype=ssd` : `kubectl describe pod ${pendingPods[0].name}`,
         modalId: 'add-node-modal'
       });
     }
 
-    // L7 로드밸런서 장애 감지
     if (!isLbHealthy) {
       activeIssues.push({
         level: 'CRITICAL',
         badge: 'L7 로드밸런서 503 오류',
         target: `KT Cloud ALB (VIP: ${vip})`,
-        screenResult: `화면의 L7 로드밸런서 헬스체크가 비정상(Unhealthy) 상태이며, 도메인 '${primaryHost}' 접속 시 503 Service Unavailable 에러가 반환됩니다.`,
-        hint: `[교안 05장 L7 인프라] 네트워크 토폴로지 패널의 로드밸런서 카드를 확인하고 백엔드 서비스 파드 상태를 점검하거나 헬스체크를 복구하세요.`,
+        screenResult: `화면의 L7 로드밸런서 헬스체크가 비정상이며, 도메인 '${primaryHost}' 접속 시 503 Service Unavailable 에러가 발생합니다.`,
+        hint: `네트워크 토폴로지 패널의 로드밸런서 카드를 확인하고 백엔드 서비스 파드 상태를 점검하세요.`,
         fixCmd: `curl -I https://${primaryHost}/healthz`,
         modalId: null
       });
     }
 
-    // Cloudflare 터널 단절 감지
     if (!isTunnelHealthy) {
       activeIssues.push({
         level: 'WARN',
         badge: 'Cloudflare 터널 단절 (502)',
         target: 'kt-hybrid-argo-tunnel',
         screenResult: `화면의 Cloudflare Zero Trust 터널 연결이 끊겨 외부 도메인 '${primaryHost}' 인입 시 502 Bad Gateway가 발생합니다.`,
-        hint: `네트워크 토폴로지 카드에서 [터널 재연결] 토글을 클릭하거나 터미널에서 터널 데몬 상태를 점검하세요.`,
+        hint: `네트워크 토폴로지 카드에서 [터널 재연결] 토글을 클릭하거나 터널 상태를 점검하세요.`,
         fixCmd: `tunnel status`,
         modalId: null
       });
@@ -1616,10 +1858,9 @@ export function generateAiCopilotAdvice(prompt = '', topic = 'general', lab = nu
   }
 
   // ============================================================
-  // 3. 사용자 질문(Prompt) 기반 교안 지식 베이스 검색 & 직접 답변
+  // 3. 사용자 질문(Prompt) 처리 (Workers AI Llama-3.2 또는 교안 경량 엔진)
   // ============================================================
   if (p) {
-    // 지식 베이스 항목 매칭 및 점수 산출
     let bestMatch = null;
     let highestScore = 0;
 
@@ -1632,7 +1873,6 @@ export function generateAiCopilotAdvice(prompt = '', topic = 'general', lab = nu
       if (item.title.toLowerCase().includes(p) || p.includes(item.title.toLowerCase())) score += 20;
       if (item.chapter.toLowerCase().includes(p)) score += 25;
 
-      // 터미널 최근 실행 명령어와의 연관 점수
       if (lastCmd && item.keywords.some(kw => lastCmd.toLowerCase().includes(kw))) {
         score += 8;
       }
@@ -1643,85 +1883,80 @@ export function generateAiCopilotAdvice(prompt = '', topic = 'general', lab = nu
       }
     }
 
-    // 매칭 성공 시: 교안 정리 데이터 + 현재 터미널 명령어 + 화면 상태 기반 직접 답변
-    if (bestMatch && highestScore >= 10) {
-      const terminalSectionDesc = lastCmdAnalysis
-        ? `• 최근 실행하신 터미널 명령어: '${lastCmd}'\n• 명령어 동작 분석: ${lastCmdAnalysis.meaning}\n• 교안 실행 맥락: ${lastCmdAnalysis.explanation}`
-        : (currentCmd
-            ? `• 입력 중이신 터미널 명령어: '${currentCmd}'\n• 예상 동작: ${curCmdAnalysis?.meaning || '클러스터 조작'}`
-            : '• 터미널 연계: 아래 [⚡ 즉시 실행] 버튼을 클릭하면 본 교안 명령어가 가상 터미널에 직접 주입 및 실행됩니다.');
+    const matchedCmd = bestMatch ? bestMatch.recommendedCmd.replace(/\bw1\b/g, targetWorkerName) : (lastCmdAnalysis?.nextCmd || 'kubectl get pods -o wide');
+    const matchedVerify = bestMatch ? bestMatch.verifyCmd.replace(/\bw1\b/g, targetWorkerName) : 'kubectl get nodes';
+    const matchedTip = bestMatch ? bestMatch.nextStepHint.replace(/\bw1\b/g, targetWorkerName) : '실행 후 클러스터 상태가 정상 동기화되는지 확인하세요.';
+    const screenNote = `현재 화면: [${labTitle}] 노드 ${nodeNames}, 파드 ${pods.length}개(Running ${runningPods.length}개, Pending ${pendingPods.length}개), 도메인: ${primaryHost}`;
 
-      const screenStateConnectDesc = `📊 화면 상태 결과:\n` +
-        `• 현재 실습 화면: [${labTitle}]\n` +
-        `• 활성 노드: ${nodeNames} (Master: ${masterNode.name} [${masterNode.ip}], Worker: ${firstWorker.name} [${firstWorker.ip}])\n` +
-        `• 파드 가동 현황: 총 ${pods.length}개 (Running ${runningPods.length}개, Pending ${pendingPods.length}개)\n` +
-        `• 외부 도메인 및 L7 ALB: ${primaryHost} (VIP: ${vip}, 알고리즘: ${lbAlgo})\n` +
-        `• 교안과의 화면 연계: 본 교안(${bestMatch.chapter})의 명령어를 적용하면 화면의 ${pendingPods.length > 0 ? 'Pending 파드가 Running으로 즉시 해결' : '클러스터 인프라가 교안 명세와 동기화'}됩니다.`;
+    // Cloudflare Workers AI (Meta Llama-3.2-1B-Instruct 경량 오픈소스 모델) 호출 시도
+    if (env && env.AI) {
+      try {
+        const curriculumContext = bestMatch
+          ? `[교안 참고: ${bestMatch.chapter} - ${bestMatch.title}]\n개념: ${bestMatch.concept}\n권장명령어: ${matchedCmd}\n검증명령어: ${matchedVerify}`
+          : 'KT Cloud 5기 상용 인프라 및 쿠버네티스 실습 교안';
+
+        const screenContext = `[화면 인프라]: ${screenNote}, VIP: ${vip}`;
+        const terminalContext = lastCmd ? `[최근 터미널 명령어]: ${lastCmd}` : '';
+
+        const systemInstruction = `당신은 KT Cloud 5기 인프라 교육용 'AI 인프라 코파일럿'입니다.
+경량 오픈소스 AI 모델(Meta Llama-3.2-1B)로 구동됩니다.
+반드시 제공된 [교안 참고]와 [화면 인프라]에 근거하여 한국어로 친절하고 정확하게 답변하세요.
+절대 불필요하게 장황하거나 중복된 카드를 생성하지 마세요.
+답변 원칙:
+1. 질문에 대한 핵심 원리와 해결책을 2~3문장 이내로 명확하게 답변하세요.
+2. 실행할 단일 명령어와 검증 명령어를 제시하세요. (작업 노드: ${targetWorkerName})`;
+
+        const aiRes = await env.AI.run('@cf/meta/llama-3.2-1b-instruct', {
+          messages: [
+            { role: 'system', content: systemInstruction },
+            { role: 'user', content: `${screenContext}\n${terminalContext}\n${curriculumContext}\n[사용자 질문]: ${prompt}` }
+          ],
+          max_tokens: 260,
+          temperature: 0.2
+        });
+
+        if (aiRes && aiRes.response) {
+          const aiText = aiRes.response.trim();
+          return {
+            model: '⚡ Meta Llama-3.2-1B (Open Source)',
+            topic: 'curriculum-qa',
+            title: bestMatch ? `📖 [교안] ${bestMatch.title}` : `💡 [AI 답변] ${prompt.slice(0, 32)}`,
+            answer: aiText,
+            cmd: matchedCmd,
+            verifyCmd: matchedVerify,
+            screenNote: screenNote,
+            tip: matchedTip,
+            modalId: null,
+            statusBadge: { text: bestMatch?.chapter || 'Llama-3.2-1B', type: 'ok' },
+            quickPrompts: [
+              { label: '📖 Taint 해제 (Step 4)', topic: 'curriculum-taint' },
+              { label: '📖 NodePort 노출 (Step 5)', topic: 'curriculum-nodeport' },
+              { label: '📖 nodeSelector (Step 8)', topic: 'curriculum-nodeselector' },
+              { label: '🚨 실시간 문제 대처', topic: 'troubleshoot' }
+            ]
+          };
+        }
+      } catch (aiError) {
+        console.warn('Workers AI Llama-3.2 call fallback:', aiError);
+      }
+    }
+
+    // 경량 교안 지식 베이스 직관적 답변 (AI 바인딩 없을 때 또는 폴백)
+    if (bestMatch && highestScore >= 10) {
+      const firstParagraph = bestMatch.concept.split('\n\n')[0].replace(/\bw1\b/g, targetWorkerName);
+      const answerText = `${firstParagraph}${lastCmd ? `\n(최근 터미널 실행 명령어 '${lastCmd}' 처리와 교안 내용이 동기화되었습니다.)` : ''}`;
 
       return {
+        model: '🤖 KT 인프라 코파일럿 (교안 경량 엔진)',
         topic: 'curriculum-qa',
-        title: `📖 [KT CI5 교안 답변] ${bestMatch.title}`,
-        summary: `질문하신 내용에 대한 KT Cloud 5기 공인 교안(${bestMatch.chapter}) 기준 직접 해설입니다.${lastCmd ? `\n(현재 터미널 명령어: '${lastCmd}')` : ''}\n\n${bestMatch.concept.split('\n\n')[0]}`,
+        title: `📖 [KT CI5 교안] ${bestMatch.title}`,
+        answer: answerText,
+        cmd: matchedCmd,
+        verifyCmd: matchedVerify,
+        screenNote: screenNote,
+        tip: matchedTip,
+        modalId: null,
         statusBadge: { text: bestMatch.chapter, type: 'ok' },
-        sections: [
-          {
-            title: `1. 📘 교안 기준 핵심 개념 및 동작 원리 (${bestMatch.chapter})`,
-            icon: '📘',
-            items: [
-              {
-                title: bestMatch.title,
-                desc: bestMatch.concept,
-                tag: bestMatch.tags
-              },
-              {
-                title: '🖥️ 현재 사용 터미널 명령어 연계 분석',
-                desc: terminalSectionDesc,
-                cmd: lastCmdAnalysis?.nextCmd || bestMatch.recommendedCmd,
-                tag: '터미널 연계'
-              }
-            ]
-          },
-          {
-            title: '2. 🖥️ 터미널 실습 명령어 가이드 (원클릭 실행)',
-            icon: '⌨️',
-            items: [
-              {
-                title: '교안 권장 실행 명령어',
-                desc: `💡 교안에 작성된 표준 명령어입니다. 클릭하여 터미널에 즉시 실행할 수 있습니다.`,
-                cmd: bestMatch.recommendedCmd,
-                tag: '권장 실행'
-              },
-              {
-                title: '결과 검증 명령어',
-                desc: `💡 실행 후 정상 적용 여부를 확인하는 검증 명령어입니다.`,
-                cmd: bestMatch.verifyCmd,
-                tag: '상태 검증'
-              }
-            ]
-          },
-          {
-            title: '3. 📊 현재 화면 인프라 상태 연계 결과',
-            icon: '📊',
-            items: [
-              {
-                title: '실시간 화면 상태 및 인프라 동기화',
-                desc: screenStateConnectDesc,
-                tag: '화면 연계'
-              }
-            ]
-          },
-          {
-            title: '4. 💡 교안 권장 후속 조치 & 제안 유도 힌트',
-            icon: '💡',
-            items: [
-              {
-                title: '다음 실습 단계 안내',
-                desc: `💡 제안 유도 힌트: ${bestMatch.nextStepHint}`,
-                tag: '다음 단계'
-              }
-            ]
-          }
-        ],
         quickPrompts: [
           { label: '📖 Taint 해제 (Step 4)', topic: 'curriculum-taint' },
           { label: '📖 NodePort 노출 (Step 5)', topic: 'curriculum-nodeport' },
@@ -1731,41 +1966,20 @@ export function generateAiCopilotAdvice(prompt = '', topic = 'general', lab = nu
       };
     }
 
-    // 만약 특정 교안 단어가 아니지만 터미널 명령어를 물어본 경우
     if (lastCmdAnalysis) {
       return {
+        model: '🤖 KT 인프라 코파일럿 (터미널 분석)',
         topic: 'terminal-qa',
-        title: `🖥️ [터미널 명령어 분석] '${lastCmd}' 교안 해설`,
-        summary: `터미널에서 실행하신 명령어 '${lastCmd}'에 대한 KT Cloud 5기 교안 기준 분석 결과입니다.\n\n${lastCmdAnalysis.explanation}`,
+        title: `🖥️ [터미널 분석] '${lastCmd}'`,
+        answer: `터미널에서 실행하신 '${lastCmd}' 명령어는 ${lastCmdAnalysis.meaning} 동작입니다. ${lastCmdAnalysis.explanation}`,
+        cmd: lastCmdAnalysis.nextCmd,
+        verifyCmd: 'kubectl get nodes -o wide',
+        screenNote: screenNote,
+        tip: '결과가 화면의 인프라 상태에 즉시 반영되었는지 확인하세요.',
+        modalId: null,
         statusBadge: { text: '터미널 연계', type: 'ok' },
-        sections: [
-          {
-            title: '1. 🖥️ 실행 명령어 상세 동작 분석',
-            icon: '⌨️',
-            items: [
-              {
-                title: lastCmdAnalysis.title,
-                desc: `• 동작 의미: ${lastCmdAnalysis.meaning}\n• 교안 원리: ${lastCmdAnalysis.explanation}\n• 화면 반영: ${lastCmdAnalysis.screenImpact}`,
-                cmd: lastCmdAnalysis.nextCmd,
-                tag: '명령어 분석'
-              }
-            ]
-          },
-          {
-            title: '2. 💡 권장 후속 명령어 & 제안 힌트',
-            icon: '💡',
-            items: [
-              {
-                title: '다음 권장 조치',
-                desc: `💡 제안 유도 힌트: 아래 명령어를 실행하여 변경 결과를 검증하세요.`,
-                cmd: lastCmdAnalysis.nextCmd,
-                tag: '검증 힌트'
-              }
-            ]
-          }
-        ],
         quickPrompts: [
-          { label: '📖 커리큘럼 전체 목차', topic: 'curriculum-all' },
+          { label: '📖 Taint 해제 (Step 4)', topic: 'curriculum-taint' },
           { label: '🚨 실시간 문제 대처', topic: 'troubleshoot' }
         ]
       };
@@ -1776,69 +1990,19 @@ export function generateAiCopilotAdvice(prompt = '', topic = 'general', lab = nu
   // 4. 프리셋 탭 선택 시 (Troubleshoot / Menu / Management / Tips)
   // ============================================================
 
-  // Topic 1: [사용팁] (화면 상태 결과 & 제안 유도 힌트)
+  // Topic 1: [사용팁]
   if (topic === 'tips') {
-    const screenStateDesc = isLabView
-      ? `현재 [${labTitle}] 화면에서 작업 중입니다. Ingress 도메인은 '${primaryHost}', VIP는 '${vip}'이며, 총 ${nodes.length}개 노드와 ${pods.length}개 파드가 화면에 표시되고 있습니다.`
-      : `현재 [실습 랩 목록] 화면입니다. 상용 운영 환경을 모사한 기본 예제 3종과 수강생 랩 카드가 화면에 표시되고 있습니다.`;
-
     return {
+      model: '💡 화면 기준 사용팁',
       topic: 'tips',
-      title: '💡 화면 기준 조작 결과 & 교안 기반 사용 가이드',
-      summary: screenStateDesc,
-      statusBadge: { text: isLabView ? `${lab.id} 랩 가이드` : '목록 가이드', type: 'ok' },
-      sections: [
-        {
-          title: '1. 화면에 바인딩된 실제 도메인 & CLI 테스트 힌트',
-          icon: '🌐',
-          items: [
-            {
-              title: `현재 화면 Ingress 도메인 '${primaryHost}' curl 점검`,
-              desc: `📊 화면 상태 결과: 화면 L7 Ingress에 '${allHosts}'이(가) VIP '${vip}'와 바인딩되어 있습니다.\n💡 제안 유도 힌트: 터미널에서 실제 바인딩된 도메인 헤더로 직접 요청을 보내 응답 상태코드(HTTP 200)와 리버스 프록시 라우팅을 검증하세요.`,
-              cmd: `curl -H "Host: ${primaryHost}" http://${vip}`,
-              tag: '도메인 검증'
-            },
-            {
-              title: '가상 터미널 명령어 히스토리 & 축약어 (교안 Step 4-2)',
-              desc: `📊 화면 상태 결과: 터미널 프롬프트에서 실무 표준 축약어(alias k=kubectl)가 활성화되어 있습니다.\n💡 제안 유도 힌트: [위/아래 방향키]로 최근 명령을 탐색하고, 'k get pods -o wide' 또는 'k top nodes'로 화면의 자원 상태를 CLI로 즉시 비교 확인하세요.`,
-              cmd: 'k get pods -o wide',
-              tag: 'CLI 팁'
-            },
-            {
-              title: '터미널 화면 정리',
-              desc: `💡 제안 유도 힌트: 터미널 로그가 길어졌을 때 'clear'를 실행하면 화면이 즉시 깨끗하게 초기화됩니다.`,
-              cmd: 'clear',
-              tag: '화면 정리'
-            }
-          ]
-        },
-        ...(lastCmdAnalysis ? [{
-          title: `2. 🖥️ 최근 터미널 실행 명령어 [${lastCmd}] 분석`,
-          icon: '⌨️',
-          items: [{
-            title: lastCmdAnalysis.title,
-            desc: `• 동작 의미: ${lastCmdAnalysis.meaning}\n• 교안 맥락: ${lastCmdAnalysis.explanation}`,
-            cmd: lastCmdAnalysis.nextCmd,
-            tag: '명령어 연계'
-          }]
-        }] : []),
-        {
-          title: '3. 인터페이스 뷰 모드 조작 & 협업 힌트',
-          icon: '🖥️',
-          items: [
-            {
-              title: '5가지 화면 분할 뷰 전환',
-              desc: `📊 화면 상태 결과: 상단 툴바의 뷰 스위처를 통해 작업 레이아웃을 조절할 수 있습니다.\n💡 제안 유도 힌트: CLI 실습에 집중하려면 [70:30], 인프라 토폴로지 모니터링에 집중하려면 [30:70] 버튼을 클릭하세요.`,
-              tag: 'UI 팁'
-            },
-            {
-              title: '수정 권한 (Editable) 잠금 스위치',
-              desc: `📊 화면 상태 결과: 우측 상단의 [수정 권한] 토글이 현재 '${lab?.editable ? '허용됨 (ON)' : '조회 전용 (OFF)'}' 상태입니다.\n💡 제안 유도 힌트: 다른 팀원과의 공동 실습 중 실수로 인한 파드/노드 삭제를 방지하려면 권한을 OFF로 잠가두세요.`,
-              tag: '보안/협업'
-            }
-          ]
-        }
-      ],
+      title: '💡 화면 기준 조작 결과 & CLI 사용 가이드',
+      answer: `현재 [${labTitle}] 화면에서 Ingress 도메인 '${primaryHost}'(VIP: ${vip})과 총 ${nodes.length}개 노드, ${pods.length}개 파드가 가동 중입니다. 터미널 프롬프트에서 축약어 'k'(kubectl)를 사용할 수 있으며, 방향키로 이전 명령어를 탐색할 수 있습니다.`,
+      cmd: `curl -H "Host: ${primaryHost}" http://${vip}`,
+      verifyCmd: 'k get pods -o wide',
+      screenNote: `L7 로드밸런서 VIP(${vip})에 도메인 [${allHosts}]이 바인딩되어 있습니다.`,
+      tip: '상단 툴바의 분할 버튼(50:50, 70:30, 30:70)으로 작업에 맞는 화면 레이아웃을 손쉽게 전환할 수 있습니다.',
+      modalId: null,
+      statusBadge: { text: isLabView ? `${lab.id} 랩` : '목록 가이드', type: 'ok' },
       quickPrompts: [
         { label: '⚙️ 화면 기준 관리팁', topic: 'management' },
         { label: '➕ 메뉴별 자원 추가법', topic: 'menu' },
@@ -1849,64 +2013,17 @@ export function generateAiCopilotAdvice(prompt = '', topic = 'general', lab = nu
 
   // Topic 2: [관리팁]
   if (topic === 'management') {
-    const screenStateDesc = isLabView
-      ? `현재 화면에 [${nodeNames}] 노드가 가동 중이며, L7 분산 알고리즘은 '${lbAlgo}', 현재 인입 트래픽은 '${trafficRps} req/s'입니다.`
-      : `현재 실습 랩 목록 화면입니다. 상용 클러스터 운영 및 하드웨어 무중단 관리 핵심 노하우를 안내합니다.`;
-
     return {
+      model: '⚙️ 상용 운영 관리팁',
       topic: 'management',
       title: '⚙️ 화면 기준 상용 인프라 운영 & 클러스터 관리팁',
-      summary: screenStateDesc,
+      answer: `현재 화면의 노드 [${nodeNames}]에 대해 무중단 하드웨어 Hot-Add(vCPU/RAM/디스크) 증설이 지원됩니다. 장시간 연결이나 웹소켓 워크로드가 증가할 경우 L7 분산 알고리즘을 'LeastConnection'으로 변경하면 부하 편차를 줄일 수 있습니다.`,
+      cmd: `kubectl top nodes`,
+      verifyCmd: `kubectl get nodes -o wide`,
+      screenNote: `워커 노드 [${targetWorkerName}] 기본 사양: ${firstWorker.cpuTotalM ? firstWorker.cpuTotalM / 1000 : 2} Core / ${firstWorker.ramTotalMi ? firstWorker.ramTotalMi / 1024 : 4} GiB`,
+      tip: `노드 점검 시 'kubectl cordon'으로 배치를 막고 'kubectl drain'으로 파드를 안전하게 대피시키세요.`,
+      modalId: null,
       statusBadge: { text: '운영 노하우', type: 'ok' },
-      sections: [
-        {
-          title: '1. 하드웨어 무중단 증설 (Hot-Add)',
-          icon: '🚀',
-          items: [
-            {
-              title: `워커 노드 [${firstWorker.name}] vCPU / RAM Hot-Add 증설`,
-              desc: `📊 화면 상태 결과: 화면 노드 카드에 표시된 [${firstWorker.name}]의 현재 할당량은 ${firstWorker.cpuTotalM ? firstWorker.cpuTotalM / 1000 : 2} Core / ${firstWorker.ramTotalMi ? firstWorker.ramTotalMi / 1024 : 4} GiB입니다.\n💡 제안 유도 힌트: 서버 재부팅 없이 노드 카드 상단의 [+2C (Hot-Add)] 또는 [+4G] 버튼을 클릭해보세요. Kubelet의 Allocatable 리소스가 즉시 갱신되어 Pending 파드가 자동으로 스케줄링됩니다.`,
-              cmd: `kubectl top nodes`,
-              tag: 'Hot-Add'
-            },
-            {
-              title: '클러스터 용량 임계치(80%) 사전 대응 (교안 07장 Step 10)',
-              desc: `💡 제안 유도 힌트: 노드의 CPU 사용률이 80%를 초과하면 OOMKilled나 Throttling이 발생할 수 있습니다. 사전 경보 시점에 즉시 증설하는 것이 서비스 SLA를 지키는 핵심입니다.`,
-              cmd: `kubectl get nodes -o wide`,
-              tag: '가용성'
-            }
-          ]
-        },
-        {
-          title: '2. L4 / L7 로드밸런싱 알고리즘 최적화',
-          icon: '🌐',
-          items: [
-            {
-              title: `현재 분산 알고리즘 '${lbAlgo}' 최적화 힌트`,
-              desc: `📊 화면 상태 결과: 현재 L7 로드밸런서(VIP ${vip})는 '${primaryHost}' 도메인에 대해 '${lbAlgo}' 알고리즘으로 트래픽을 워커 노드에 분산하고 있습니다.\n💡 제안 유도 힌트: 긴 세션이나 웹소켓 워크로드가 증가할 경우, 네트워크 패널에서 알고리즘을 'LeastConnection'으로 변경하여 커넥션 편차를 완화해보세요.`,
-              tag: '네트워크'
-            },
-            {
-              title: `현재 도메인 '${primaryHost}' 헬스체크 관리`,
-              desc: `💡 제안 유도 힌트: 헬스체크 주기가 너무 짧으면 정상 파드에 불필요한 부하를 주고, 너무 길면 비정상 인스턴스로의 유입 차단이 지연됩니다. 상용 기준 5~10초 인터벌이 권장됩니다.`,
-              cmd: `curl -I http://${vip}`,
-              tag: '헬스체크'
-            }
-          ]
-        },
-        {
-          title: '3. 안전한 노드 유지보수 (Drain & Cordon)',
-          icon: '🛡️',
-          items: [
-            {
-              title: `노드 [${firstWorker.name}] 점검 전 파드 안전 대피`,
-              desc: `💡 제안 유도 힌트: 노드 OS 패치나 물리 점검 시 먼저 'kubectl cordon ${firstWorker.name}'으로 신규 파드 배치를 막고, 'kubectl drain ${firstWorker.name} --ignore-daemonsets'로 가동 중인 파드를 다른 건강한 노드로 안전하게 이주시키세요.`,
-              cmd: `kubectl cordon ${firstWorker.name}`,
-              tag: '유지보수'
-            }
-          ]
-        }
-      ],
       quickPrompts: [
         { label: '💡 인터페이스 사용팁', topic: 'tips' },
         { label: '➕ 메뉴별 자원 추가법', topic: 'menu' },
@@ -1917,73 +2034,19 @@ export function generateAiCopilotAdvice(prompt = '', topic = 'general', lab = nu
 
   // Topic 3: [메뉴 추가법]
   if (topic === 'menu') {
-    const screenStateDesc = isLabView
-      ? `현재 화면의 대시보드 상단 [+ VM 노드 추가], 파드 목록의 [+ 파드 배포], 네트워크 패널의 [+ 도메인/포트 매핑 추가] 메뉴를 통해 인프라를 확장할 수 있습니다.`
-      : `현재 실습 랩 목록 화면입니다. 상단 우측의 [+ 새 클러스터 랩 생성] 버튼을 눌러 신규 가상 클러스터를 생성할 수 있습니다.`;
-
     const nextNodeNum = nodes.length + 1;
-
     return {
+      model: '➕ 메뉴 추가 가이드',
       topic: 'menu',
       title: '➕ 화면 기준 메뉴 위치 & 자원 추가 가이드',
-      summary: screenStateDesc,
+      answer: `우측 GUI 상단의 [+ VM 노드 추가], 파드 목록의 [+ 파드 배포], 네트워크 패널의 [+ 도메인/포트 매핑 추가] 메뉴를 통해 인프라를 확장할 수 있습니다. 파드 배포 시 초/분/시간/랜덤 수명 주기를 선택하여 라이프사이클을 테스트할 수 있습니다.`,
+      cmd: `kubectl add node w${nextNodeNum} --ip 10.10.10.${20 + (nextNodeNum - 1) * 10} --cpu 4000 --ram 8192 --disk ssd`,
+      verifyCmd: 'kubectl get nodes',
+      screenNote: `현재 클러스터: 노드 ${nodes.length}대, 파드 ${pods.length}개 등록됨`,
+      tip: '아래 바로가기 버튼을 클릭하면 신규 VM 노드 프로비저닝 모달이 즉시 열립니다.',
+      modalId: 'add-node-modal',
+      menuGuide: '우측 상단 [+ VM 노드 추가]',
       statusBadge: { text: '메뉴 가이드', type: 'ok' },
-      sections: [
-        {
-          title: '1. VM 노드 신규 프로비저닝 (노드 증설)',
-          icon: '🖥️',
-          items: [
-            {
-              title: '메뉴 위치: 우측 GUI 대시보드 상단 [+ VM 노드 추가]',
-              desc: `📊 화면 상태 결과: 현재 화면에 총 ${nodes.length}개 노드(${nodeNames})가 등록되어 있습니다.\n💡 제안 유도 힌트:\n1. 화면 우측 상단의 [+ VM 노드 추가] 버튼 클릭\n2. 호스트명(예: w${nextNodeNum}), 사설 IP(예: 10.10.10.${20 + (nextNodeNum - 1) * 10}), vCPU, RAM, 스토리지(SSD/HDD) 선택\n3. [노드 프로비저닝]을 클릭하면 1초 만에 클러스터에 Ready 상태로 편입됩니다.\n👉 아래 버튼을 누르면 해당 모달이 즉시 열립니다.`,
-              menuGuide: '우측 상단 [+ VM 노드 추가]',
-              modalId: 'add-node-modal',
-              cmd: `kubectl add node w${nextNodeNum} --ip 10.10.10.${20 + (nextNodeNum - 1) * 10} --cpu 4000 --ram 8192 --disk ssd`,
-              tag: 'VM 증설'
-            }
-          ]
-        },
-        {
-          title: '2. 파드 / 디플로이먼트 배포 (초/분/시간/랜덤 수명)',
-          icon: '📦',
-          items: [
-            {
-              title: '메뉴 위치: 파드 목록 상단 [+ 파드 배포 (초/분/랜덤 동작)]',
-              desc: `📊 화면 상태 결과: 현재 화면에 총 ${pods.length}개 파드가 가동 중입니다.\n💡 제안 유도 힌트:\n1. 파드 목록 헤더의 [+ 파드 배포] 버튼 클릭\n2. 워크로드명(예: payment-api), 이미지(nginx:1.25), 레플리카 수, CPU Request 지정\n3. [동작 주기/수명]: 영구 지속, 초 단위(테스트잡), 분 단위(배치), 시간 단위, 🎲랜덤 라이프사이클 선택 후 배포`,
-              menuGuide: '파드 목록 상단 [+ 파드 배포]',
-              modalId: 'deploy-modal',
-              cmd: 'kubectl create deployment payment-api --image=nginx --replicas=2',
-              tag: '워크로드'
-            }
-          ]
-        },
-        {
-          title: '3. Ingress 서브도메인 & 포트 바인딩',
-          icon: '🌐',
-          items: [
-            {
-              title: `네트워크 패널 L7 로드밸런서 [+ 도메인/포트 매핑 추가]`,
-              desc: `📊 화면 상태 결과: 현재 화면에 기본 도메인 '${primaryHost}' 및 '${allHosts}'이 바인딩되어 있습니다.\n💡 제안 유도 힌트:\n1. L7 로드밸런서 카드의 [+ 도메인/포트 매핑 추가] 클릭\n2. FQDN(예: order.${primaryHost.replace(/^[^.]+\./, '')} 또는 api.ktci5.kr), 인입 포트(80 또는 443), 경로(/), 타겟 서비스(web-service:80) 입력\n3. [도메인/포트 매핑] 클릭 시 Cloudflare 터널 및 L7 Ingress에 즉시 바인딩됩니다.`,
-              menuGuide: '네트워크 패널 [+ 도메인/포트 매핑]',
-              modalId: 'domain-modal',
-              cmd: `curl -H "Host: ${primaryHost}" http://${vip}`,
-              tag: 'Ingress'
-            }
-          ]
-        },
-        {
-          title: '4. 장애 시나리오 주입 및 훈련 메뉴',
-          icon: '🚨',
-          items: [
-            {
-              title: '메뉴 위치: 상단 운영자 툴바 [🚨 장애 주입/해결 시나리오] 드롭다운',
-              desc: `💡 제안 유도 힌트: 상단 툴바의 드롭다운 선택상자에서 [디스크 고갈], [로드밸런서 헬스체크 실패 503], [Cloudflare 터널 단절 502] 중 원하는 시나리오를 선택하면 실시간 장애가 주입되며 대처 실습을 진행할 수 있습니다.`,
-              menuGuide: '상단 툴바 [장애 시나리오 드롭다운]',
-              tag: '장애 실습'
-            }
-          ]
-        }
-      ],
       quickPrompts: [
         { label: '💡 인터페이스 사용팁', topic: 'tips' },
         { label: '⚙️ 인프라 관리팁', topic: 'management' },
@@ -1995,27 +2058,20 @@ export function generateAiCopilotAdvice(prompt = '', topic = 'general', lab = nu
   // Topic 4: [장애 대처법 / Default]
   const isHealthy = activeIssues.length === 0;
 
-  // 1순위: 현재 화면에서 감지된 실제 장애가 있는 경우
   if (!isHealthy) {
+    const primaryIssue = activeIssues[0];
     return {
+      model: '🚨 실시간 장애 감지',
       topic: 'troubleshoot',
-      title: `🚨 화면 상태 감지: 총 ${activeIssues.length}건의 장애 및 단계별 대처법`,
-      summary: `현재 화면에서 총 ${activeIssues.length}건의 실제 장애/경보가 감지되었습니다. 아래 화면 분석 결과와 교안 기반 힌트를 확인하고 즉시 조치하세요.`,
+      title: `🚨 [${primaryIssue.level}] ${primaryIssue.badge} - ${primaryIssue.target}`,
+      answer: `${primaryIssue.screenResult}\n\n${primaryIssue.hint}`,
+      cmd: primaryIssue.fixCmd,
+      verifyCmd: 'kubectl get pods -o wide',
+      screenNote: `총 ${activeIssues.length}건의 화면 이상이 감지되었습니다. 조치 후 화면 상태가 자동 갱신됩니다.`,
+      tip: '명령어를 터미널에 즉시 실행하거나 해당 자원 증설 메뉴를 확인하세요.',
+      modalId: primaryIssue.modalId || null,
+      menuGuide: primaryIssue.modalId ? '타겟 자원 증설 메뉴 열기' : null,
       statusBadge: { text: `${activeIssues.length}건 장애 감지`, type: 'critical' },
-      sections: [
-        {
-          title: '🔥 현재 화면 실시간 감지 문제 & 교안 기반 즉시 조치 힌트',
-          icon: '⚠️',
-          items: activeIssues.map(issue => ({
-            title: `[${issue.level}] ${issue.badge} - ${issue.target}`,
-            desc: `📊 화면 상태 결과: ${issue.screenResult}\n\n💡 제안 유도 힌트: ${issue.hint}`,
-            cmd: issue.fixCmd,
-            modalId: issue.modalId || null,
-            menuGuide: issue.modalId ? '타겟 자원 증설 메뉴 열기' : null,
-            tag: issue.level === 'CRITICAL' ? '긴급 조치' : '주의'
-          }))
-        }
-      ],
       quickPrompts: [
         { label: '💡 인터페이스 사용팁', topic: 'tips' },
         { label: '⚙️ 인프라 관리팁', topic: 'management' },
@@ -2024,104 +2080,18 @@ export function generateAiCopilotAdvice(prompt = '', topic = 'general', lab = nu
     };
   }
 
-  // 2순위: 현재 화면이 정상일 때 (랩별 특화 힌트 및 상용 런북)
-  let specificLabHint = null;
-  if (labId === 'scheduling-lab') {
-    specificLabHint = {
-      title: '🎯 [scheduling-lab] 실습 랩 목표 & 스케줄링 힌트 (교안 Step 8)',
-      icon: '🎯',
-      items: [
-        {
-          title: '마스터 NoSchedule Taint 및 워커 nodeSelector 라벨 불일치 해결',
-          desc: `📊 화면 상태 결과: 현재 워커 노드 [${firstWorker.name}]에 'disktype=ssd' 라벨이 부재합니다.\n💡 제안 유도 힌트: 터미널에서 'kubectl label nodes ${firstWorker.name} disktype=ssd'를 실행하여 노드 라벨을 맞추면 대기 중인 파드가 즉시 스케줄링되어 정상 가동됩니다.`,
-          cmd: `kubectl label nodes ${firstWorker.name} disktype=ssd`,
-          tag: '실습 힌트'
-        }
-      ]
-    };
-  } else if (labId === 'hpa-traffic-lab') {
-    specificLabHint = {
-      title: '🎯 [hpa-traffic-lab] 실습 랩 목표 & 부하 분산 힌트 (교안 Step 11)',
-      icon: '⚡',
-      items: [
-        {
-          title: `대규모 트래픽(${trafficRps} req/s) 부하 테스트 및 로드밸런싱 검증`,
-          desc: `📊 화면 상태 결과: L7 로드밸런서(VIP ${vip})를 통해 도메인 '${primaryHost}'으로 트래픽이 유입 중입니다.\n💡 제안 유도 힌트: 트래픽 슬라이더를 0~1000으로 조절하거나, 상단 툴바의 [🚨 장애 주입] 메뉴에서 '로드밸런서 헬스체크 실패 503'을 주입하여 페일오버를 실습해보세요.`,
-          cmd: `curl -H "Host: ${primaryHost}" http://${vip}`,
-          tag: '부하 힌트'
-        }
-      ]
-    };
-  } else if (isLabView) {
-    specificLabHint = {
-      title: '🎯 [기본 랩] 가상 인프라 가동 상태 & 도전 힌트',
-      icon: '✅',
-      items: [
-        {
-          title: `상용 Nginx 3-Tier 서비스(${primaryHost}) 가동 점검`,
-          desc: `📊 화면 상태 결과: 노드(${nodeNames}), 파드(${runningPods.length}개 가동), 도메인('${primaryHost}'), 터널(${tunnelStatus})이 모두 정상 가동 중입니다.\n💡 제안 유도 힌트: 상단 툴바의 [🚨 장애 주입/해결 시나리오] 메뉴에서 '워커 디스크 압박' 또는 '터널 단절'을 주입하고 직접 트러블슈팅 훈련을 진행해보세요.`,
-          cmd: `curl -H "Host: ${primaryHost}" http://${vip}`,
-          tag: '정상 가동'
-        }
-      ]
-    };
-  } else {
-    // 랩 목록 뷰인 경우
-    specificLabHint = {
-      title: '📋 실습 랩 목록 화면 가이드 & 랩 선택 힌트',
-      icon: '📚',
-      items: [
-        {
-          title: '기본 예제 랩 3종 실습 목표 가이드',
-          desc: `📊 화면 상태 결과: 현재 화면에 3개의 대표 실습 랩이 등록되어 있습니다.\n💡 제안 유도 힌트:\n1. [기본 랩]: 상용 도메인(app.ktci5.kr)과 L7 ALB 연동 기초 실습\n2. [스케줄링 랩]: Taint & nodeSelector 스케줄링 트러블슈팅 실습\n3. [HPA 부하 랩]: 대규모 RPS 트래픽 분산 실습\n원하는 카드의 [실습 랩 입장하기 ➔] 버튼을 클릭하세요.`,
-          tag: '랩 선택'
-        }
-      ]
-    };
-  }
-
+  // 정상 상태
   return {
+    model: '🛡️ 실전 장애 런북',
     topic: 'troubleshoot',
     title: '🛡️ 화면 상태 정상 & 교안 기반 실전 장애 대처 런북',
-    summary: isLabView
-      ? `현재 [${labTitle}] 화면에 심각한 장애가 감지되지 않았습니다. 현재 화면 상태 분석 결과와 CKA/상용 빈출 4대 장애 대처 런북을 안내합니다.`
-      : `현재 실습 랩 목록 화면입니다. 실습 목적에 맞는 랩을 선택하거나 신규 랩을 생성하세요.`,
+    answer: `현재 [${labTitle}] 화면에 감지된 장애가 없습니다. 파드 Pending 발생 시 nodeSelector 라벨(${targetWorkerName})과 Taint를 점검하고, DiskPressure 시 'df -h' 점검 후 스토리지 증설 및 uncordon을 수행하세요.`,
+    cmd: `kubectl describe pod ${targetPod.name}`,
+    verifyCmd: 'kubectl get pods -o wide',
+    screenNote: `모든 노드와 파드가 정상 가동(Healthy) 상태입니다.`,
+    tip: '상단 툴바의 [🚨 장애 주입] 메뉴에서 디스크 고갈 또는 LB 실패를 주입하여 트러블슈팅 훈련을 진행해보세요.',
+    modalId: null,
     statusBadge: { text: '화면 상태 정상', type: 'ok' },
-    sections: [
-      ...(specificLabHint ? [specificLabHint] : []),
-      {
-        title: '📚 상용 인프라 & CKA 시험 빈출 4대 장애 대처 런북 (교안 기반)',
-        icon: '📖',
-        items: [
-          {
-            title: '1. 파드가 Pending 상태에 멈춰 있을 때 (교안 Step 8)',
-            desc: `• 원인: 노드의 CPU/메모리 가용량 부족(Insufficient cpu), nodeSelector 불일치, Taints\n• 진단: 'kubectl describe pod <pod>'로 Events 섹션 메시지 확인\n• 해결: 노드 카드 상단의 [+2C], [+4G] 버튼으로 노드를 확장하거나 'kubectl label nodes w1 disktype=ssd'를 실행합니다.`,
-            cmd: `kubectl describe pod ${targetPod.name}`,
-            modalId: 'add-node-modal',
-            menuGuide: '신규 VM 노드 추가 모달',
-            tag: 'Pending'
-          },
-          {
-            title: '2. 노드에 DiskPressure 발생 시 (교안 04장 스토리지)',
-            desc: `• 원인: 루트 디스크 85% 초과로 Kubelet Eviction 발생 및 노드 Cordon 처리됨\n• 진단: 'df -h'로 디스크 파티션 사용량 확인\n• 해결: 노드 카드에서 [+ 100GB SSD 디스크 Hot-Add] 후 'kubectl uncordon <node>' 명령으로 격리를 해제합니다.`,
-            cmd: `kubectl uncordon ${firstWorker.name}`,
-            tag: 'DiskPressure'
-          },
-          {
-            title: '3. 로드밸런서 503 Service Unavailable 오류 발생 시',
-            desc: `• 원인: 백엔드 타겟 파드가 응답하지 않거나 헬스체크 경로(/healthz) 오류 발생\n• 진단: 'curl -I http://${vip}'로 직접 응답 코드 확인\n• 해결: 네트워크 패널의 로드밸런서 카드에서 헬스체크를 복구하고 타겟 파드 상태를 점검합니다.`,
-            cmd: `curl -I http://${vip}`,
-            tag: '503 에러'
-          },
-          {
-            title: '4. Cloudflare 터널 단절 (502 Bad Gateway) 발생 시',
-            desc: `• 원인: Cloudflare Zero Trust 터널 에이전트(cloudflared) 프로세스 종료 또는 인증 토큰 만료\n• 진단: 'tunnel status'로 터널 링크 확인\n• 해결: 네트워크 토폴로지 카드에서 [터널 연결] 토글 버튼을 클릭하여 데몬을 즉시 재연결합니다.`,
-            cmd: `tunnel status`,
-            tag: '502 터널'
-          }
-        ]
-      }
-    ],
     quickPrompts: [
       { label: '💡 인터페이스 사용팁', topic: 'tips' },
       { label: '⚙️ 인프라 관리팁', topic: 'management' },
@@ -2150,7 +2120,7 @@ export async function handleSimulatorApi(request, path, env, user) {
     const lastCommand = (body.lastCommand || '').trim();
     const currentCommand = (body.currentCommand || '').trim();
     const commandHistory = body.commandHistory || [];
-    const aiResponse = generateAiCopilotAdvice(prompt, topic, effectiveLab, { lastCommand, currentCommand, commandHistory });
+    const aiResponse = await generateAiCopilotAdvice(prompt, topic, effectiveLab, { lastCommand, currentCommand, commandHistory }, env);
     return new Response(JSON.stringify({
       ok: true,
       topic,
@@ -2680,7 +2650,7 @@ export async function handleSimulatorApi(request, path, env, user) {
       const currentCommand = (body.currentCommand || '').trim();
       const commandHistory = body.commandHistory || [];
       
-      const aiResponse = generateAiCopilotAdvice(prompt, topic, effectiveLab, { lastCommand, currentCommand, commandHistory });
+      const aiResponse = await generateAiCopilotAdvice(prompt, topic, effectiveLab, { lastCommand, currentCommand, commandHistory }, env);
       return new Response(JSON.stringify({
         ok: true,
         topic,
@@ -3168,6 +3138,46 @@ export function renderSimulatorPage(user) {
       color: #94a3b8;
       line-height: 1.45;
       margin-bottom: 10px;
+    }
+    .ai-card-answer {
+      font-size: 12.5px;
+      line-height: 1.55;
+      color: #f8fafc;
+      background: rgba(15, 23, 42, 0.7);
+      border: 1px solid rgba(56, 189, 248, 0.2);
+      border-radius: 8px;
+      padding: 10px 12px;
+      margin: 8px 0;
+      white-space: pre-line;
+    }
+    .ai-cmd-section {
+      margin-top: 8px;
+    }
+    .ai-cmd-label {
+      font-size: 11px;
+      font-weight: 700;
+      color: #38bdf8;
+      margin-bottom: 4px;
+    }
+    .ai-screen-note {
+      font-size: 11.5px;
+      color: #93c5fd;
+      background: rgba(59, 130, 246, 0.08);
+      border: 1px solid rgba(59, 130, 246, 0.2);
+      border-radius: 6px;
+      padding: 6px 10px;
+      margin-top: 8px;
+      line-height: 1.45;
+    }
+    .ai-tip-note {
+      font-size: 11.5px;
+      color: #6ee7b7;
+      background: rgba(16, 185, 129, 0.08);
+      border: 1px solid rgba(16, 185, 129, 0.2);
+      border-radius: 6px;
+      padding: 6px 10px;
+      margin-top: 6px;
+      line-height: 1.45;
     }
     .ai-card-section {
       background: #0e1524;
@@ -4778,57 +4788,119 @@ export function renderSimulatorPage(user) {
 
     function renderAiResponse(resp) {
       const chatBody = document.getElementById('ai-chat-body');
-      let sectionsHtml = '';
+      const isWarn = resp.statusBadge?.type === 'critical';
+      const badgeText = resp.model || resp.statusBadge?.text || 'AI 코파일럿';
 
-      (resp.sections || []).forEach(sec => {
-        let itemsHtml = '';
-        (sec.items || []).forEach(item => {
-          let cmdHtml = '';
-          if (item.cmd) {
-            const escapedCmd = escapeHtml(item.cmd);
-            const encodedCmd = encodeURIComponent(item.cmd);
-            cmdHtml = '<div class="ai-cmd-box">' +
+      let bodyHtml = '';
+
+      if (resp.answer) {
+        let cmdHtml = '';
+        if (resp.cmd) {
+          const escapedCmd = escapeHtml(resp.cmd);
+          const encodedCmd = encodeURIComponent(resp.cmd);
+          cmdHtml = '<div class="ai-cmd-section">' +
+            '<div class="ai-cmd-label">⚡ 권장 실행 명령어</div>' +
+            '<div class="ai-cmd-box">' +
               '<span class="ai-cmd-text">' + escapedCmd + '</span>' +
               '<div class="ai-cmd-actions">' +
                 '<button type="button" class="ai-mini-btn btn-ai-copy" data-cmd="' + encodedCmd + '">📋 복사</button>' +
                 '<button type="button" class="ai-mini-btn btn-ai-paste" data-cmd="' + encodedCmd + '">⌨️ 입력</button>' +
                 '<button type="button" class="ai-mini-btn primary btn-ai-exec" data-cmd="' + encodedCmd + '">⚡ 즉시 실행</button>' +
               '</div>' +
-            '</div>';
-          }
-          let menuActionHtml = '';
-          if (item.modalId) {
-            menuActionHtml = '<div style="margin-top:6px;">' +
-              '<button type="button" class="btn sm primary btn-ai-modal" style="font-size:10.5px; padding:3px 8px;" data-modal="' + escapeHtml(item.modalId) + '">👉 ' + escapeHtml(item.menuGuide || '해당 메뉴 열기') + '</button>' +
-            '</div>';
-          }
-
-          itemsHtml += '<div class="ai-item">' +
-            '<div class="ai-item-head">' +
-              '<span class="ai-item-name">' + escapeHtml(item.title) + '</span>' +
-              '<span class="ai-tag ' + (item.tag === '긴급 조치' ? 'critical' : '') + '">' + escapeHtml(item.tag || '안내') + '</span>' +
             '</div>' +
-            '<div class="ai-item-desc">' + escapeHtml(item.desc) + '</div>' +
-            cmdHtml +
-            menuActionHtml +
+          '</div>';
+        }
+
+        let verifyHtml = '';
+        if (resp.verifyCmd) {
+          const escapedVerify = escapeHtml(resp.verifyCmd);
+          const encodedVerify = encodeURIComponent(resp.verifyCmd);
+          verifyHtml = '<div class="ai-cmd-section" style="margin-top:6px;">' +
+            '<div class="ai-cmd-label" style="font-size:11px;color:#94a3b8;">🔍 결과 검증 명령어</div>' +
+            '<div class="ai-cmd-box" style="background:#090d16;">' +
+              '<span class="ai-cmd-text" style="font-size:11px;color:#cbd5e1;">' + escapedVerify + '</span>' +
+              '<div class="ai-cmd-actions">' +
+                '<button type="button" class="ai-mini-btn btn-ai-copy" data-cmd="' + encodedVerify + '">📋</button>' +
+                '<button type="button" class="ai-mini-btn primary btn-ai-exec" data-cmd="' + encodedVerify + '">⚡ 실행</button>' +
+              '</div>' +
+            '</div>' +
+          '</div>';
+        }
+
+        let screenHtml = '';
+        if (resp.screenNote) {
+          screenHtml = '<div class="ai-screen-note">📊 <b>화면 연계:</b> ' + escapeHtml(resp.screenNote) + '</div>';
+        }
+
+        let tipHtml = '';
+        if (resp.tip) {
+          tipHtml = '<div class="ai-tip-note">💡 <b>핵심 팁:</b> ' + escapeHtml(resp.tip) + '</div>';
+        }
+
+        let modalHtml = '';
+        if (resp.modalId) {
+          modalHtml = '<div style="margin-top:8px;">' +
+            '<button type="button" class="btn sm primary btn-ai-modal" style="font-size:11px;padding:4px 10px;" data-modal="' + escapeHtml(resp.modalId) + '">👉 ' + escapeHtml(resp.menuGuide || '해당 메뉴 열기') + '</button>' +
+          '</div>';
+        }
+
+        bodyHtml = '<div class="ai-card-answer">' + escapeHtml(resp.answer) + '</div>' +
+          cmdHtml +
+          verifyHtml +
+          screenHtml +
+          tipHtml +
+          modalHtml;
+      } else {
+        let sectionsHtml = '';
+        (resp.sections || []).forEach(sec => {
+          let itemsHtml = '';
+          (sec.items || []).forEach(item => {
+            let cmdHtml = '';
+            if (item.cmd) {
+              const escapedCmd = escapeHtml(item.cmd);
+              const encodedCmd = encodeURIComponent(item.cmd);
+              cmdHtml = '<div class="ai-cmd-box">' +
+                '<span class="ai-cmd-text">' + escapedCmd + '</span>' +
+                '<div class="ai-cmd-actions">' +
+                  '<button type="button" class="ai-mini-btn btn-ai-copy" data-cmd="' + encodedCmd + '">📋 복사</button>' +
+                  '<button type="button" class="ai-mini-btn btn-ai-paste" data-cmd="' + encodedCmd + '">⌨️ 입력</button>' +
+                  '<button type="button" class="ai-mini-btn primary btn-ai-exec" data-cmd="' + encodedCmd + '">⚡ 즉시 실행</button>' +
+                '</div>' +
+              '</div>';
+            }
+            let menuActionHtml = '';
+            if (item.modalId) {
+              menuActionHtml = '<div style="margin-top:6px;">' +
+                '<button type="button" class="btn sm primary btn-ai-modal" style="font-size:10.5px; padding:3px 8px;" data-modal="' + escapeHtml(item.modalId) + '">👉 ' + escapeHtml(item.menuGuide || '해당 메뉴 열기') + '</button>' +
+              '</div>';
+            }
+
+            itemsHtml += '<div class="ai-item">' +
+              '<div class="ai-item-head">' +
+                '<span class="ai-item-name">' + escapeHtml(item.title) + '</span>' +
+                '<span class="ai-tag ' + (item.tag === '긴급 조치' ? 'critical' : '') + '">' + escapeHtml(item.tag || '안내') + '</span>' +
+              '</div>' +
+              '<div class="ai-item-desc">' + escapeHtml(item.desc) + '</div>' +
+              cmdHtml +
+              menuActionHtml +
+            '</div>';
+          });
+
+          sectionsHtml += '<div class="ai-card-section">' +
+            '<div class="ai-section-title">' + escapeHtml(sec.icon || '📌') + ' ' + escapeHtml(sec.title) + '</div>' +
+            itemsHtml +
           '</div>';
         });
+        bodyHtml = '<div class="ai-card-summary">' + escapeHtml(resp.summary || '') + '</div>' + sectionsHtml;
+      }
 
-        sectionsHtml += '<div class="ai-card-section">' +
-          '<div class="ai-section-title">' + escapeHtml(sec.icon || '📌') + ' ' + escapeHtml(sec.title) + '</div>' +
-          itemsHtml +
-        '</div>';
-      });
-
-      const isWarn = resp.statusBadge?.type === 'critical';
       const cardHtml = '<div class="ai-msg bot">' +
         '<div class="ai-card">' +
           '<div class="ai-card-head">' +
             '<div class="ai-card-title">' + escapeHtml(resp.title) + '</div>' +
-            '<span class="ai-trigger-badge ' + (isWarn ? 'warn' : '') + '">' + escapeHtml(resp.statusBadge?.text || '완료') + '</span>' +
+            '<span class="ai-trigger-badge ' + (isWarn ? 'warn' : '') + '">' + escapeHtml(badgeText) + '</span>' +
           '</div>' +
-          '<div class="ai-card-summary">' + escapeHtml(resp.summary) + '</div>' +
-          sectionsHtml +
+          bodyHtml +
         '</div>' +
       '</div>';
 
