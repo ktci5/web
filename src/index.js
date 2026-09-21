@@ -48,6 +48,7 @@ import { INFRA_TITLE, INFRA_CSS, renderInfraGuide } from './study-infra.js';
 import { renderProjectPage } from './projects.js';
 import { loadCourseIndex, loadCourse, loadNotes, loadAll, linkResolver, markdown, renderCourseList, renderCourseIndex, renderCourseChapter, renderSearch, COURSE_CSS } from './course.js';
 import { PORTAL_HTML } from './portal_html.js';
+import { STATIC_CHANGELOG } from './updates_data.js';
 
 const DISCORD_API = 'https://discord.com/api/v10';
 const USER_AGENT = 'DiscordBot (https://ktci5.kr, 1.0)';
@@ -394,7 +395,7 @@ const COURSES_INFO = [
     title: '쿠버네티스 (Kubernetes)',
     badge: 'NEW',
     isNew: true,
-    desc: 'K8s 마스터/워커 아키텍처, kubeadm 클러스터 구축, Pod/Deployment/Service, 무중단 롤링 배포, RBAC, Helm, PV/PVC, HA',
+    desc: '마스터(10.10.10.12) & 워커(10.10.20) 2노드 클러스터 구축, Taint 해제, alias(k=kubectl), NodePort 배포, 멀티컨테이너, 라벨/nodeSelector, 롤링배포, Metrics-Server, Dashboard & RBAC',
   },
   {
     id: 'docker',
@@ -462,7 +463,15 @@ async function studyIndexPage(env) {
       <div class="update-cards">
         <div class="u-card featured">
           <div class="u-head">
-            <span class="u-badge new">신규 과목</span>
+            <span class="u-badge new">실습 확장</span>
+            <span class="u-date">2026-09-21</span>
+          </div>
+          <div class="u-title"><a href="/study/course/k8s/install">쿠버네티스 2노드(master1: 10.10.10.12, w1: 10.10.20) 구축 완료 & 실무 실습 확장</a></div>
+          <p class="u-desc">마스터 Taint 해제, 셸 alias(k=kubectl) 자동완성, NodePort 앱 배포, 멀티컨테이너 파드 자원 공유, --dry-run YAML 템플릿, 라벨/nodeSelector 조건부 스케줄링, 롤링 업데이트, Metrics-Server 모니터링, Dashboard v2.6.1 & RBAC / Skip Login 전 과정 수록.</p>
+        </div>
+        <div class="u-card">
+          <div class="u-head">
+            <span class="u-badge">신규 과목</span>
             <span class="u-date">2026-09-17</span>
           </div>
           <div class="u-title"><a href="/study/course/k8s">쿠버네티스(Kubernetes) 오케스트레이션 실무 강의 정리 추가</a></div>
@@ -516,18 +525,25 @@ async function studyIndexPage(env) {
         <h2>🛠️ 스터디 도구 & 심층 가이드</h2>
       </div>
       <div class="tool-grid">
-        <a class="t-card" href="/study/calendar">
-          <div class="t-icon">🗓️</div>
+        <a class="t-card" href="/study/course/k8s/install">
+          <div class="t-icon">☸️</div>
           <div class="t-body">
-            <div class="t-title">스터디 & 미팅 캘린더 <span class="tag">일정</span></div>
-            <p class="t-desc">132일 훈련 시간표, 단위기간별 회차, 프로젝트·평가일, 구글 캘린더 실시간 연동 현황을 시각적으로 확인합니다.</p>
+            <div class="t-title">K8s 마스터·워커 구축 가이드 <span class="tag">실습</span></div>
+            <p class="t-desc">10.10.10.12 마스터 + 10.10.10.20 워커 2노드 클러스터 구축부터 Dashboard까지 실습 절차 완벽 정리.</p>
           </div>
         </a>
         <a class="t-card" href="/study/cheatsheet">
           <div class="t-icon">⚡</div>
           <div class="t-body">
             <div class="t-title">실무 CLI & 명령어 포털 <span class="tag">치트시트</span></div>
-            <p class="t-desc">66개 핵심 실무 명령어 검색, Docker · 디스크(LVM/RAID) · 네트워크 진단 대화형 치트 시트와 시나리오.</p>
+            <p class="t-desc">130개 핵심 실무 명령어 검색, K8s(16종) · Docker · 디스크(LVM/RAID) · 네트워크 대화형 치트 시트.</p>
+          </div>
+        </a>
+        <a class="t-card" href="/study/calendar">
+          <div class="t-icon">🗓️</div>
+          <div class="t-body">
+            <div class="t-title">스터디 & 미팅 캘린더 <span class="tag">일정</span></div>
+            <p class="t-desc">132일 훈련 시간표, 단위기간별 회차, 프로젝트·평가일, 구글 캘린더 실시간 연동 현황을 시각적으로 확인합니다.</p>
           </div>
         </a>
         <a class="t-card" href="/study/linux">
@@ -1290,16 +1306,24 @@ async function courseSearchPage(env, q) {
 // 원본은 저장소의 CHANGELOG.md 입니다. scripts/post-updates.mjs 가 KV 에 올리고,
 // 같은 내용으로 디스코드 고정 공지도 갱신합니다.
 async function updatesPage(env) {
-  const md = await env.ROSTER.get('site:updates');
+  let md = null;
+  if (env && env.ROSTER) {
+    try { md = await env.ROSTER.get('site:updates'); } catch {}
+  }
+  const kvDateMatch = md ? md.match(/^## (\d{4}-\d{2}-\d{2})/m) : null;
+  const staticDateMatch = STATIC_CHANGELOG ? STATIC_CHANGELOG.match(/^## (\d{4}-\d{2}-\d{2})/m) : null;
+  const kvDate = kvDateMatch ? kvDateMatch[1] : '0000-00-00';
+  const staticDate = staticDateMatch ? staticDateMatch[1] : '0000-00-00';
+
+  if (!md || staticDate >= kvDate) {
+    md = STATIC_CHANGELOG;
+  }
   if (!md) {
     return errorPage('업데이트 내역이 아직 올라오지 않았습니다. `npm run updates` 를 실행해주세요.', 404);
   }
-  // 파일 맨 앞의 제목과 운영진용 실행 안내는 페이지에서 뺍니다.
-  const body = md
-    .replace(/^#\s+.*\n/, '')
-    .replace(/```bash[\s\S]*?```\n/, '')
-    .replace(/^사이트에 무엇이[\s\S]*?만들어집니다\.\n/m, '')
-    .replace(/^적는 방법은[\s\S]*?봐주세요\.\n/m, '')
+  // 파일 맨 앞의 제목과 운영진용 안내를 건너뛰고 첫 번째 날짜 헤딩부터 시작합니다.
+  const match = md.match(/(## \d{4}-\d{2}-\d{2}[\s\S]*)/);
+  const body = (match ? match[1] : md)
     .replace(/\n---\n\n## 쓰는 규칙[\s\S]*$/, '\n');
 
   return html(renderDoc({

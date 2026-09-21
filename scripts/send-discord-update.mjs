@@ -7,33 +7,35 @@ const CYAN = 0x06b6d4;
 
 // 1. 공지사항 채널 (1541788665104175154)
 const announceEmbed = {
-  title: '📢 [업데이트] 쿠버네티스(Kubernetes) 실무 강의 정리 & 마스터·워커 구축 가이드 공개',
+  title: '📢 [업데이트] 쿠버네티스(Kubernetes) 2노드 클러스터 구축 완료 및 실무 실습 확장 안내',
   color: BLUE,
   description:
-    'KT Cloud 5기 클라우드 인프라 포털에 **쿠버네티스(K8s) 신규 교육 과정**과 **마스터·워커 노드 원클릭 구축 실습 가이드**가 업데이트되었습니다.\n' +
-    '이론과 명령어 암기를 넘어, 컨테이너 오케스트레이션 및 클라우드 네이티브 인프라 전체를 체계적으로 학습하실 수 있습니다.',
+    'KT Cloud 5기 클라우드 인프라 포털에 **마스터(`10.10.10.12`) & 워커(`10.10.10.20`) 2노드 쿠버네티스 클러스터 구축 완료** 및 최신 강의 실습 11개 영역이 전면 업데이트되었습니다.\n' +
+    '터미널 블록 복사로 손쉽게 클러스터를 구축하고, 애플리케이션 배포부터 대시보드 관리까지 원스톱으로 실습하실 수 있습니다.',
   fields: [
     {
-      name: '☸️ 서버(master1) & 워커(w1) 단계별 실습 가이드',
+      name: '☸️ 마스터(10.10.10.12) & 워커(10.10.20) 구축 가이드',
       value:
-        '• 서버측(`master1`)과 워커측(`w1`) 작업을 명확히 분리하여 터미널 블록 단위로 한 번에 복사·실행할 수 있도록 정리되었습니다.\n' +
-        '• 💡 **[필독] 실습 IP 안내**: 본 가이드의 IP(`master1: 10.10.10.12`, `w1: 10.10.20`, 게이트웨이 `10.10.10.2`)는 **기본 예시 IP**로 구성되었습니다. 수강생 각자의 VMware 서브넷 대역이나 DHCP 환경(예: `192.168.100.x` 등) 및 인터페이스명(`ens160` 등)에 맞추어 유연하게 변경하여 적용하시면 정상 동작합니다.'
+        '• 서버(`master1`)와 워커(`w1`) 작업을 분리하여 터미널 블록 단위로 한 번에 복사·실행할 수 있도록 정리 완료\n' +
+        '• Calico CNI v3.32.2 연동 (`172.20.0.0/16`), 초기화 단계(`Init:1/3`, `Init:2/3`) 및 CoreDNS 대기 원리 분석 수록\n' +
+        '• 💡 **실습 IP 안내**: 기본 예시 IP(`10.10.10.12`, `10.10.10.20`) 외 각자의 가상머신 서브넷 환경에 맞게 유연하게 적용 가능'
     },
     {
-      name: '🌐 Tigera Operator & Calico CNI (v3.32.2) 연동',
+      name: '🚀 핵심 실무 실습 8대 파이프라인 신규 반영',
       value:
-        '• `172.20.0.0/16` Pod CIDR 맞춤 커스텀 리소스 설정 및 배포\n' +
-        '• 초기화 단계(`Init:1/3`, `Init:2/3`)와 CoreDNS `Pending` 대기 원리 및 실시간 모니터링 트러블슈팅 분석 수록'
+        '① **마스터 Taint 해제 & CLI 최적화**: `control-plane-` Taint 해제 및 `alias k=kubectl`·bash 자동완성 등록\n' +
+        '② **앱 배포 & NodePort 노출**: `k run web/hhs` 배포, 30000번대 NodePort 서비스 매핑 및 외부 curl 통신 검증\n' +
+        '③ **멀티 컨테이너 파드**: Nginx + Busybox(`c2`), 동일 Pod 내 네트워크(Loopback `127.0.0.1`, Pod IP) 및 볼륨 공유 검증\n' +
+        '④ **YAML 템플릿 추출**: `--dry-run=client` vs `--dry-run=server` 기반 Deployment/Service 템플릿 자동 생성\n' +
+        '⑤ **라벨 & nodeSelector**: 라벨 필터링, `disktype=hdd` 스케줄링 실패 `Pending` 분석 및 즉시 해소 트러블슈팅\n' +
+        '⑥ **무중단 롤링 배포**: `k set image` 무중단 교체, `k rollout status/undo` 즉시 롤백, Blue/Green & Canary 전략\n' +
+        '⑦ **성능 모니터링**: Metrics-Server 배포, 자체 서명 TLS용 `--kubelet-insecure-tls` 패치 및 `kubectl top` 계측\n' +
+        '⑧ **웹 대시보드(Dashboard v2.6.1)**: NodePort 노출, 최고 관리자 RBAC 바인딩(`kdb-admin`), JWT 토큰 로그인 및 Skip Login 지원'
     },
     {
-      name: '📘 쿠버네티스 12개 전 단원 심층 정리',
+      name: '⚡ 실무 치트시트 130개 항목 & K8s 전용 탭 활성화',
       value:
-        '① 아키텍처 (etcd·API·스케줄러·kubelet) ② Kubeadm 클러스터 ③ Kubectl CLI ④ Pod ⑤ YAML 명세 ⑥ Controller ⑦ Service 4대 유형 ⑧ RollingUpdate 무중단 배포 & 롤백 ⑨ RBAC 보안 ⑩ Helm v3 ⑪ PV/PVC 스토리지 ⑫ 고가용성(HA)'
-    },
-    {
-      name: '⚡ 실무 치트시트 130개 항목 확장',
-      value:
-        '• `☸️ 쿠버네티스` 16개 핵심 실무 명령어 탭 신설\n' +
+        '• 웹 허브 포털(https://ktci5.kr/study/cheatsheet)에 `☸️ 쿠버네티스` 16개 핵심 실무 명령어 탭 동기화 완료\n' +
         '• 모든 명령어에 한국어 어원 및 줄인말 해설(`💡 용어 설명`), 툴팁, 실무 장애 해결 시나리오 통합'
     }
   ],
@@ -44,42 +46,43 @@ const announceEmbed = {
 const announceButtons = {
   type: 1,
   components: [
-    { type: 2, style: 5, label: '📘 쿠버네티스 강의 열람', url: `${SITE}/study/course/k8s` },
-    { type: 2, style: 5, label: '🛠️ 마스터·워커 구축 가이드', url: `${SITE}/study/course/k8s/install` },
-    { type: 2, style: 5, label: '⚡ 실무 치트시트 (130개)', url: `${SITE}/study/cheatsheet` }
+    { type: 2, style: 5, label: '🛠️ 마스터·워커 구축 & 실습 가이드', url: `${SITE}/study/course/k8s/install` },
+    { type: 2, style: 5, label: '📘 쿠버네티스 12개 장 강의 열람', url: `${SITE}/study/course/k8s` },
+    { type: 2, style: 5, label: '⚡ K8s 실무 치트시트 (16개 명령)', url: `${SITE}/study/cheatsheet` }
   ]
 };
 
 // 2. 컨테이너-쿠버네티스 채널 (1542059061070274621)
 const k8sChannelEmbed = {
-  title: '☸️ 쿠버네티스 마스터·워커 2노드 클러스터 구축 가이드 & 실무 치트시트',
+  title: '☸️ 쿠버네티스 2노드(master1: 10.10.10.12, w1: 10.10.10.20) 구축 & 실무 실습 종합 가이드',
   color: CYAN,
   description:
-    '수업 실습을 위해 서버(`master1`)와 워커(`w1`) 노드로 분리 구성한 **원클릭 터미널 구축 가이드**가 웹에 등록되었습니다.\n' +
+    '클러스터 구성 완료에 맞춰 **원클릭 구축 가이드**와 **실무 실습(앱 배포, 멀티컨테이너, 템플릿, 롤링배포, 모니터링, 대시보드)**이 웹에 모두 등록되었습니다.\n' +
     `${SITE}/study/course/k8s/install`,
   fields: [
     {
-      name: '📌 실습 IP 구성 안내 (기본 예시 IP)',
+      name: '📌 클러스터 기본 정보',
       value:
-        '가이드에 기재된 IP(`서버: 10.10.10.12`, `워커: 10.10.20`, GW: `10.10.10.2`)는 **실습용 기본 예시 IP**입니다.\n' +
-        '각자 VMware 가상머신 서브넷이나 DHCP 대역(예: `192.168.100.x`), 인터페이스명(`ens160`, `eth0`)에 맞게 변경하여 실행하시면 됩니다.'
+        '• **마스터 노드**: `10.10.10.12` (master1, API Server 6443)\n' +
+        '• **워커 노드**: `10.10.10.20` (w1, Workload Node)\n' +
+        '• **Pod CIDR (Calico)**: `172.20.0.0/16` / GW: `10.10.10.2`'
     },
     {
-      name: '🚀 서버(master1) 3단계 핵심 작업',
+      name: '🛠️ 주요 실습 명령어 요약',
       value:
-        '`1` 호스트명/netplan 고정 IP 설정\n' +
-        '`2` containerd 런타임 최적화(`SystemdCgroup = true`), 커널 모듈(`overlay`, `br_netfilter`), k8s v1.36 패키지 설치\n' +
-        '`3` `kubeadm init --pod-network-cidr=172.20.0.0/16` & Calico v3.32.2 Tigera Operator 배포'
+        '`1` **Taint 해제**: `kubectl taint no master1 node-role.kubernetes.io/control-plane-`\n' +
+        '`2` **앱 배포 & NodePort**: `k run web --image nginx && k expose po web --port 80 --type NodePort`\n' +
+        '`3` **템플릿 추출**: `k create deploy example --image nginx --dry-run=client -o yaml > deploy.yaml`\n' +
+        '`4` **노드 라벨링**: `k label no master1 disktype=hdd --overwrite` (nodeSelector 스케줄링)\n' +
+        '`5` **Metrics-Server**: `kubectl top nodes && kubectl top pods -A`\n' +
+        '`6` **대시보드 RBAC**: `k create clusterrolebinding kdb-admin --serviceaccount=kubernetes-dashboard:kubernetes-dashboard --clusterrole=cluster-admin`'
     },
     {
-      name: '🤝 워커(w1) 조인 및 상태 확인',
-      value:
-        '`1` 호스트명/netplan 고정 IP 설정\n' +
-        '`2` `kubeadm join 10.10.10.12:6443 --token ...` 참여\n' +
-        '`3` `watch kubectl get po -A -o wide` 로 calico-node가 `Running(1/1)`이 될 때까지 1~2분 대기'
+      name: '📖 단계별 상세 실습 가이드 열람',
+      value: '포털 웹사이트의 [마스터·워커 구축 가이드](https://ktci5.kr/study/course/k8s/install)에서 전체 스크립트를 터미널에 복사하여 바로 실행하실 수 있습니다.'
     }
   ],
-  footer: { text: '질문이나 막히는 부분은 언제든 채널에 남겨주세요!' },
+  footer: { text: '실습 중 문의나 오류 사항은 언제든 본 채널에 남겨주세요!' },
   timestamp: new Date().toISOString(),
 };
 

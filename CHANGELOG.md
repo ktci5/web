@@ -10,6 +10,26 @@ npm run updates -- --dry   # 확인만
 
 적는 방법은 아래 [규칙](#쓰는-규칙) 을 봐주세요.
 
+## 2026-09-21
+
+### 쿠버네티스(Kubernetes) 2노드 클러스터 구축 완료 및 실무 실습 대규모 확장
+
+[쿠버네티스(K8s)](https://ktci5.kr/study/course/k8s) 교육 과정에 **마스터(`10.10.10.12`) & 워커(`10.10.10.20`) 2노드 클러스터 구축 완료** 및 최신 강의노트(0921) 기반 8개 심화 실습을 전면 반영했습니다.
+
+- **마스터 노드 Taint 제어 & CLI 최적화** — Control-Plane Taint 해제(`kubectl taint no master1 node-role.kubernetes.io/control-plane-`) 및 bash 자동완성·`alias k=kubectl` 영구 등록
+- **애플리케이션 배포 및 NodePort 노출** — `k run web/hhs`, NodePort(30000~32767) 서비스 매핑, 모든 노드 IP(`10.10.10.12`, `10.10.10.20`) 외부 curl 통신 검증
+- **멀티 컨테이너 파드(Multi-Container Pod)** — Nginx + Busybox(`c2`), 동일 Pod 내 네트워크 네임스페이스(Loopback `127.0.0.1`, Pod IP `172.20.x.x`) 및 파일시스템 공유 실습
+- **선언적 리소스 백업 & YAML 템플릿 추출** — `k get po -o yaml` 백업 및 `--dry-run=client` vs `--dry-run=server` 기반 Deployment/Service 템플릿 자동 생성
+- **라벨 필터링 & nodeSelector 조건부 스케줄링** — `k get all -l` 필터링, `nodeSelector: disktype: hdd` 설정 시 Pending 원인 분석 및 `k label no master1 disktype=hdd` 즉시 해소 트러블슈팅
+- **무중단 롤링 배포 & 배포 전략** — `k set image` 이미지 교체, `k rollout status/undo` 즉시 롤백, Blue/Green 및 카나리(Canary) 실무 전략
+- **클러스터 모니터링 (Metrics-Server)** — 최신 Metrics-Server 배포, 자체 서명 TLS 환경용 `--kubelet-insecure-tls` 패치, `kubectl top nodes/pods` 실시간 계측
+- **웹 대시보드(Kubernetes Dashboard v2.6.1) & RBAC 관리자** — NodePort 외부 개방, `cluster-admin` 최고 관리자 RoleBinding(`kdb-admin`), JWT 토큰 로그인 및 실습 편의를 위한 Skip Login 모드(`--enable-skip-login`) 지원
+- **실무 치트시트 & 웹 허브 동기화** — 포털 및 웹페이지 전체 130개 항목 완벽 동기화 및 `☸️ 쿠버네티스` 16개 핵심 실무 명령어 탭 활성화
+
+요약은 디스코드 **#📢-공지사항** 과 **#🐳-컨테이너-쿠버네티스** 에도 올렸습니다.
+
+---
+
 ## 2026-09-17
 
 ### 쿠버네티스(Kubernetes) 마스터·워커 실무 실습 및 강의 정리 추가
