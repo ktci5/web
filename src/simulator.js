@@ -1011,8 +1011,52 @@ Content-Length: 512
     return { output: `deployment.apps/${depName} scaled`, labChanged: true };
   }
 
-  // 12. TAINT NODES
-  if (sub === 'taint' && tokens[2] === 'nodes') {
+  // 12. EXPOSE (NodePort / ClusterIP 서비스 생성)
+  if (sub === 'expose') {
+    const kind = tokens[2];
+    const targetName = tokens[3];
+    if (!kind || !targetName) return { output: 'error: KIND and NAME required for kubectl expose', labChanged: false };
+
+    let port = 80;
+    let targetPort = 80;
+    let type = 'ClusterIP';
+    let svcName = targetName;
+
+    for (let i = 4; i < tokens.length; i++) {
+      const t = tokens[i];
+      if (t.startsWith('--port=')) port = parseInt(t.split('=')[1], 10) || 80;
+      else if (t === '--port' && tokens[i + 1]) port = parseInt(tokens[++i], 10) || 80;
+      else if (t.startsWith('--target-port=')) targetPort = parseInt(t.split('=')[1], 10) || 80;
+      else if (t === '--target-port' && tokens[i + 1]) targetPort = parseInt(tokens[++i], 10) || 80;
+      else if (t.startsWith('--type=')) type = t.split('=')[1];
+      else if (t === '--type' && tokens[i + 1]) type = tokens[++i];
+      else if (t.startsWith('--name=')) svcName = t.split('=')[1];
+      else if (t === '--name' && tokens[i + 1]) svcName = tokens[++i];
+    }
+
+    if (!lab.services) lab.services = [];
+    const nodePort = (type === 'NodePort' || type === 'LoadBalancer') ? (30000 + Math.floor(Math.random() * 2767)) : undefined;
+    const newSvc = {
+      name: svcName,
+      namespace: 'default',
+      type,
+      clusterIp: `10.96.${Math.floor(Math.random() * 200) + 1}.${Math.floor(Math.random() * 200) + 1}`,
+      port,
+      targetPort,
+      nodePort,
+      selector: { app: targetName }
+    };
+    lab.services.push(newSvc);
+    lab.activityLogs.unshift({
+      time: timeStr,
+      user: userName,
+      action: `서비스 '${svcName}' (${type}, NodePort: ${nodePort || '-'}) 생성`
+    });
+    return { output: `service/${svcName} exposed`, labChanged: true };
+  }
+
+  // 13. TAINT NODES
+  if (sub === 'taint' && (tokens[2] === 'nodes' || tokens[2] === 'node' || tokens[2] === 'no')) {
     const nodeName = tokens[3];
     const taintExpr = tokens[4];
     if (!nodeName || !taintExpr) return { output: 'error: node name and taint expression required', labChanged: false };
@@ -1036,10 +1080,10 @@ Content-Length: 512
     }
   }
 
-  // 13. LABEL NODES
-  if (sub === 'label' && tokens[2] === 'nodes') {
+  // 14. LABEL NODES
+  if (sub === 'label' && (tokens[2] === 'nodes' || tokens[2] === 'node' || tokens[2] === 'no')) {
     const nodeName = tokens[3];
-    const labelExpr = tokens[4];
+    const labelExpr = tokens.slice(4).find((t) => (t.includes('=') || t.endsWith('-')) && !t.startsWith('--'));
     if (!nodeName || !labelExpr) return { output: 'error: node name and label expression required', labChanged: false };
 
     const node = lab.nodes?.find((n) => n.name === nodeName);
@@ -1091,9 +1135,358 @@ Content-Length: 512
   };
 }
 
-/// AI 모델 기반 인프라 운영 팁 & 트러블슈팅 엔진 (화면 기준 상태 분석 & 제안 유도 힌트)
-export function generateAiCopilotAdvice(prompt = '', topic = 'general', lab = null) {
+/// KT Cloud 5기 공인 교안 및 실습 교재 기반 지식 베이스 (Curriculum Knowledge Base)
+export const CURRICULUM_KNOWLEDGE = [
+  {
+    id: 'k8s-taint',
+    chapter: '교안 07장 [쿠버네티스] - Step 4-1',
+    title: '마스터 노드(master1) Taint 해제 및 파드 스케줄링 허용',
+    keywords: ['taint', '테인트', '마스터 노드', '마스터에 배포', '마스터 파드', 'control-plane-', 'noschedule', '스케줄링 제한', 'taints'],
+    concept: `쿠버네티스 마스터 노드(Control-Plane)는 시스템 안정성을 위해 기본적으로 'node-role.kubernetes.io/control-plane:NoSchedule' Taint가 설정되어 일반 워크로드 파드의 배치가 엄격히 차단됩니다.\n\nKT Cloud 5기 실습 환경(1 Master: 10.10.10.12 + 1 Worker: 10.10.10.20)에서는 마스터 노드에도 파드가 배포될 수 있도록 키 뒤에 하이픈('-')을 붙여 Taint를 제거해야 합니다.\n\n• 해제 명령어: kubectl taint no master1 node-role.kubernetes.io/control-plane-\n• 상태 확인: kubectl describe nodes master1 | grep -i taint (출력: Taints: <none>이면 성공)`,
+    recommendedCmd: 'kubectl taint no master1 node-role.kubernetes.io/control-plane-',
+    verifyCmd: 'kubectl describe nodes master1 | grep -i taint',
+    nextStepHint: 'Taint를 해제한 후 \'k run web --image nginx\'를 실행하면 마스터 노드에도 파드가 정상 스케줄링되어 가동됩니다.',
+    tags: 'Taint / 스케줄링'
+  },
+  {
+    id: 'k8s-nodeport',
+    chapter: '교안 07장 [쿠버네티스] - Step 5-1 ~ 5-3',
+    title: 'NodePort 서비스 노출 원리 및 포트 대역(30000~32767)',
+    keywords: ['nodeport', '노드포트', '외부 접속', '포트 대역', '포트 범위', '30000', '32767', 'expose', '서비스 노출', 'node-port'],
+    concept: `NodePort는 클러스터 외부 사용자가 파드에 접속할 수 있도록 모든 노드(Master/Worker)의 동일한 고정 포트(표준 범위: 30000~32767)를 일괄 개방하는 서비스 유형입니다.\n\n파드 80번 포트를 NodePort 서비스로 노출하면, 외부에서 마스터 IP(10.10.10.12:<NodePort>) 또는 워커 IP(10.10.10.20:<NodePort>) 중 어느 IP로 접속하더라도 kube-proxy(iptables 프록시 모드)를 통해 백엔드 파드의 사설 IP(172.20.x.x:80)로 자동 부하분산 라우팅됩니다.\n\n• 서비스 노출: k expose po web --port 80 --target-port 80 --type NodePort\n• 서비스 확인: k get po,svc -o wide`,
+    recommendedCmd: 'k expose po web --port 80 --target-port 80 --type NodePort',
+    verifyCmd: 'k get svc',
+    nextStepHint: '\'k get svc\'로 할당된 30000번대 포트를 확인한 후, \'curl 10.10.10.12:<NodePort>\'와 \'curl 10.10.10.20:<NodePort>\'를 호출하여 양쪽 노드 모두에서 동일한 HTTP 응답이 오는지 검증하세요.',
+    tags: 'NodePort / 서비스'
+  },
+  {
+    id: 'k8s-nodeselector',
+    chapter: '교안 07장 [쿠버네티스] - Step 8-2 ~ 8-3',
+    title: 'nodeSelector 조건부 스케줄링 & Pending 장애 원인 분석 및 해결',
+    keywords: ['nodeselector', '노드셀렉터', 'pending', '펜딩', '라벨', 'label', 'failedscheduling', '스케줄링 실패', 'disktype', '대기 중', '왜 안 떠'],
+    concept: `파드 명세서에 'nodeSelector: disktype: ssd' 또는 'disktype: hdd' 같은 조건이 명시되어 있을 때, 클러스터 노드 중 일치하는 라벨을 가진 노드가 0대이면 kube-scheduler는 파드를 배치하지 못하고 'Warning FailedScheduling: 0/2 nodes are available: 2 node(s) didn\'t match Pod\'s node affinity/selector' 이벤트를 발생시키며 파드를 Pending 상태로 대기시킵니다.\n\n• 해결 조치: 워커 노드(w1)에 'kubectl label nodes w1 disktype=ssd' 명령으로 라벨을 부여하면 kube-scheduler가 즉각 반응하여 파드가 Running으로 전환됩니다.\n• 라벨 제거: 실습 종료 후 'kubectl label nodes w1 disktype-'로 라벨을 제거합니다.`,
+    recommendedCmd: 'kubectl label nodes w1 disktype=ssd',
+    verifyCmd: 'kubectl get pods -o wide',
+    nextStepHint: '\'kubectl describe pod <파드명>\'으로 Events 섹션을 확인하여 FailedScheduling 에러가 사라지고 Successfully assigned로 바뀌었는지 확인하세요.',
+    tags: 'nodeSelector / 라벨'
+  },
+  {
+    id: 'k8s-multicontainer',
+    chapter: '교안 07장 [쿠버네티스] - Step 6-1 ~ 6-2',
+    title: '멀티 컨테이너 파드(Multi-Container Pod) 네트워크 & 파일시스템 공유',
+    keywords: ['멀티 컨테이너', 'multi container', 'simple.yaml', '네임스페이스 공유', 'c2', 'busybox', '루프백', 'loopback', '127.0.0.1'],
+    concept: `쿠버네티스의 파드(Pod)는 배포와 관리의 최소 단위입니다. 동일한 단일 파드 내에 함께 기동된 복수 컨테이너(예: simple.yaml의 Nginx 웹서버 + c2 Busybox 보조 컨테이너)는 동일한 네트워크 네임스페이스(동일한 Pod IP 및 Loopback 127.0.0.1)와 IPC, UTS(호스트명 'mypod')를 완전히 공유합니다.\n\n따라서 c2 컨테이너 내부에서 'curl localhost:80'을 호출하면 외부 네트워크 경유 없이 동일 파드의 Nginx로 즉시 연결됩니다.\n\n• 검증 1 (IP 공유 확인): k exec mypod -c c2 -- ip a\n• 검증 2 (호스트명 공유 확인): k exec mypod -c c2 -- hostname`,
+    recommendedCmd: 'k exec mypod -c c2 -- ip a',
+    verifyCmd: 'k exec mypod -c c2 -- hostname',
+    nextStepHint: '\'k exec mypod -c c2 -it -- /bin/sh\'로 c2 내부 셸에 직접 진입하여 localhost 통신과 파일시스템 구조를 점검해보세요.',
+    tags: '멀티 컨테이너'
+  },
+  {
+    id: 'k8s-dryrun',
+    chapter: '교안 07장 [쿠버네티스] - Step 7-1 ~ 7-2',
+    title: '--dry-run=client vs --dry-run=server 차이점 및 선언적 YAML 템플릿 추출',
+    keywords: ['dry-run', 'dryrun', '드라이런', 'client vs server', 'yaml 추출', '템플릿 생성', '선언적 리소스', 'deploy_template', 'svc_template'],
+    concept: `쿠버네티스 CLI에서 명령형 배포를 수행하기 전, 실무 표준 선언적 YAML 매니페스트를 즉시 생성할 때 dry-run 플래그를 사용합니다.\n\n1. --dry-run=client: API 서버로 요청을 전송하지 않고 오직 kubectl 로컬 내부에서만 유효성을 모사하여 가장 깔끔하고 불필요한 메타데이터가 없는 기본 뼈대 YAML 파일을 생성합니다. (템플릿 작성 시 표준 권장)\n2. --dry-run=server: 실제 API 서버로 매니페스트를 전송하여 클러스터 버전 호환성 검증 및 API 기본값(Default values), Admission 플러그인의 자동 주입 필드까지 모두 포함된 완전한 상세 YAML을 확인합니다.\n\n• 디플로이먼트 템플릿 생성: k create deploy example --image nginx --dry-run=client -o yaml > deploy_template.yaml`,
+    recommendedCmd: 'k create deploy example --image nginx --dry-run=client -o yaml > deploy_template.yaml',
+    verifyCmd: 'cat deploy_template.yaml',
+    nextStepHint: '\'k expose deploy example --port 80 --name blue --type NodePort --dry-run=client -o yaml > svc_template.yaml\'로 서비스 템플릿도 추출해보세요.',
+    tags: 'YAML / dry-run'
+  },
+  {
+    id: 'k8s-rollout',
+    chapter: '교안 07장 [쿠버네티스] - Step 9-1 ~ 9-3',
+    title: 'Deployment 무중단 롤링 업데이트(RollingUpdate) 및 즉각 롤백(Rollback)',
+    keywords: ['롤링 업데이트', 'rollingupdate', '롤아웃', 'rollout', '롤백', 'rollback', 'undo', '무중단 배포', 'blue green', 'canary', '카나리'],
+    concept: `Deployment는 신규 버전 배포 시 기존 ReplicaSet의 파드를 점진적으로 축소(Terminating)하고 신규 ReplicaSet의 파드를 점진적으로 증설(Running)하여 서비스 무중단을 보장하는 롤링 업데이트를 기본 수행합니다. 신규 배포 버전에서 장애나 버그 발생 시 'k rollout undo' 한 줄로 직전 안정 버전으로 즉시 무중단 롤백할 수 있습니다.\n\n배포 전략 비교:\n• 롤링 업데이트: 기본 방식, 추가 인프라 비용 없이 점진적 팟 교체\n• Blue/Green: 구버전(Blue)과 동일한 신버전(Green) 파드를 100% 띄운 후 Service selector 라벨을 일시에 전환\n• Canary: 신규 버전을 전체 트래픽의 일부(예: 10~25%)에만 소량 투입하여 오류율 모니터링 후 단계적 전면 확대\n\n• 이미지 교체: k set image deployments example nginx=rosehs00/test:nginx\n• 롤아웃 상태: k rollout status deployment/example\n• 즉각 롤백: k rollout undo deployment/example`,
+    recommendedCmd: 'k set image deployments example nginx=rosehs00/test:nginx',
+    verifyCmd: 'k rollout undo deployment/example',
+    nextStepHint: '\'k rollout history deployment/example\'을 실행하여 배포 리비전 번호(Revision)와 변경 이력을 확인해보세요.',
+    tags: '롤링 업데이트'
+  },
+  {
+    id: 'k8s-calico',
+    chapter: '교안 07장 [쿠버네티스] - Step 1-3 & Step 2',
+    title: 'Calico CNI v3.32.2 Tigera Operator 및 Pod CIDR(172.20.0.0/16)',
+    keywords: ['calico', '칼리코', 'cni', 'tigera', '네트워크 플러그인', '172.20', 'pod network', 'cidr', 'coredns pending', 'operator'],
+    concept: `쿠버네티스는 노드 간 파드 통신을 위해 CNI(Container Network Interface) 플러그인이 필수입니다. KT Cloud 5기 실습에서는 Pod CIDR를 '172.20.0.0/16'으로 설정하여 kubeadm init을 수행하고, Calico CRD와 Tigera Operator를 통해 컨테이너 오버레이 네트워크를 구축합니다.\n\nTigera Operator가 각 노드에 calico-node 데몬셋을 띄우고 네트워크 터널이 완성되기 전까지는 kube-system의 coredns 파드들이 Pending 상태를 유지하는 것이 정상 동작입니다. calico-node 파드가 Running(1/1)으로 전환되면 coredns 파드들도 순차적으로 가동됩니다.\n\n• Calico 파드 확인: kubectl get pods -n calico-system -o wide\n• 전체 시스템 파드 확인: kubectl get pods -A -o wide`,
+    recommendedCmd: 'kubectl get pods -n calico-system -o wide',
+    verifyCmd: 'kubectl get pods -A -o wide',
+    nextStepHint: '\'watch kubectl get po -A -o wide\'로 CNI 파드 기동 완료 및 coredns 정상 가동(Running 1/1)을 모니터링하세요.',
+    tags: 'Calico CNI'
+  },
+  {
+    id: 'k8s-cluster-bootstrap',
+    chapter: '교안 07장 [쿠버네티스] - Step 1 ~ 3',
+    title: '마스터(10.10.10.12) / 워커(10.10.10.20) 클러스터 구축 표준 절차',
+    keywords: ['클러스터 구축', '마스터 워커', 'kubeadm init', 'kubeadm join', '10.10.10.12', '10.10.10.20', 'swapoff', 'systemdcgroup', '토큰 생성'],
+    concept: `KT Cloud 5기 마스터/워커 2노드 클러스터 구축 절차:\n1. [공통 베이스]: swapoff -a 및 /etc/fstab 주석 처리, containerd 'SystemdCgroup = true', overlay/br_netfilter 커널 모듈 적재, sysctl 'net.ipv4.ip_forward=1'\n2. [서버 측 (master1: 10.10.10.12)]: 'kubeadm init --pod-network-cidr=172.20.0.0/16' 실행 후 Calico v3.32.2 Tigera Operator 배포\n3. [워커 측 (w1: 10.10.10.20)]: 마스터에서 출력된 'kubeadm join 10.10.10.12:6443 --token ...' 실행\n4. 토큰 재발급: 마스터에서 'kubeadm token create --print-join-command'\n5. 클러스터 상태 확인: 'kubectl get nodes'에서 두 노드가 모두 Ready로 전환되는지 확인`,
+    recommendedCmd: 'kubectl get nodes -o wide',
+    verifyCmd: 'kubeadm token create --print-join-command',
+    nextStepHint: '두 노드의 STATUS가 Ready로 변경된 후 Step 4의 마스터 노드 Taint 해제를 진행하세요.',
+    tags: '클러스터 구축'
+  },
+  {
+    id: 'k8s-metrics-server',
+    chapter: '교안 07장 [쿠버네티스] - Step 10-1 ~ 10-2',
+    title: 'Metrics-Server 연동 및 --kubelet-insecure-tls 패치 기법',
+    keywords: ['metrics-server', '메트릭스', 'top nodes', 'top pods', '자원 확인', 'cpu 사용량', '메모리 사용량', 'insecure-tls'],
+    concept: `클러스터 노드와 파드의 실시간 CPU/메모리 사용량을 'kubectl top' 명령으로 조회하려면 Metrics-Server 애드온이 필수입니다. 온프레미스/테스트 클러스터에서는 Kubelet 자체 서명 인증서로 인해 TLS 통신 에러가 발생하므로, Deployment spec.template.spec.containers[0].args에 '--kubelet-insecure-tls' 인자를 추가하여 Kubelet 인증서 검증을 건너뛰도록 패치해야 메트릭이 정상 수집됩니다.\n\n• 노드 자원 점검: kubectl top nodes\n• 파드 자원 점검: kubectl top pods --all-namespaces --sort-by=cpu`,
+    recommendedCmd: 'kubectl top nodes',
+    verifyCmd: 'kubectl top pods --all-namespaces --sort-by=cpu',
+    nextStepHint: '파드가 재시작되고 1~2분 후 top 명령어로 노드 및 파드 자원 사용량을 확인하세요.',
+    tags: 'Metrics-Server'
+  },
+  {
+    id: 'k8s-dashboard',
+    chapter: '교안 07장 [쿠버네티스] - Step 11-1 ~ 11-3',
+    title: 'Kubernetes Dashboard 웹 UI 배포, RBAC kdb-admin 최고 관리자 권한 및 Skip 로그인',
+    keywords: ['대시보드', 'dashboard', 'rbac', 'kdb-admin', '토큰', 'token', 'skip login', '대시보드 접속', '웹 ui'],
+    concept: `공식 Kubernetes Dashboard v2.6.1을 배포한 후 서비스를 NodePort로 패치하여 외부 브라우저(https://10.10.10.12:<NodePort>)로 접속합니다. 기본적으로 토큰 로그인이 필요하므로 'kubectl create clusterrolebinding kdb-admin --serviceaccount=kubernetes-dashboard:kubernetes-dashboard --clusterrole=cluster-admin'으로 최고 관리자 권한을 부여하고 'kubectl -n kubernetes-dashboard create token kubernetes-dashboard'로 JWT 토큰을 발급받습니다. 매번 토큰을 입력하는 불편을 해소하려면 Deployment args에 '--enable-skip-login'과 '--disable-settings-authorizer'를 추가하여 원클릭 Skip 로그인 모드를 활성화합니다.`,
+    recommendedCmd: 'kubectl -n kubernetes-dashboard get svc kubernetes-dashboard',
+    verifyCmd: 'kubectl -n kubernetes-dashboard create token kubernetes-dashboard',
+    nextStepHint: '브라우저에서 https://10.10.10.12:<할당된NodePort> 로 접속하여 Skip 버튼을 클릭해 대시보드에 접근하세요.',
+    tags: '대시보드 / RBAC'
+  },
+  {
+    id: 'linux-lvm',
+    chapter: '교안 04장 [서버 관리 및 스토리지]',
+    title: 'LVM 3계층(PV -> VG -> LV) 스토리지 아키텍처 및 무중단 동적 확장',
+    keywords: ['lvm', 'pv', 'vg', 'lv', 'pvcreate', 'vgcreate', 'lvcreate', 'lvextend', 'xfs_growfs', '논리 볼륨', '디스크 확장', '스토리지 확장'],
+    concept: `LVM(Logical Volume Manager)은 물리 디스크를 가상화하여 유연하게 크기를 조정할 수 있는 3계층 스토리지 관리 방식입니다.\n1. PV(Physical Volume): 물리 디스크/파티션을 LVM 단위로 초기화 ('pvcreate /dev/sdb')\n2. VG(Volume Group): PV들을 하나의 거대한 스토리지 풀로 묶음 ('vgcreate vg_data /dev/sdb')\n3. LV(Logical Volume): 필요한 크기만큼 논리 파티션으로 분할 할당 ('lvcreate -L 20G -n lv_data vg_data')\n용량 부족 시 'lvextend -L +10G /dev/vg_data/lv_data'로 LV를 확장하고 'xfs_growfs /mount_point' (또는 resize2fs)로 파일시스템을 무중단 온라인 확장합니다.`,
+    recommendedCmd: 'vgs && lvs',
+    verifyCmd: 'df -h',
+    nextStepHint: '화면 상단의 노드 카드에서 [+ 100GB SSD Hot-Add]를 클릭하면 LVM 볼륨 그룹에 용량이 즉시 추가됩니다.',
+    tags: 'LVM / 스토리지'
+  },
+  {
+    id: 'linux-raid',
+    chapter: '교안 04장 [서버 관리 및 스토리지]',
+    title: '소프트웨어 RAID(mdadm) 레벨별 특징(0, 1, 5) 및 장애 디스크 리빌딩',
+    keywords: ['raid', '레이드', 'mdadm', 'raid 0', 'raid 1', 'raid 5', '디스크 장애', '스페어 디스크', '리빌딩'],
+    concept: `리눅스 mdadm 툴을 사용한 소프트웨어 RAID 구축:\n• RAID 0: 스트라이핑, 속도 최우선, 장애 시 전체 데이터 유실\n• RAID 1: 미러링(1:1 복제), 가용 디스크 50%, 높은 안정성\n• RAID 5: 패리티 분산 저장, 최소 3대 디스크 필요, 1대 디스크 장애 무중단 허용\n\n• 생성: mdadm --create /dev/md0 --level=5 --raid-devices=3 /dev/sdb /dev/sdc /dev/sdd\n• 장애 복구: 디스크 고장 시 'mdadm /dev/md0 --fail /dev/sdb --remove /dev/sdb --add /dev/sde'로 신규 디스크를 투입하여 자동 리빌딩합니다.`,
+    recommendedCmd: 'cat /proc/mdstat',
+    verifyCmd: 'mdadm --detail /dev/md0',
+    nextStepHint: '\'/etc/mdadm/mdadm.conf\'에 \'mdadm --detail --scan\' 결과를 저장해야 재부팅 후에도 유지됩니다.',
+    tags: 'RAID / 장애복구'
+  },
+  {
+    id: 'docker-basics',
+    chapter: '교안 06장 [도커 컨테이너]',
+    title: '도커 컨테이너 생명주기 관리 및 포트 포워딩 실무 CLI',
+    keywords: ['docker run', '도커', '컨테이너 실행', 'docker ps', 'docker exec', 'docker logs', '포트포워딩', 'docker rm'],
+    concept: `컨테이너는 가상머신(Hypervisor + Guest OS)과 달리 호스트 Linux 커널을 직접 공유하며 cgroups(CPU/RAM 제한)와 namespaces(PID, Network, Mount 격리)로 초경량 실행됩니다.\n\n• 백그라운드 데몬 실행 & 포트 매핑: docker run -d -p 8080:80 --name web nginx\n• 실행 중인 컨테이너 목록: docker ps (중지 포함 'docker ps -a')\n• 내부 대화형 셸 접속: docker exec -it web /bin/sh\n• 실시간 콘솔 로그: docker logs -f web\n• 컨테이너 강제 삭제: docker rm -f web`,
+    recommendedCmd: 'docker ps -a',
+    verifyCmd: 'docker logs web',
+    nextStepHint: '컨테이너 내 메인 프로세스(PID 1)가 백그라운드로 빠져나가지 않고 포그라운드를 유지해야 컨테이너가 Exited로 죽지 않습니다.',
+    tags: '도커 CLI'
+  },
+  {
+    id: 'dockerfile-compose',
+    chapter: '교안 06장 [도커 컨테이너]',
+    title: 'Dockerfile 최적화 지시어 및 Docker Compose 선언적 오케스트레이션',
+    keywords: ['dockerfile', '도커파일', 'docker compose', 'docker-compose', '도커 컴포즈', 'entrypoint', 'cmd 차이', '다중 컨테이너'],
+    concept: `Dockerfile 주요 지시어:\n• FROM: 베이스 이미지 지정\n• RUN: 빌드 타임 명령어 실행(레이어 캐싱)\n• COPY: 호스트 파일 복사\n• CMD: 컨테이너 실행 시 기본 인자(CLI에서 오버라이딩 가능)\n• ENTRYPOINT: 컨테이너 실행 시 항상 고정 실행되는 엔트리포인트\n\n다중 컨테이너(WordPress + MySQL 등)는 'docker-compose.yml'에 서비스, 포트, 볼륨, 네트워크를 정의하고 'docker compose up -d' 한 줄로 전체 스택을 원클릭 선언 배포합니다.`,
+    recommendedCmd: 'docker compose ps',
+    verifyCmd: 'docker compose logs',
+    nextStepHint: 'Dockerfile 작성 시 변경이 잦은 애플리케이션 코드는 Dockerfile 하단에 두어 빌드 캐시 효율을 극대화하세요.',
+    tags: 'Dockerfile / Compose'
+  },
+  {
+    id: 'network-netplan-dns',
+    chapter: '교안 05장 [네트워크 기초] & 07장 Step 1-1',
+    title: 'Netplan 고정 IP 설정(50-cloud-init.yaml) 및 DNS 질의 순서',
+    keywords: ['netplan', '고정 ip', '넷플랜', 'dns 질의', '게이트웨이', '서브넷', 'cidr', 'osi 7계층', 'tcp ip 4계층'],
+    concept: `Ubuntu/Rocky Linux에서 고정 IP는 '/etc/netplan/50-cloud-init.yaml'에 인터페이스(ens160 등), dhcp4: false, addresses: [10.10.10.12/24], routes to default via 10.10.10.2, nameservers: [8.8.8.8, 8.8.4.4]를 정의하고 'netplan apply'를 실행하여 적용합니다.\n\nDNS 질의 흐름:\n1. 1차: 로컬 호스트 파일('/etc/hosts') 검사\n2. 2차: 로컬 DNS 캐시(systemd-resolved 등) 확인\n3. 3차: '/etc/resolv.conf'에 등록된 외부 네임서버(8.8.8.8)로 순차 질의`,
+    recommendedCmd: 'ip a && ip route show',
+    verifyCmd: 'cat /etc/netplan/50-cloud-init.yaml',
+    nextStepHint: 'IP 변경 시 원격 터미널(SSH) 연결이 끊기므로 변경된 새 IP(10.10.10.12 또는 10.10.10.20)로 재접속해야 합니다.',
+    tags: '네트워크 / netplan'
+  },
+  {
+    id: 'linux-cli-textstream',
+    chapter: '교안 02장 [리눅스 기초] & 03장 [셸 스크립트]',
+    title: '리눅스 텍스트 스트림 3대 도구(grep, sed, awk) 및 파이프라인 활용',
+    keywords: ['grep', 'sed', 'awk', '셸 스크립트', 'bash', 'vi 편집기', 'chmod', 'chown', '리다이렉션', '파이프라인'],
+    concept: `리눅스 시스템 관리 및 자동화 핵심 도구:\n1. grep: 정규표현식 문자열 검색 ('grep -i -E "error|fail" /var/log/syslog')\n2. sed: 파일 내 문자열 실시간 일괄 치환 ('sed -i "s/old/new/g" config.yaml')\n3. awk: 열(Column) 단위 필터링 및 서식 가공 ('awk "{print $1, $3}" file.txt')\n\n파이프(|)와 결합하여 'kubectl get po -A | grep -v Running'처럼 원하는 정보만 필터링하여 모니터링하는 데 필수적입니다.`,
+    recommendedCmd: 'ps aux | grep kubelet',
+    verifyCmd: 'cat /etc/hosts',
+    nextStepHint: 'vi 편집기에서 저장 후 종료는 \':wq!\', 강제 종료는 \':q!\', 줄 번호는 \':set nu\'입니다.',
+    tags: 'CLI / 셸 스크립트'
+  },
+  {
+    id: 'k8s-ingress-alb',
+    chapter: '교안 05장 [네트워크] & 07장 인프라 라우팅',
+    title: 'L7 Ingress 호스트 라우팅(app.ktci5.kr) 및 ALB VIP 로드밸런싱',
+    keywords: ['ingress', '인그레스', '로드밸런서', 'alb', 'vip', '도메인', 'app.ktci5.kr', 'api.ktci5.kr', '211.252.85.10', '라운드로빈', 'leastconn'],
+    concept: `L7 Ingress는 단일 공인 VIP(211.252.85.10)에서 HTTP Host 헤더를 분석하여 요청된 서브도메인(예: app.ktci5.kr, api.ktci5.kr)과 URL 경로(/, /api)에 따라 클러스터 내부의 서로 다른 서비스 파드로 트래픽을 분기합니다. KT Cloud ALB는 RoundRobin(순환 분산) 또는 LeastConnection(최소 접속 수 분산) 알고리즘을 사용하여 워커 노드와 파드에 트래픽을 균등 분배합니다.\n\n• 도메인 검증: curl -H "Host: app.ktci5.kr" http://211.252.85.10`,
+    recommendedCmd: 'curl -H "Host: app.ktci5.kr" http://211.252.85.10',
+    verifyCmd: 'kubectl get ingress -A',
+    nextStepHint: '네트워크 토폴로지 패널에서 알고리즘을 LeastConnection으로 변경하거나 트래픽 슬라이더를 조절해보세요.',
+    tags: 'L7 Ingress / ALB'
+  },
+  {
+    id: 'curriculum-overview',
+    chapter: 'KT Cloud 5기 공식 커리큘럼 전체 색인',
+    title: 'KT Cloud 5기 정규 커리큘럼 및 11대 실전 실습 로드맵',
+    keywords: ['교안', '교재', '커리큘럼', '목차', '강의노트', '실습 순서', '어떤 내용', '전체 내용', '요약', '과정 소개'],
+    concept: `KT Cloud 제5기 클라우드 인프라 엔지니어링 정규 과정은 총 7개 핵심 모듈과 11대 쿠버네티스 실전 실습으로 구성되어 있습니다:\n\n[7대 핵심 교과목]\n1. 01_intro_인프라개요: KT Cloud IDC, 가상화(Hypervisor), 온프레미스 vs 클라우드\n2. 02_linux_기초: 파일시스템(FHS), 기본 CLI, vi, 권한, 프로세스\n3. 03_shell_스크립트: Bash 변수, 제어문(if, for), grep, sed, awk\n4. 04_admin_서버스토리지: LVM 3계층, RAID(mdadm), Swap, NFS, systemd\n5. 05_network_네트워크: OSI 7계층, 서브넷팅, netplan 고정 IP, DNS 흐름\n6. 06_docker_컨테이너: Docker CLI, Dockerfile 최적화, Docker Compose\n7. 07_k8s_쿠버네티스: 2노드 클러스터 구축부터 웹 대시보드까지 11대 실습\n\n[쿠버네티스 11대 실무 실습]\nStep 1: 마스터(10.10.10.12) / 워커(10.10.10.20) 구축 & Calico CNI\nStep 2: 클러스터 상태 확인 및 CNI 기동 모니터링\nStep 3: 마스터 노드 Taint 해제 및 k 별칭 최적화\nStep 4: Nginx 파드 배포 및 NodePort 서비스 노출\nStep 5: 멀티 컨테이너 파드(Nginx+Busybox) 네임스페이스 검증\nStep 6: 선언적 YAML 백업 및 --dry-run=client 템플릿 추출\nStep 7: 라벨 필터링 및 nodeSelector 조건부 스케줄링 트러블슈팅\nStep 8: 무중단 롤링 업데이트 및 즉각 롤백\nStep 9: Metrics-Server 모니터링 및 insecure-tls 패치\nStep 10: Kubernetes Dashboard v2.6.1 구축, RBAC kdb-admin 및 Skip 로그인\nStep 11: HPA 오토스케일링 및 L7 Ingress(app.ktci5.kr) 연동`,
+    recommendedCmd: 'kubectl get nodes -o wide',
+    verifyCmd: 'kubectl get pods -A -o wide',
+    nextStepHint: '궁금하신 교안 챕터나 실습 번호(예: \'Taint 해제\', \'NodePort 서비스\', \'LVM 볼륨 확장\')를 질문하시면 정확한 해설과 명령어를 즉시 안내해 드립니다.',
+    tags: '커리큘럼 전체 색인'
+  }
+];
+
+/// 터미널 실행 명령어 분석 엔진 (사용자가 터미널에 입력/실행한 명령어 분석)
+export function analyzeTerminalCommand(cmd = '', lab = null) {
+  const c = (cmd || '').trim();
+  if (!c) return null;
+
+  const parts = c.split(/\s+/);
+  const base = parts[0];
+
+  // 1. kubectl / k taint
+  if ((base === 'kubectl' || base === 'k') && parts.includes('taint')) {
+    return {
+      type: 'taint',
+      title: '마스터 노드 Taint 제어 (교안 07장 Step 4-1)',
+      meaning: '컨트롤 플레인 마스터 노드의 스케줄링 제한(NoSchedule)을 제거하거나 추가하는 명령어입니다.',
+      explanation: c.includes('-')
+        ? 'Taint 키 뒤에 하이픈(-)을 붙여 Control-Plane 전용 제약을 해제했습니다. 이제 마스터 노드에도 파드가 정상 스케줄링됩니다.'
+        : '노드에 Taint를 설정하여 특정 Toleration이 없는 파드가 배치되지 않도록 격리했습니다.',
+      screenImpact: '화면의 master1 노드가 사용자 워크로드 파드를 수용할 수 있는 상태로 전환됩니다.',
+      nextCmd: 'kubectl describe nodes master1 | grep -i taint'
+    };
+  }
+
+  // 2. kubectl / k label
+  if ((base === 'kubectl' || base === 'k') && parts.includes('label')) {
+    return {
+      type: 'label',
+      title: '노드 라벨 부여/제거 (교안 07장 Step 8-2 ~ 8-3)',
+      meaning: '노드에 키=값 형태의 메타데이터 라벨을 부여하여 nodeSelector와 매칭시키는 명령어입니다.',
+      explanation: c.includes('-')
+        ? '노드에서 라벨을 성공적으로 제거했습니다.'
+        : '노드에 라벨을 부여하여 해당 라벨을 요구하는 Pending 상태의 파드가 즉시 스케줄링되도록 조건을 충족했습니다.',
+      screenImpact: '화면에서 nodeSelector 불일치로 Pending 상태에 머물던 파드가 Running으로 즉시 전환됩니다.',
+      nextCmd: 'kubectl get pods -o wide'
+    };
+  }
+
+  // 3. kubectl / k expose
+  if ((base === 'kubectl' || base === 'k') && parts.includes('expose')) {
+    return {
+      type: 'expose',
+      title: 'NodePort / ClusterIP 서비스 노출 (교안 07장 Step 5-1)',
+      meaning: '파드나 디플로이먼트를 외부에서 접속할 수 있는 서비스로 노출하는 명령어입니다.',
+      explanation: '지정한 포트를 NodePort(30000~32767 대역)로 노드 전체에 개방하여 외부 트래픽을 파드로 포워딩합니다.',
+      screenImpact: '화면의 네트워크 서비스 목록에 신규 서비스가 등록되며, 노드 IP와 할당된 NodePort로 접속이 가능해집니다.',
+      nextCmd: 'kubectl get svc'
+    };
+  }
+
+  // 4. kubectl / k get
+  if ((base === 'kubectl' || base === 'k') && parts.includes('get')) {
+    const target = parts.find(p => ['nodes', 'node', 'no', 'pods', 'pod', 'po', 'svc', 'service', 'services', 'deploy', 'deployment', 'deployments', 'all'].includes(p)) || 'resources';
+    return {
+      type: 'get',
+      title: `클러스터 ${target} 상태 조회 (교안 07장 Step 2)`,
+      meaning: `클러스터 내 ${target} 리소스의 현재 운영 상태와 IP, 노드 배치를 점검하는 명령어입니다.`,
+      explanation: '각 리소스의 STATUS(Ready, Running, Pending)와 RESTARTS 횟수를 모니터링하여 정상 가동 여부를 판별합니다.',
+      screenImpact: '터미널에 출력된 파드/노드 목록이 우측 GUI 대시보드 화면에 시각적으로 매핑되어 실시간 표시됩니다.',
+      nextCmd: 'kubectl get po,svc -o wide'
+    };
+  }
+
+  // 5. kubectl / k describe
+  if ((base === 'kubectl' || base === 'k') && parts.includes('describe')) {
+    return {
+      type: 'describe',
+      title: '리소스 상세 명세 및 이벤트 진단 (트러블슈팅 표준)',
+      meaning: '파드나 노드의 상세 상태와 Kubelet/Scheduler의 실행 이벤트(Events) 로그를 확인하는 명령어입니다.',
+      explanation: '하단 Events 섹션에서 FailedScheduling, OOMKilled, ImagePullBackOff 등의 장애 원인을 정확하게 식별할 수 있습니다.',
+      screenImpact: '파드가 Pending이거나 CrashLoopBackOff일 때 이벤트 메시지를 통해 즉각적인 조치 방안을 도출할 수 있습니다.',
+      nextCmd: 'kubectl get pods'
+    };
+  }
+
+  // 6. kubectl / k run / create deploy
+  if ((base === 'kubectl' || base === 'k') && (parts.includes('run') || (parts.includes('create') && (parts.includes('deployment') || parts.includes('deploy'))))) {
+    return {
+      type: 'run',
+      title: '워크로드 파드/디플로이먼트 배포 (교안 07장 Step 5-1)',
+      meaning: '컨테이너 이미지를 기반으로 클러스터 내 신규 파드를 스케줄링하고 기동하는 명령어입니다.',
+      explanation: 'kube-scheduler가 노드의 가용 자원과 라벨, Taint 조건을 평가하여 최적의 워커 노드에 파드를 배치합니다.',
+      screenImpact: '화면의 파드 목록에 신규 파드가 즉시 추가되며 가용 노드에 할당되어 Running 상태로 전환됩니다.',
+      nextCmd: 'kubectl get pods -o wide'
+    };
+  }
+
+  // 7. kubectl / k rollout
+  if ((base === 'kubectl' || base === 'k') && parts.includes('rollout')) {
+    return {
+      type: 'rollout',
+      title: '무중단 롤링 업데이트 상태 점검 / 롤백 (교안 07장 Step 9)',
+      meaning: 'Deployment의 버전 변경 진행률을 추적하거나 이전 리비전으로 즉시 원복하는 명령어입니다.',
+      explanation: c.includes('undo')
+        ? '이전 안정 버전의 ReplicaSet으로 즉시 롤백을 수행했습니다.'
+        : '롤아웃 진행률 및 신규 파드의 Ready 상태를 실시간 추적하고 있습니다.',
+      screenImpact: '화면의 디플로이먼트 파드들이 구버전에서 신버전으로(또는 롤백으로) 순차 교체됩니다.',
+      nextCmd: 'kubectl rollout status deployment/example'
+    };
+  }
+
+  // 8. kubectl / k top
+  if ((base === 'kubectl' || base === 'k') && parts.includes('top')) {
+    return {
+      type: 'top',
+      title: '실시간 노드 / 파드 자원 지표 조회 (교안 07장 Step 10)',
+      meaning: 'Metrics-Server에서 수집한 실시간 CPU(cores) 및 메모리(bytes) 사용량을 측정하는 명령어입니다.',
+      explanation: '임계치(80% 이상)에 도달한 노드나 파드를 사전에 감지하여 스케일아웃이나 Hot-Add 증설 여부를 결정합니다.',
+      screenImpact: '화면 상단 노드 카드의 CPU/RAM 프로그레스 게이지와 실시간 일치합니다.',
+      nextCmd: 'kubectl top pods --all-namespaces --sort-by=cpu'
+    };
+  }
+
+  // 9. curl
+  if (base === 'curl') {
+    return {
+      type: 'curl',
+      title: '네트워크 연결 및 HTTP 엔드포인트 응답 검증 (교안 05장 & Step 5-3)',
+      meaning: '외부 또는 내부에서 서비스 엔드포인트, 도메인, 로드밸런서 VIP로 HTTP 요청을 전송하는 네트워크 테스트 도구입니다.',
+      explanation: '반환되는 HTTP 응답 코드(200 OK, 503, 502)와 본문을 통해 Ingress 라우팅 및 파드 가동 상태를 최종 검증합니다.',
+      screenImpact: '화면 L7 로드밸런서의 RPS 카운터가 증가하며 트래픽 분산이 발생합니다.',
+      nextCmd: 'curl -I http://211.252.85.10'
+    };
+  }
+
+  // 10. clear
+  if (base === 'clear') {
+    return {
+      type: 'clear',
+      title: '가상 터미널 화면 초기화',
+      meaning: '터미널 콘솔 로그 버퍼를 비워 화면을 깨끗하게 정리합니다.',
+      explanation: '터미널 화면이 초기화되었으며 이전 명령어는 [위/아래 방향키]로 계속 탐색할 수 있습니다.',
+      screenImpact: '좌측 콘솔 창이 깨끗하게 정리됩니다.',
+      nextCmd: 'kubectl get nodes'
+    };
+  }
+
+  return {
+    type: 'general-command',
+    title: `터미널 실행 명령어: '${c}'`,
+    meaning: '가상 클러스터 인프라 조작 명령어입니다.',
+    explanation: `실행하신 명령어 '${c}'의 처리 결과가 화면과 클러스터 상태에 반영되었습니다.`,
+    screenImpact: '실행 결과에 따라 화면의 리소스 상태가 동기화됩니다.',
+    nextCmd: 'kubectl get nodes -o wide'
+  };
+}
+
+/// AI 인프라 코파일럿 핵심 엔진 (교안 데이터 & 현재 터미널 명령어 & 화면 상태 연계 답변)
+export function generateAiCopilotAdvice(prompt = '', topic = 'general', lab = null, context = {}) {
   const p = (prompt || '').toLowerCase().trim();
+  const lastCmd = (context.lastCommand || '').trim();
+  const currentCmd = (context.currentCommand || '').trim();
 
   // ============================================================
   // 1. 현재 화면 기본 정보 & 실제 인프라 리소스 추출 (Screen State)
@@ -1112,7 +1505,6 @@ export function generateAiCopilotAdvice(prompt = '', topic = 'general', lab = nu
   const isLbHealthy = lbStatus === 'Healthy';
   const tunnelStatus = lab?.network?.tunnel?.status || 'CONNECTED';
   const isTunnelHealthy = tunnelStatus === 'CONNECTED';
-  const vpnStatus = lab?.network?.vpn?.status || 'CONNECTED';
   const trafficRps = lab?.trafficRps || 0;
 
   // 실제 화면에 보이는 노드 및 파드
@@ -1125,6 +1517,10 @@ export function generateAiCopilotAdvice(prompt = '', topic = 'general', lab = nu
   const pendingPods = pods.filter(p => p.status === 'Pending');
   const runningPods = pods.filter(p => p.status === 'Running');
   const targetPod = pendingPods[0] || runningPods[0] || { name: 'web-app-7b89f-8j2xl' };
+
+  // 터미널 명령어 컨텍스트 분석
+  const lastCmdAnalysis = lastCmd ? analyzeTerminalCommand(lastCmd, lab) : null;
+  const curCmdAnalysis = currentCmd ? analyzeTerminalCommand(currentCmd, lab) : null;
 
   // ============================================================
   // 2. 실시간 화면 장애 및 경보 감지 (Screen State Diagnostics)
@@ -1143,7 +1539,7 @@ export function generateAiCopilotAdvice(prompt = '', topic = 'general', lab = nu
           badge: '디스크 고갈 (DiskPressure)',
           target: n.name,
           screenResult: `화면의 노드 [${n.name}] 디스크 사용량이 ${diskUsedPct}%로 85% 임계치를 초과하여 Kubelet 스케줄링이 자동 격리(Cordon)되었습니다.`,
-          hint: `GUI 노드 카드의 [+ 100GB SSD 디스크 Hot-Add]를 클릭하여 스토리지를 증설한 후 터미널에서 'kubectl uncordon ${n.name}'을 실행하세요.`,
+          hint: `[교안 04장 LVM 스토리지 증설] GUI 노드 카드의 [+ 100GB SSD 디스크 Hot-Add]를 클릭하여 스토리지를 증설한 후 터미널에서 'kubectl uncordon ${n.name}'을 실행하세요.`,
           fixCmd: `kubectl uncordon ${n.name}`,
           modalId: null
         });
@@ -1185,7 +1581,7 @@ export function generateAiCopilotAdvice(prompt = '', topic = 'general', lab = nu
           ? `화면의 파드 ${pendingPods.length}개가 'disktype=ssd' 라벨을 요구하지만 워커 노드 [${firstWorker.name}]에 해당 라벨이 없어 Pending 상태로 멈춰 있습니다.`
           : `화면의 파드 ${pendingPods.length}개가 클러스터 내 가용 자원 부족 또는 nodeSelector 불일치로 배치되지 못하고 있습니다.`,
         hint: isSchedulingLab
-          ? `'kubectl label nodes ${firstWorker.name} disktype=ssd' 명령을 실행하여 워커 노드에 라벨을 부여하면 즉시 파드가 가동(Running)됩니다.`
+          ? `[교안 07장 Step 8-3] 'kubectl label nodes ${firstWorker.name} disktype=ssd' 명령을 실행하여 워커 노드에 라벨을 부여하면 즉시 파드가 가동(Running)됩니다.`
           : `'kubectl describe pod ${pendingPods[0].name}'으로 이벤트를 확인하고 노드 리소스를 증설하세요.`,
         fixCmd: isSchedulingLab ? `kubectl label nodes ${firstWorker.name} disktype=ssd` : `kubectl describe pod ${pendingPods[0].name}`,
         modalId: 'add-node-modal'
@@ -1199,7 +1595,7 @@ export function generateAiCopilotAdvice(prompt = '', topic = 'general', lab = nu
         badge: 'L7 로드밸런서 503 오류',
         target: `KT Cloud ALB (VIP: ${vip})`,
         screenResult: `화면의 L7 로드밸런서 헬스체크가 비정상(Unhealthy) 상태이며, 도메인 '${primaryHost}' 접속 시 503 Service Unavailable 에러가 반환됩니다.`,
-        hint: `네트워크 토폴로지 패널의 로드밸런서 카드를 확인하고 백엔드 서비스 파드 상태를 점검하거나 헬스체크를 복구하세요.`,
+        hint: `[교안 05장 L7 인프라] 네트워크 토폴로지 패널의 로드밸런서 카드를 확인하고 백엔드 서비스 파드 상태를 점검하거나 헬스체크를 복구하세요.`,
         fixCmd: `curl -I https://${primaryHost}/healthz`,
         modalId: null
       });
@@ -1219,31 +1615,176 @@ export function generateAiCopilotAdvice(prompt = '', topic = 'general', lab = nu
     }
   }
 
-  // 사용자 질문(Prompt) 키워드에 따른 카테고리 자동 라우팅
-  let selectedTopic = topic;
+  // ============================================================
+  // 3. 사용자 질문(Prompt) 기반 교안 지식 베이스 검색 & 직접 답변
+  // ============================================================
   if (p) {
-    if (p.includes('팁') || p.includes('사용') || p.includes('단축키') || p.includes('터미널') || p.includes('어떻게 써') || p.includes('화면') || p.includes('뷰')) {
-      selectedTopic = 'tips';
-    } else if (p.includes('관리') || p.includes('운영') || p.includes('증설') || p.includes('cpu') || p.includes('ram') || p.includes('메모리') || p.includes('알고리즘') || p.includes('최적화') || p.includes('스펙') || p.includes('스토리지')) {
-      selectedTopic = 'management';
-    } else if (p.includes('메뉴') || p.includes('추가') || p.includes('어디서') || p.includes('생성') || p.includes('노드추가') || p.includes('파드배포') || p.includes('도메인') || p.includes('어떻게 추가')) {
-      selectedTopic = 'menu';
-    } else if (p.includes('문제') || p.includes('장애') || p.includes('대처') || p.includes('오류') || p.includes('에러') || p.includes('진단') || p.includes('해결') || p.includes('503') || p.includes('502') || p.includes('pending') || p.includes('diskpressure')) {
-      selectedTopic = 'troubleshoot';
+    // 지식 베이스 항목 매칭 및 점수 산출
+    let bestMatch = null;
+    let highestScore = 0;
+
+    for (const item of CURRICULUM_KNOWLEDGE) {
+      let score = 0;
+      for (const kw of item.keywords) {
+        if (p.includes(kw)) score += 15;
+        if (p === kw) score += 30;
+      }
+      if (item.title.toLowerCase().includes(p) || p.includes(item.title.toLowerCase())) score += 20;
+      if (item.chapter.toLowerCase().includes(p)) score += 25;
+
+      // 터미널 최근 실행 명령어와의 연관 점수
+      if (lastCmd && item.keywords.some(kw => lastCmd.toLowerCase().includes(kw))) {
+        score += 8;
+      }
+
+      if (score > highestScore) {
+        highestScore = score;
+        bestMatch = item;
+      }
+    }
+
+    // 매칭 성공 시: 교안 정리 데이터 + 현재 터미널 명령어 + 화면 상태 기반 직접 답변
+    if (bestMatch && highestScore >= 10) {
+      const terminalSectionDesc = lastCmdAnalysis
+        ? `• 최근 실행하신 터미널 명령어: '${lastCmd}'\n• 명령어 동작 분석: ${lastCmdAnalysis.meaning}\n• 교안 실행 맥락: ${lastCmdAnalysis.explanation}`
+        : (currentCmd
+            ? `• 입력 중이신 터미널 명령어: '${currentCmd}'\n• 예상 동작: ${curCmdAnalysis?.meaning || '클러스터 조작'}`
+            : '• 터미널 연계: 아래 [⚡ 즉시 실행] 버튼을 클릭하면 본 교안 명령어가 가상 터미널에 직접 주입 및 실행됩니다.');
+
+      const screenStateConnectDesc = `📊 화면 상태 결과:\n` +
+        `• 현재 실습 화면: [${labTitle}]\n` +
+        `• 활성 노드: ${nodeNames} (Master: ${masterNode.name} [${masterNode.ip}], Worker: ${firstWorker.name} [${firstWorker.ip}])\n` +
+        `• 파드 가동 현황: 총 ${pods.length}개 (Running ${runningPods.length}개, Pending ${pendingPods.length}개)\n` +
+        `• 외부 도메인 및 L7 ALB: ${primaryHost} (VIP: ${vip}, 알고리즘: ${lbAlgo})\n` +
+        `• 교안과의 화면 연계: 본 교안(${bestMatch.chapter})의 명령어를 적용하면 화면의 ${pendingPods.length > 0 ? 'Pending 파드가 Running으로 즉시 해결' : '클러스터 인프라가 교안 명세와 동기화'}됩니다.`;
+
+      return {
+        topic: 'curriculum-qa',
+        title: `📖 [KT CI5 교안 답변] ${bestMatch.title}`,
+        summary: `질문하신 내용에 대한 KT Cloud 5기 공인 교안(${bestMatch.chapter}) 기준 직접 해설입니다.${lastCmd ? `\n(현재 터미널 명령어: '${lastCmd}')` : ''}\n\n${bestMatch.concept.split('\n\n')[0]}`,
+        statusBadge: { text: bestMatch.chapter, type: 'ok' },
+        sections: [
+          {
+            title: `1. 📘 교안 기준 핵심 개념 및 동작 원리 (${bestMatch.chapter})`,
+            icon: '📘',
+            items: [
+              {
+                title: bestMatch.title,
+                desc: bestMatch.concept,
+                tag: bestMatch.tags
+              },
+              {
+                title: '🖥️ 현재 사용 터미널 명령어 연계 분석',
+                desc: terminalSectionDesc,
+                cmd: lastCmdAnalysis?.nextCmd || bestMatch.recommendedCmd,
+                tag: '터미널 연계'
+              }
+            ]
+          },
+          {
+            title: '2. 🖥️ 터미널 실습 명령어 가이드 (원클릭 실행)',
+            icon: '⌨️',
+            items: [
+              {
+                title: '교안 권장 실행 명령어',
+                desc: `💡 교안에 작성된 표준 명령어입니다. 클릭하여 터미널에 즉시 실행할 수 있습니다.`,
+                cmd: bestMatch.recommendedCmd,
+                tag: '권장 실행'
+              },
+              {
+                title: '결과 검증 명령어',
+                desc: `💡 실행 후 정상 적용 여부를 확인하는 검증 명령어입니다.`,
+                cmd: bestMatch.verifyCmd,
+                tag: '상태 검증'
+              }
+            ]
+          },
+          {
+            title: '3. 📊 현재 화면 인프라 상태 연계 결과',
+            icon: '📊',
+            items: [
+              {
+                title: '실시간 화면 상태 및 인프라 동기화',
+                desc: screenStateConnectDesc,
+                tag: '화면 연계'
+              }
+            ]
+          },
+          {
+            title: '4. 💡 교안 권장 후속 조치 & 제안 유도 힌트',
+            icon: '💡',
+            items: [
+              {
+                title: '다음 실습 단계 안내',
+                desc: `💡 제안 유도 힌트: ${bestMatch.nextStepHint}`,
+                tag: '다음 단계'
+              }
+            ]
+          }
+        ],
+        quickPrompts: [
+          { label: '📖 Taint 해제 (Step 4)', topic: 'curriculum-taint' },
+          { label: '📖 NodePort 노출 (Step 5)', topic: 'curriculum-nodeport' },
+          { label: '📖 nodeSelector (Step 8)', topic: 'curriculum-nodeselector' },
+          { label: '🚨 실시간 문제 대처', topic: 'troubleshoot' }
+        ]
+      };
+    }
+
+    // 만약 특정 교안 단어가 아니지만 터미널 명령어를 물어본 경우
+    if (lastCmdAnalysis) {
+      return {
+        topic: 'terminal-qa',
+        title: `🖥️ [터미널 명령어 분석] '${lastCmd}' 교안 해설`,
+        summary: `터미널에서 실행하신 명령어 '${lastCmd}'에 대한 KT Cloud 5기 교안 기준 분석 결과입니다.\n\n${lastCmdAnalysis.explanation}`,
+        statusBadge: { text: '터미널 연계', type: 'ok' },
+        sections: [
+          {
+            title: '1. 🖥️ 실행 명령어 상세 동작 분석',
+            icon: '⌨️',
+            items: [
+              {
+                title: lastCmdAnalysis.title,
+                desc: `• 동작 의미: ${lastCmdAnalysis.meaning}\n• 교안 원리: ${lastCmdAnalysis.explanation}\n• 화면 반영: ${lastCmdAnalysis.screenImpact}`,
+                cmd: lastCmdAnalysis.nextCmd,
+                tag: '명령어 분석'
+              }
+            ]
+          },
+          {
+            title: '2. 💡 권장 후속 명령어 & 제안 힌트',
+            icon: '💡',
+            items: [
+              {
+                title: '다음 권장 조치',
+                desc: `💡 제안 유도 힌트: 아래 명령어를 실행하여 변경 결과를 검증하세요.`,
+                cmd: lastCmdAnalysis.nextCmd,
+                tag: '검증 힌트'
+              }
+            ]
+          }
+        ],
+        quickPrompts: [
+          { label: '📖 커리큘럼 전체 목차', topic: 'curriculum-all' },
+          { label: '🚨 실시간 문제 대처', topic: 'troubleshoot' }
+        ]
+      };
     }
   }
 
   // ============================================================
-  // Topic 1: [사용팁] (화면 상태 결과 & 제안 유도 힌트)
+  // 4. 프리셋 탭 선택 시 (Troubleshoot / Menu / Management / Tips)
   // ============================================================
-  if (selectedTopic === 'tips') {
+
+  // Topic 1: [사용팁] (화면 상태 결과 & 제안 유도 힌트)
+  if (topic === 'tips') {
     const screenStateDesc = isLabView
       ? `현재 [${labTitle}] 화면에서 작업 중입니다. Ingress 도메인은 '${primaryHost}', VIP는 '${vip}'이며, 총 ${nodes.length}개 노드와 ${pods.length}개 파드가 화면에 표시되고 있습니다.`
       : `현재 [실습 랩 목록] 화면입니다. 상용 운영 환경을 모사한 기본 예제 3종과 수강생 랩 카드가 화면에 표시되고 있습니다.`;
 
     return {
       topic: 'tips',
-      title: '💡 화면 기준 조작 결과 & 사용 가이드',
+      title: '💡 화면 기준 조작 결과 & 교안 기반 사용 가이드',
       summary: screenStateDesc,
       statusBadge: { text: isLabView ? `${lab.id} 랩 가이드` : '목록 가이드', type: 'ok' },
       sections: [
@@ -1258,8 +1799,8 @@ export function generateAiCopilotAdvice(prompt = '', topic = 'general', lab = nu
               tag: '도메인 검증'
             },
             {
-              title: '가상 터미널 명령어 히스토리 & 축약어(Alias)',
-              desc: `📊 화면 상태 결과: 터미널 프롬프트에서 실무 표준 축약어가 활성화되어 있습니다.\n💡 제안 유도 힌트: [위/아래 방향키]로 최근 명령을 탐색하고, 'k get pods -o wide' 또는 'k top nodes'로 화면의 자원 상태를 CLI로 즉시 비교 확인하세요.`,
+              title: '가상 터미널 명령어 히스토리 & 축약어 (교안 Step 4-2)',
+              desc: `📊 화면 상태 결과: 터미널 프롬프트에서 실무 표준 축약어(alias k=kubectl)가 활성화되어 있습니다.\n💡 제안 유도 힌트: [위/아래 방향키]로 최근 명령을 탐색하고, 'k get pods -o wide' 또는 'k top nodes'로 화면의 자원 상태를 CLI로 즉시 비교 확인하세요.`,
               cmd: 'k get pods -o wide',
               tag: 'CLI 팁'
             },
@@ -1271,8 +1812,18 @@ export function generateAiCopilotAdvice(prompt = '', topic = 'general', lab = nu
             }
           ]
         },
+        ...(lastCmdAnalysis ? [{
+          title: `2. 🖥️ 최근 터미널 실행 명령어 [${lastCmd}] 분석`,
+          icon: '⌨️',
+          items: [{
+            title: lastCmdAnalysis.title,
+            desc: `• 동작 의미: ${lastCmdAnalysis.meaning}\n• 교안 맥락: ${lastCmdAnalysis.explanation}`,
+            cmd: lastCmdAnalysis.nextCmd,
+            tag: '명령어 연계'
+          }]
+        }] : []),
         {
-          title: '2. 인터페이스 뷰 모드 조작 & 협업 힌트',
+          title: '3. 인터페이스 뷰 모드 조작 & 협업 힌트',
           icon: '🖥️',
           items: [
             {
@@ -1284,11 +1835,6 @@ export function generateAiCopilotAdvice(prompt = '', topic = 'general', lab = nu
               title: '수정 권한 (Editable) 잠금 스위치',
               desc: `📊 화면 상태 결과: 우측 상단의 [수정 권한] 토글이 현재 '${lab?.editable ? '허용됨 (ON)' : '조회 전용 (OFF)'}' 상태입니다.\n💡 제안 유도 힌트: 다른 팀원과의 공동 실습 중 실수로 인한 파드/노드 삭제를 방지하려면 권한을 OFF로 잠가두세요.`,
               tag: '보안/협업'
-            },
-            {
-              title: '실시간 자동 동기화 (Polling Sync)',
-              desc: `💡 제안 유도 힌트: 다른 사용자가 자원을 변경하거나 명령어를 실행하면 새로고침 없이 2.5초 이내에 모든 화면에 실시간 자동 반영됩니다.`,
-              tag: '실시간'
             }
           ]
         }
@@ -1301,10 +1847,8 @@ export function generateAiCopilotAdvice(prompt = '', topic = 'general', lab = nu
     };
   }
 
-  // ============================================================
-  // Topic 2: [관리팁] (화면 상태 결과 & 제안 유도 힌트)
-  // ============================================================
-  if (selectedTopic === 'management') {
+  // Topic 2: [관리팁]
+  if (topic === 'management') {
     const screenStateDesc = isLabView
       ? `현재 화면에 [${nodeNames}] 노드가 가동 중이며, L7 분산 알고리즘은 '${lbAlgo}', 현재 인입 트래픽은 '${trafficRps} req/s'입니다.`
       : `현재 실습 랩 목록 화면입니다. 상용 클러스터 운영 및 하드웨어 무중단 관리 핵심 노하우를 안내합니다.`;
@@ -1326,7 +1870,7 @@ export function generateAiCopilotAdvice(prompt = '', topic = 'general', lab = nu
               tag: 'Hot-Add'
             },
             {
-              title: '클러스터 용량 임계치(80%) 사전 대응',
+              title: '클러스터 용량 임계치(80%) 사전 대응 (교안 07장 Step 10)',
               desc: `💡 제안 유도 힌트: 노드의 CPU 사용률이 80%를 초과하면 OOMKilled나 Throttling이 발생할 수 있습니다. 사전 경보 시점에 즉시 증설하는 것이 서비스 SLA를 지키는 핵심입니다.`,
               cmd: `kubectl get nodes -o wide`,
               tag: '가용성'
@@ -1371,10 +1915,8 @@ export function generateAiCopilotAdvice(prompt = '', topic = 'general', lab = nu
     };
   }
 
-  // ============================================================
-  // Topic 3: [어떤 메뉴 어떻게 추가] (화면 상태 결과 & 제안 유도 힌트)
-  // ============================================================
-  if (selectedTopic === 'menu') {
+  // Topic 3: [메뉴 추가법]
+  if (topic === 'menu') {
     const screenStateDesc = isLabView
       ? `현재 화면의 대시보드 상단 [+ VM 노드 추가], 파드 목록의 [+ 파드 배포], 네트워크 패널의 [+ 도메인/포트 매핑 추가] 메뉴를 통해 인프라를 확장할 수 있습니다.`
       : `현재 실습 랩 목록 화면입니다. 상단 우측의 [+ 새 클러스터 랩 생성] 버튼을 눌러 신규 가상 클러스터를 생성할 수 있습니다.`;
@@ -1450,9 +1992,7 @@ export function generateAiCopilotAdvice(prompt = '', topic = 'general', lab = nu
     };
   }
 
-  // ============================================================
-  // Topic 4: [문제로 나왔을 때 어떻게 대처] (Default / Troubleshoot)
-  // ============================================================
+  // Topic 4: [장애 대처법 / Default]
   const isHealthy = activeIssues.length === 0;
 
   // 1순위: 현재 화면에서 감지된 실제 장애가 있는 경우
@@ -1460,11 +2000,11 @@ export function generateAiCopilotAdvice(prompt = '', topic = 'general', lab = nu
     return {
       topic: 'troubleshoot',
       title: `🚨 화면 상태 감지: 총 ${activeIssues.length}건의 장애 및 단계별 대처법`,
-      summary: `현재 화면에서 총 ${activeIssues.length}건의 실제 장애/경보가 감지되었습니다. 아래 화면 분석 결과와 유도 힌트를 확인하고 즉시 조치하세요.`,
+      summary: `현재 화면에서 총 ${activeIssues.length}건의 실제 장애/경보가 감지되었습니다. 아래 화면 분석 결과와 교안 기반 힌트를 확인하고 즉시 조치하세요.`,
       statusBadge: { text: `${activeIssues.length}건 장애 감지`, type: 'critical' },
       sections: [
         {
-          title: '🔥 현재 화면 실시간 감지 문제 & 즉시 조치 힌트',
+          title: '🔥 현재 화면 실시간 감지 문제 & 교안 기반 즉시 조치 힌트',
           icon: '⚠️',
           items: activeIssues.map(issue => ({
             title: `[${issue.level}] ${issue.badge} - ${issue.target}`,
@@ -1488,7 +2028,7 @@ export function generateAiCopilotAdvice(prompt = '', topic = 'general', lab = nu
   let specificLabHint = null;
   if (labId === 'scheduling-lab') {
     specificLabHint = {
-      title: '🎯 [scheduling-lab] 실습 랩 목표 & 스케줄링 힌트',
+      title: '🎯 [scheduling-lab] 실습 랩 목표 & 스케줄링 힌트 (교안 Step 8)',
       icon: '🎯',
       items: [
         {
@@ -1501,7 +2041,7 @@ export function generateAiCopilotAdvice(prompt = '', topic = 'general', lab = nu
     };
   } else if (labId === 'hpa-traffic-lab') {
     specificLabHint = {
-      title: '🎯 [hpa-traffic-lab] 실습 랩 목표 & 부하 분산 힌트',
+      title: '🎯 [hpa-traffic-lab] 실습 랩 목표 & 부하 분산 힌트 (교안 Step 11)',
       icon: '⚡',
       items: [
         {
@@ -1542,7 +2082,7 @@ export function generateAiCopilotAdvice(prompt = '', topic = 'general', lab = nu
 
   return {
     topic: 'troubleshoot',
-    title: '🛡️ 화면 상태 정상 & 실전 장애 대처 런북',
+    title: '🛡️ 화면 상태 정상 & 교안 기반 실전 장애 대처 런북',
     summary: isLabView
       ? `현재 [${labTitle}] 화면에 심각한 장애가 감지되지 않았습니다. 현재 화면 상태 분석 결과와 CKA/상용 빈출 4대 장애 대처 런북을 안내합니다.`
       : `현재 실습 랩 목록 화면입니다. 실습 목적에 맞는 랩을 선택하거나 신규 랩을 생성하세요.`,
@@ -1550,19 +2090,19 @@ export function generateAiCopilotAdvice(prompt = '', topic = 'general', lab = nu
     sections: [
       ...(specificLabHint ? [specificLabHint] : []),
       {
-        title: '📚 상용 인프라 & CKA 시험 빈출 4대 장애 대처 런북',
+        title: '📚 상용 인프라 & CKA 시험 빈출 4대 장애 대처 런북 (교안 기반)',
         icon: '📖',
         items: [
           {
-            title: '1. 파드가 Pending 상태에 멈춰 있을 때',
-            desc: `• 원인: 노드의 CPU/메모리 가용량 부족(Insufficient cpu), nodeSelector 불일치, Taints\n• 진단: 'kubectl describe pod <pod>'로 Events 섹션 메시지 확인\n• 해결: 노드 카드 상단의 [+2C], [+4G] 버튼으로 노드를 확장하거나 신규 VM 노드를 추가합니다.`,
+            title: '1. 파드가 Pending 상태에 멈춰 있을 때 (교안 Step 8)',
+            desc: `• 원인: 노드의 CPU/메모리 가용량 부족(Insufficient cpu), nodeSelector 불일치, Taints\n• 진단: 'kubectl describe pod <pod>'로 Events 섹션 메시지 확인\n• 해결: 노드 카드 상단의 [+2C], [+4G] 버튼으로 노드를 확장하거나 'kubectl label nodes w1 disktype=ssd'를 실행합니다.`,
             cmd: `kubectl describe pod ${targetPod.name}`,
             modalId: 'add-node-modal',
             menuGuide: '신규 VM 노드 추가 모달',
             tag: 'Pending'
           },
           {
-            title: '2. 노드에 DiskPressure 발생 시 (스케줄링 차단)',
+            title: '2. 노드에 DiskPressure 발생 시 (교안 04장 스토리지)',
             desc: `• 원인: 루트 디스크 85% 초과로 Kubelet Eviction 발생 및 노드 Cordon 처리됨\n• 진단: 'df -h'로 디스크 파티션 사용량 확인\n• 해결: 노드 카드에서 [+ 100GB SSD 디스크 Hot-Add] 후 'kubectl uncordon <node>' 명령으로 격리를 해제합니다.`,
             cmd: `kubectl uncordon ${firstWorker.name}`,
             tag: 'DiskPressure'
@@ -1607,7 +2147,10 @@ export async function handleSimulatorApi(request, path, env, user) {
     const prompt = (body.prompt || '').trim();
     const topic = body.topic || 'general';
     const effectiveLab = body.lab || null;
-    const aiResponse = generateAiCopilotAdvice(prompt, topic, effectiveLab);
+    const lastCommand = (body.lastCommand || '').trim();
+    const currentCommand = (body.currentCommand || '').trim();
+    const commandHistory = body.commandHistory || [];
+    const aiResponse = generateAiCopilotAdvice(prompt, topic, effectiveLab, { lastCommand, currentCommand, commandHistory });
     return new Response(JSON.stringify({
       ok: true,
       topic,
@@ -2133,8 +2676,11 @@ export async function handleSimulatorApi(request, path, env, user) {
       const prompt = (body.prompt || '').trim();
       const topic = body.topic || 'general'; // 'tips' | 'troubleshoot' | 'menu' | 'exam' | 'general'
       const effectiveLab = body.lab || lab;
+      const lastCommand = (body.lastCommand || '').trim();
+      const currentCommand = (body.currentCommand || '').trim();
+      const commandHistory = body.commandHistory || [];
       
-      const aiResponse = generateAiCopilotAdvice(prompt, topic, effectiveLab);
+      const aiResponse = generateAiCopilotAdvice(prompt, topic, effectiveLab, { lastCommand, currentCommand, commandHistory });
       return new Response(JSON.stringify({
         ok: true,
         topic,
@@ -2529,6 +3075,34 @@ export function renderSimulatorPage(user) {
       background: #4f46e5;
       color: #ffffff;
       border-color: #818cf8;
+    }
+
+    /* 교안 핵심 퀵 질문 바 */
+    .ai-curriculum-bar {
+      padding: 6px 10px;
+      background: #0f172a;
+      border-bottom: 1px solid #1e293b;
+      display: flex;
+      gap: 5px;
+      overflow-x: auto;
+      flex-shrink: 0;
+    }
+    .ai-curr-chip {
+      white-space: nowrap;
+      background: rgba(30, 41, 59, 0.9);
+      border: 1px solid rgba(56, 189, 248, 0.3);
+      color: #38bdf8;
+      font-size: 10.5px;
+      font-weight: 600;
+      padding: 3px 8px;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .ai-curr-chip:hover {
+      background: rgba(14, 165, 233, 0.2);
+      border-color: #38bdf8;
+      color: #ffffff;
     }
 
     /* 대화창 본체 */
@@ -3261,10 +3835,24 @@ export function renderSimulatorPage(user) {
 
     <!-- 4대 핵심 주제 탭 -->
     <div class="ai-presets-bar">
-      <button class="ai-preset-chip active" id="chip-troubleshoot" onclick="askAiPreset('troubleshoot')">🚨 문제 대처법</button>
+      <button class="ai-preset-chip active" id="chip-troubleshoot" onclick="askAiPreset('troubleshoot')">🚨 실시간 문제 대처</button>
       <button class="ai-preset-chip" id="chip-menu" onclick="askAiPreset('menu')">➕ 메뉴/자원 추가법</button>
-      <button class="ai-preset-chip" id="chip-management" onclick="askAiPreset('management')">⚙️ 관리팁</button>
+      <button class="ai-preset-chip" id="chip-management" onclick="askAiPreset('management')">⚙️ 인프라 관리팁</button>
       <button class="ai-preset-chip" id="chip-tips" onclick="askAiPreset('tips')">💡 사용팁</button>
+    </div>
+
+    <!-- KT Cloud 5기 교안 퀵 질문 칩 바 -->
+    <div class="ai-curriculum-bar">
+      <button type="button" class="ai-curr-chip" onclick="askAiPrompt('마스터 노드 Taint 해제 명령어와 원리 알려줘')">📖 Taint 해제 (Step 4)</button>
+      <button type="button" class="ai-curr-chip" onclick="askAiPrompt('NodePort 서비스 노출 방법과 포트 대역 알려줘')">📖 NodePort 노출 (Step 5)</button>
+      <button type="button" class="ai-curr-chip" onclick="askAiPrompt('파드가 Pending인 이유와 nodeSelector 라벨 해결법 알려줘')">📖 nodeSelector/Pending (Step 8)</button>
+      <button type="button" class="ai-curr-chip" onclick="askAiPrompt('멀티 컨테이너 파드 네트워크 공유 검증 방법 알려줘')">📖 멀티 컨테이너 (Step 6)</button>
+      <button type="button" class="ai-curr-chip" onclick="askAiPrompt('dry-run client와 server 차이점과 YAML 추출법 알려줘')">📖 dry-run 템플릿 (Step 7)</button>
+      <button type="button" class="ai-curr-chip" onclick="askAiPrompt('무중단 롤링 업데이트와 롤백 명령어 알려줘')">📖 롤링 업데이트 (Step 9)</button>
+      <button type="button" class="ai-curr-chip" onclick="askAiPrompt('Metrics-Server 설치와 top 명령어 점검법 알려줘')">📖 Metrics-Server (Step 10)</button>
+      <button type="button" class="ai-curr-chip" onclick="askAiPrompt('대시보드 RBAC kdb-admin과 Skip 로그인 설정 알려줘')">📖 K8s 대시보드 (Step 11)</button>
+      <button type="button" class="ai-curr-chip" onclick="askAiPrompt('LVM 3계층 볼륨 확장 명령어와 원리 알려줘')">📖 LVM 동적 확장 (교안 4장)</button>
+      <button type="button" class="ai-curr-chip" onclick="askAiPrompt('도커 컨테이너 실행과 포트 포워딩 명령어 알려줘')">📖 도커 핵심 CLI (교안 6장)</button>
     </div>
 
     <!-- 대화 본체 -->
@@ -3273,7 +3861,7 @@ export function renderSimulatorPage(user) {
     <!-- 질문 입력 바 -->
     <div class="ai-input-wrap">
       <form class="ai-input-form" onsubmit="handleAiInputSubmit(event)">
-        <input type="text" id="ai-user-input" class="ai-text-input" placeholder="궁금한 사용법, 관리법, 장애 대처법을 질문하세요..." autocomplete="off" />
+        <input type="text" id="ai-user-input" class="ai-text-input" placeholder="교안 질문 또는 터미널 명령어 질문 (예: Taint 해제, NodePort 대역, Pending 해결...)" autocomplete="off" />
         <button type="submit" class="ai-send-btn">전송</button>
       </form>
     </div>
@@ -4073,6 +4661,15 @@ export function renderSimulatorPage(user) {
       }
     }
 
+    function askAiPrompt(text) {
+      const input = document.getElementById('ai-user-input');
+      if (input) {
+        input.value = text;
+        const form = document.querySelector('.ai-input-form');
+        if (form) form.requestSubmit();
+      }
+    }
+
     async function askAiPreset(topic) {
       document.querySelectorAll('.ai-preset-chip').forEach(c => c.classList.remove('active'));
       const activeChip = document.getElementById('chip-' + topic);
@@ -4083,17 +4680,27 @@ export function renderSimulatorPage(user) {
       chatBody.innerHTML += '<div class="ai-msg bot" id="' + loadId + '">' +
         '<div class="ai-card" style="text-align:center; color:#94a3b8; padding:16px;">' +
           '<div style="font-size:20px; margin-bottom:6px;">🤖</div>' +
-          'AI 코파일럿이 인프라 상태와 운영 지식을 분석하고 있습니다...' +
+          'AI 코파일럿이 교안 데이터와 인프라 상태를 분석하고 있습니다...' +
         '</div>' +
       '</div>';
       chatBody.scrollTop = chatBody.scrollHeight;
+
+      const lastCmd = commandHistory.length > 0 ? commandHistory[commandHistory.length - 1] : '';
+      const recentCmds = commandHistory.slice(-5);
+      const curCmd = document.getElementById('term-input') ? document.getElementById('term-input').value.trim() : '';
 
       try {
         const apiUrl = currentLab ? ('/api/simulator/labs/' + currentLab.id + '/ai') : '/api/simulator/ai';
         const res = await fetch(apiUrl, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ topic: topic, lab: currentLab })
+          body: JSON.stringify({
+            topic: topic,
+            lab: currentLab,
+            lastCommand: lastCmd,
+            currentCommand: curCmd,
+            commandHistory: recentCmds
+          })
         });
         const data = await res.json();
         const loadElem = document.getElementById(loadId);
@@ -4129,17 +4736,28 @@ export function renderSimulatorPage(user) {
       chatBody.innerHTML += '<div class="ai-msg bot" id="' + loadId + '">' +
         '<div class="ai-card" style="text-align:center; color:#94a3b8; padding:16px;">' +
           '<div style="font-size:20px; margin-bottom:6px;">🤖</div>' +
-          '인프라 모델 분석 중...' +
+          '교안 데이터 및 터미널 명령어 분석 중...' +
         '</div>' +
       '</div>';
       chatBody.scrollTop = chatBody.scrollHeight;
+
+      const lastCmd = commandHistory.length > 0 ? commandHistory[commandHistory.length - 1] : '';
+      const recentCmds = commandHistory.slice(-5);
+      const curCmd = document.getElementById('term-input') ? document.getElementById('term-input').value.trim() : '';
 
       try {
         const apiUrl = currentLab ? ('/api/simulator/labs/' + currentLab.id + '/ai') : '/api/simulator/ai';
         const res = await fetch(apiUrl, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ prompt: prompt, topic: 'general', lab: currentLab })
+          body: JSON.stringify({
+            prompt: prompt,
+            topic: 'general',
+            lab: currentLab,
+            lastCommand: lastCmd,
+            currentCommand: curCmd,
+            commandHistory: recentCmds
+          })
         });
         const data = await res.json();
         const loadElem = document.getElementById(loadId);
