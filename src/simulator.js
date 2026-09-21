@@ -610,7 +610,7 @@ export function evalK8sCommand(cmdLine, lab, user) {
   let tokens = line.split(/\s+/);
   if (tokens[0] === 'k') tokens[0] = 'kubectl';
 
-  const isMutating = ['run', 'create', 'scale', 'delete', 'taint', 'label', 'apply', 'cordon', 'uncordon', 'drain', 'reset'].includes(tokens[1]);
+  const isMutating = ['run', 'create', 'scale', 'delete', 'taint', 'label', 'apply', 'cordon', 'uncordon', 'drain', 'reset', 'set'].includes(tokens[1]) || (tokens[1] === 'rollout' && tokens[2] === 'undo');
 
   if (isMutating && !lab.editable) {
     return {
@@ -632,7 +632,7 @@ export function evalK8sCommand(cmdLine, lab, user) {
   • \x1b[33mk get pods [-o wide]\x1b[0m         : 파드 상태, 컨테이너 IP, 할당 노드 조회
   • \x1b[33mk get svc / k get ingress\x1b[0m    : 서비스 및 Ingress 도메인/포트 라우팅 테이블
   • \x1b[33mk top nodes / k top pods\x1b[0m      : 가상 CPU/메모리 실시간 사용량 모니터링
-  • \x1b[33mdf -h\x1b[0m                         : 가상 노드 스토리지/블록 디스크 용량 점검
+  • \x1b[33mdf -h\x1b[0m                         : 가상 노드 스토리지/블록 디스크 용량 점검 (노드명 & IP 표기)
   • \x1b[33mnetstat -tuln\x1b[0m                 : L4 전송 계층 오픈 포트(VIP:80, 443, 30080, 51820) 리슨 상태
   • \x1b[33mip route / route -n\x1b[0m           : L3 가상 라우터(vRouter) 라우팅 테이블 및 게이트웨이
   • \x1b[33mbrctl show / ovs-vsctl\x1b[0m       : L2 가상 브릿지 스위치(vSwitch) 포트 & MAC 포워딩
@@ -643,8 +643,9 @@ export function evalK8sCommand(cmdLine, lab, user) {
   • \x1b[33mk create deploy <이름> --image=<이미지> --replicas=<N>\x1b[0m : 디플로이먼트 생성
   • \x1b[33mk scale deploy <이름> --replicas=<N>\x1b[0m                   : 레플리카 수 스케일링
   • \x1b[33mk expose deploy <이름> --port=80 --type=NodePort\x1b[0m       : NodePort 서비스 노출
+  • \x1b[33mk rollout status/undo deploy/<이름>\x1b[0m                   : 롤링 배포 상태 확인 및 즉각 롤백
   • \x1b[33mk taint nodes <노드> <키>:<효과>[-]\x1b[0m                  : 노드 Taint 설정/해제
-  • \x1b[33mk label nodes <노드> <키>=<값>[-]\x1b[0m                   : 노드 라벨 부여/삭제
+  • \x1b[33mk label nodes <노드> <키>=<값>[-]\x1b[0m                   : 노드 라벨 부여/삭제 (nodeSelector 해결)
   • \x1b[33mk cordon <노드> / k uncordon <노드>\x1b[0m                 : 노드 스케줄링 제어
   • \x1b[33mk drain <노드> --ignore-daemonsets\x1b[0m                 : 노드 파드 비우기(Drain)
   • \x1b[33mk delete pod/deploy/svc <이름>\x1b[0m                         : 리소스 삭제
@@ -664,7 +665,7 @@ export function evalK8sCommand(cmdLine, lab, user) {
         const avail = Math.max(0, d.sizeGb - d.usedGb);
         const pct = Math.round((d.usedGb / d.sizeGb) * 100);
         const namePadded = `/dev/${d.name.split(' ')[0]}`.padEnd(16);
-        out += `${namePadded}${String(d.sizeGb + 'G').padEnd(6)}${String(d.usedGb + 'G').padEnd(6)}${String(avail + 'G').padEnd(6)}${String(pct + '%').padEnd(5)}[${node.name}] ${d.mount}\n`;
+        out += `${namePadded}${String(d.sizeGb + 'G').padEnd(6)}${String(d.usedGb + 'G').padEnd(6)}${String(avail + 'G').padEnd(6)}${String(pct + '%').padEnd(5)}[${node.name}: ${node.ip}] ${d.mount}\n`;
       }
     }
     return { output: out.trimEnd(), labChanged: false };
@@ -924,7 +925,8 @@ Content-Length: 512
 
       for (const p of lab.pods) {
         const ready = p.status === 'Running' ? '1/1' : '0/1';
-        const statusColored = p.status === 'Running' ? `\x1b[32m${p.status}\x1b[0m` : `\x1b[33m${p.status}\x1b[0m`;
+        const isErr = p.status.includes('Crash') || p.status.includes('OOM') || p.status.includes('Error');
+        const statusColored = p.status === 'Running' ? `\x1b[32m${p.status}\x1b[0m` : (isErr ? `\x1b[31;1m${p.status}\x1b[0m` : `\x1b[33m${p.status}\x1b[0m`);
         if (isWide) {
           out += `${p.name.padEnd(32)}${ready.padEnd(8)}${statusColored.padEnd(18)}${String(p.restarts).padEnd(11)}${p.age.padEnd(6)}${p.ip.padEnd(13)}${p.node.padEnd(10)}<none>\n`;
         } else {
@@ -1091,9 +1093,15 @@ Events:              <none>`;
         return { output: `Error from server (NotFound): pods "${name}" not found`, labChanged: false };
       }
       const isPending = targetPod.status === 'Pending';
-      const eventMsg = isPending
-        ? `Warning  FailedScheduling  default-scheduler  0/${lab.nodes?.length || 2} nodes are available: 1 node(s) had untolerated taint, 1 node(s) didn't match Pod's node affinity/selector.`
-        : `Normal   Scheduled         default-scheduler  Successfully assigned default/${targetPod.name} to ${targetPod.node}`;
+      const isCrash = targetPod.status === 'CrashLoopBackOff' || targetPod.status === 'OOMKilled';
+
+      let eventMsg = `Normal   Scheduled         default-scheduler  Successfully assigned default/${targetPod.name} to ${targetPod.node}`;
+      if (isPending) {
+        const reqLabel = targetPod.nodeSelector ? Object.entries(targetPod.nodeSelector).map(([k,v]) => `${k}=${v}`).join(',') : 'disktype=ssd';
+        eventMsg = `Warning  FailedScheduling  default-scheduler  0/${lab.nodes?.length || 2} nodes are available: ${lab.nodes?.length || 2} node(s) didn't match Pod's node affinity/selector (${reqLabel}).`;
+      } else if (isCrash) {
+        eventMsg = `Warning  BackOff           default-kubelet    Back-off 10s restarting failed container=${targetPod.name.split('-')[0]} pod=${targetPod.name}\n  Warning  OOMKilled         default-kubelet    Container exceeded memory limit (128Mi), killed by Linux cgroup OOM-Killer (Exit Code 137)`;
+      }
 
       let out = `Name:             ${targetPod.name}
 Namespace:        default
@@ -1108,7 +1116,8 @@ Containers:
   ${targetPod.name.split('-')[0]}:
     Container ID:   containerd://simulated-${targetPod.name}
     Image:          ${targetPod.image || 'nginx:latest'}
-    State:          ${targetPod.status === 'Running' ? 'Running' : 'Waiting'}
+    State:          ${isCrash ? 'Waiting (CrashLoopBackOff)' : (targetPod.status === 'Running' ? 'Running' : 'Waiting')}
+    Last State:     ${isCrash ? 'Terminated (OOMKilled, Exit Code 137)' : '<none>'}
     Ready:          ${targetPod.status === 'Running' ? 'True' : 'False'}
     Restart Count:  ${targetPod.restarts || 0}
     Requests:
@@ -1444,6 +1453,57 @@ Events:            <none>`;
       lab.activityLogs.unshift({ time: timeStr, user: userName, action: `디플로이먼트 '${name}' 삭제` });
       return { output: `deployment.apps "${name}" deleted`, labChanged: true };
     }
+  }
+
+  // 15. ROLLOUT (undo, status, history)
+  if (sub === 'rollout') {
+    const action = tokens[2];
+    const target = tokens[3] || 'deployment/web-service';
+    const depName = target.replace(/^(deployment|deploy)\//, '');
+    const dep = lab.deployments?.find(d => d.name === depName) || lab.deployments?.[0];
+    if (!dep) return { output: `error: deployment "${depName}" not found`, labChanged: false };
+
+    if (action === 'undo') {
+      const prevImage = 'nginx:1.24-stable';
+      dep.image = prevImage;
+      lab.pods?.filter(p => p.name.startsWith(dep.name)).forEach(p => {
+        p.image = prevImage;
+        p.status = 'Running';
+      });
+      lab.activityLogs.unshift({
+        time: timeStr,
+        user: userName,
+        action: `deployment.apps/${dep.name} rolled back to revision 1 (${prevImage})`
+      });
+      return { output: `deployment.apps/${dep.name} rolled back`, labChanged: true };
+    }
+    if (action === 'status') {
+      return { output: `deployment "${dep.name}" successfully rolled out`, labChanged: false };
+    }
+    if (action === 'history') {
+      return {
+        output: `deployment.apps/${dep.name} \nREVISION  CHANGE-CAUSE\n1         kubectl apply --filename=manifest.yaml --record=true\n2         kubectl set image deployment/${dep.name} nginx=${dep.image}`,
+        labChanged: false
+      };
+    }
+    return { output: `error: unknown rollout command '${action}'. Valid options: status, undo, history`, labChanged: false };
+  }
+
+  // 16. SET IMAGE
+  if (sub === 'set' && tokens[2] === 'image') {
+    const target = tokens[3] || '';
+    const imgArg = tokens[4] || '';
+    const depName = target.replace(/^(deployment|deploy)\//, '');
+    const dep = lab.deployments?.find(d => d.name === depName) || lab.deployments?.[0];
+    if (!dep) return { output: `error: deployment "${depName}" not found`, labChanged: false };
+    const newImage = imgArg.includes('=') ? imgArg.split('=')[1] : imgArg;
+    dep.image = newImage;
+    lab.activityLogs.unshift({
+      time: timeStr,
+      user: userName,
+      action: `deployment.apps/${dep.name} image updated to ${newImage}`
+    });
+    return { output: `deployment.apps/${dep.name} image updated`, labChanged: true };
   }
 
   return {
@@ -1903,26 +1963,58 @@ export async function generateAiCopilotAdvice(prompt = '', topic = 'general', la
       });
     }
 
-    if (!isLbHealthy) {
+    // L7 ALB 타겟 장애 & 페일오버 감지
+    const unhealthyTargets = (lab?.network?.loadBalancer?.targetPool || []).filter(p => !p.status.includes('Healthy'));
+    if (!isLbHealthy || unhealthyTargets.length > 0) {
+      const tgtStr = unhealthyTargets.length > 0 ? unhealthyTargets.map(t => `${t.target} [${t.nodeName || ''}]`).join(', ') : `VIP: ${vip}`;
       activeIssues.push({
         level: 'CRITICAL',
-        badge: 'L7 로드밸런서 503 오류',
-        target: `KT Cloud ALB (VIP: ${vip})`,
-        screenResult: `화면의 L7 로드밸런서 헬스체크가 비정상이며, 도메인 '${primaryHost}' 접속 시 503 Service Unavailable 에러가 발생합니다.`,
-        hint: `네트워크 토폴로지 패널의 로드밸런서 카드를 확인하고 백엔드 서비스 파드 상태를 점검하세요.`,
-        fixCmd: `curl -I https://${primaryHost}/healthz`,
+        badge: 'L7 로드밸런서 타겟 503 페일오버',
+        target: tgtStr,
+        screenResult: `화면의 L7 ALB 타겟 [${tgtStr}]에서 503 헬스체크 실패가 발생하여 정상 노드로 트래픽을 자동 우회 중입니다.`,
+        hint: `상용 시나리오 탭에서 [헬스체크 복구]를 클릭하거나 'curl -H "Host: ${primaryHost}" http://${vip}'로 페일오버 응답을 확인하세요.`,
+        fixCmd: `curl -H "Host: ${primaryHost}" http://${vip}`,
         modalId: null
       });
     }
 
+    // 컨테이너 OOMKilled / CrashLoopBackOff 감지
+    const crashedPods = pods.filter(p => p.status === 'CrashLoopBackOff' || p.status === 'OOMKilled');
+    if (crashedPods.length > 0) {
+      activeIssues.push({
+        level: 'CRITICAL',
+        badge: '컨테이너 OOMKilled / CrashLoopBackOff',
+        target: crashedPods.map(p => `${p.name} (${p.node})`).join(', '),
+        screenResult: `화면의 파드 [${crashedPods[0].name}]가 메모리 한도 초과(OOMKilled Exit 137)로 CrashLoopBackOff 상태에 빠졌습니다.`,
+        hint: `'kubectl describe pod ${crashedPods[0].name}'으로 메모리 초과 이벤트를 확인하고, 상용 시나리오 탭에서 [메모리 복구]를 진행하세요.`,
+        fixCmd: `kubectl describe pod ${crashedPods[0].name}`,
+        modalId: null
+      });
+    }
+
+    // Cloudflare 터널 단절 감지
     if (!isTunnelHealthy) {
       activeIssues.push({
         level: 'WARN',
         badge: 'Cloudflare 터널 단절 (502)',
         target: 'kt-hybrid-argo-tunnel',
         screenResult: `화면의 Cloudflare Zero Trust 터널 연결이 끊겨 외부 도메인 '${primaryHost}' 인입 시 502 Bad Gateway가 발생합니다.`,
-        hint: `네트워크 토폴로지 카드에서 [터널 재연결] 토글을 클릭하거나 터널 상태를 점검하세요.`,
+        hint: `상용 시나리오 탭 또는 네트워크 토폴로지 카드에서 [터널 재연결]을 클릭하세요.`,
         fixCmd: `tunnel status`,
+        modalId: null
+      });
+    }
+
+    // VPN 세션 단절 감지
+    const isVpnHealthy = (lab?.network?.vpn?.status || 'CONNECTED') === 'CONNECTED';
+    if (!isVpnHealthy) {
+      activeIssues.push({
+        level: 'WARN',
+        badge: 'VPN 세션 타임아웃 단절',
+        target: 'kt-corp-vpn (192.168.100.0/24)',
+        screenResult: `기업 전용 Site-to-Site VPN 세션이 단절되어 사내 관리망(192.168.100.0/24) 통신이 차단되었습니다.`,
+        hint: `상용 시나리오 탭에서 [VPN 세션 재수립]을 클릭하거나 터미널에서 'vpn status'를 점검하세요.`,
+        fixCmd: `vpn status`,
         modalId: null
       });
     }
@@ -2626,56 +2718,287 @@ export async function handleSimulatorApi(request, path, env, user) {
       let body = {};
       try { body = await request.json(); } catch {}
       const type = body.type;
+      const act = body.action || 'inject'; // 'inject' | 'resolve'
 
       if (!lab.network) lab.network = createDefaultNetwork();
+      const targetWorker = (lab.nodes || []).find((n) => n.role === 'worker') || lab.nodes?.[0] || { name: 'master1', ip: '10.10.10.12' };
+      const targetWorkerName = targetWorker.name;
+      const targetWorkerIp = targetWorker.ip;
 
-      if (type === 'disk_pressure') {
-        const target = lab.nodes.find((n) => n.role === 'worker') || lab.nodes[0];
-        if (target && target.disks?.[0]) {
-          target.disks[0].usedGb = Math.round(target.disks[0].sizeGb * 0.96); // 96% 고갈
+      // [도메인 1: 네트워크 & L7 로드밸런싱]
+      if (type === 'lb_failover') {
+        const pool = lab.network.loadBalancer?.targetPool || [];
+        const targetAddr = `${targetWorkerIp}:30080`;
+        let targetEntry = pool.find(p => p.target === targetAddr || p.nodeName === targetWorkerName);
+        if (!targetEntry && pool.length > 0) targetEntry = pool[0];
+
+        const isCurrentlyUnhealthy = targetEntry && targetEntry.status.includes('Unhealthy');
+        const makeUnhealthy = (act === 'inject') || (act !== 'resolve' && !isCurrentlyUnhealthy);
+
+        if (targetEntry) {
+          targetEntry.status = makeUnhealthy ? 'Unhealthy (503 Error)' : 'Healthy';
+          targetEntry.latencyMs = makeUnhealthy ? '999.0' : '2.1';
+        }
+        lab.activityLogs.unshift({
+          time: timeStr,
+          user: userName,
+          action: makeUnhealthy
+            ? `⚡ [로드밸런서 페일오버] 타겟 ${targetWorkerIp}:30080 [${targetWorkerName}] 503 장애 발생 ➔ ALB 헬스체크 감지 후 트래픽 자동 우회`
+            : `✅ [로드밸런서 복구] 타겟 ${targetWorkerIp}:30080 [${targetWorkerName}] 헬스체크 정상 복원 (Healthy)`
+        });
+      } else if (type === 'tunnel_cut') {
+        const isCurrentlyDown = lab.network.tunnel.status === 'DISCONNECTED';
+        const makeDown = (act === 'inject') || (act !== 'resolve' && !isCurrentlyDown);
+        lab.network.tunnel.status = makeDown ? 'DISCONNECTED' : 'CONNECTED';
+        lab.network.tunnel.latencyMs = makeDown ? 0 : 2.4;
+        lab.network.tunnel.throughputMbps = makeDown ? 0 : 250;
+        lab.activityLogs.unshift({
+          time: timeStr,
+          user: userName,
+          action: makeDown
+            ? `🚇 [터널 장애] Cloudflare Zero Trust 아르고 터널 단절 (외부 도메인 app.ktci5.kr 502 Bad Gateway 유발)`
+            : `✅ [터널 복원] Cloudflare Zero Trust 하이브리드 터널 재연결 완료 (정상 인바운드 재개)`
+        });
+      } else if (type === 'vpn_timeout') {
+        const isCurrentlyDown = lab.network.vpn?.status === 'DISCONNECTED';
+        const makeDown = (act === 'inject') || (act !== 'resolve' && !isCurrentlyDown);
+        if (!lab.network.vpn) lab.network.vpn = createDefaultNetwork().vpn;
+        lab.network.vpn.status = makeDown ? 'DISCONNECTED' : 'CONNECTED';
+        lab.network.vpn.throughputMbps = makeDown ? 0 : 120;
+        lab.network.vpn.latencyMs = makeDown ? 0 : 12.5;
+        lab.activityLogs.unshift({
+          time: timeStr,
+          user: userName,
+          action: makeDown
+            ? `🔒 [VPN 세션 단절] Site-to-Site IPsec/WireGuard 세션 타임아웃 (사내 관리망 192.168.100.0/24 통신 차단)`
+            : `✅ [VPN 복원] 기업 전용 Site-to-Site VPN 세션 재수립 완료 (암호화 터널 정상화)`
+        });
+      }
+
+      // [도메인 2: 쿠버네티스 파드 & 스케줄링]
+      else if (type === 'pod_pending') {
+        if (act === 'resolve') {
+          if (targetWorker) {
+            if (!targetWorker.labels) targetWorker.labels = {};
+            targetWorker.labels.disktype = 'ssd';
+          }
           rescheduleAll(lab);
           lab.activityLogs.unshift({
             time: timeStr,
             user: userName,
-            action: `🚨 [상용 장애 경보] 노드 '${target.name}' 디스크 96% 고갈 ➔ DiskPressure 조건 발생, 파드 스케줄링 중단`
+            action: `✅ [스케줄링 해결] 노드 '${targetWorkerName}'에 'disktype=ssd' 라벨 부여 완료 ➔ 대기 중이던 파드가 Running으로 전환`
           });
-        }
-      } else if (type === 'lb_failover') {
-        const pool = lab.network.loadBalancer.targetPool;
-        if (pool && pool[0]) {
-          pool[0].status = pool[0].status === 'Healthy' ? 'Unhealthy (503 Error)' : 'Healthy';
+        } else {
+          for (const n of lab.nodes) {
+            if (n.labels && n.labels.disktype) delete n.labels.disktype;
+          }
+          let pendingPod = lab.pods?.find(p => p.name === 'web-pending');
+          if (!pendingPod) {
+            pendingPod = {
+              name: 'web-pending',
+              namespace: 'default',
+              node: 'None',
+              status: 'Pending',
+              ip: 'None',
+              image: 'nginx:latest',
+              cpuReqM: 100,
+              ramReqMi: 128,
+              labels: { app: 'web-pending' },
+              nodeSelector: { disktype: 'ssd' },
+              restarts: 0,
+              age: '10s'
+            };
+            if (!lab.pods) lab.pods = [];
+            lab.pods.push(pendingPod);
+          } else {
+            pendingPod.status = 'Pending';
+            pendingPod.node = 'None';
+            pendingPod.ip = 'None';
+            pendingPod.nodeSelector = { disktype: 'ssd' };
+          }
+          rescheduleAll(lab);
           lab.activityLogs.unshift({
             time: timeStr,
             user: userName,
-            action: `⚡ [로드밸런서 페일오버] 타겟 ${pool[0].target} 상태 ➔ ${pool[0].status}, 트래픽 자동 우회`
+            action: `🚨 [파드 장애] 'web-pending' 파드가 nodeSelector(disktype=ssd) 불일치로 인해 Pending 상태로 대기합니다.`
           });
         }
-      } else if (type === 'tunnel_cut') {
-        lab.network.tunnel.status = 'DISCONNECTED';
+      } else if (type === 'pod_crash') {
+        let crashPod = lab.pods?.find(p => p.name === 'oom-crash-app');
+        if (act === 'resolve') {
+          if (crashPod) {
+            crashPod.status = 'Running';
+            crashPod.ramReqMi = 256;
+          }
+          lab.activityLogs.unshift({
+            time: timeStr,
+            user: userName,
+            action: `✅ [파드 정상화] 'oom-crash-app' 메모리 한도 256Mi로 확장 후 컨테이너가 정상 기동(Running)되었습니다.`
+          });
+        } else {
+          if (!crashPod) {
+            crashPod = {
+              name: 'oom-crash-app',
+              namespace: 'default',
+              node: targetWorkerName,
+              status: 'CrashLoopBackOff',
+              ip: `172.20.2.${Math.floor(Math.random() * 80) + 10}`,
+              image: 'alpine-leak:v1.2',
+              cpuReqM: 150,
+              ramReqMi: 128,
+              labels: { app: 'oom-crash-app' },
+              restarts: 6,
+              age: '15m'
+            };
+            if (!lab.pods) lab.pods = [];
+            lab.pods.push(crashPod);
+          } else {
+            crashPod.status = 'CrashLoopBackOff';
+            crashPod.restarts = (crashPod.restarts || 0) + 1;
+            crashPod.node = targetWorkerName;
+          }
+          lab.activityLogs.unshift({
+            time: timeStr,
+            user: userName,
+            action: `🚨 [메모리 초과 장애] 노드 '${targetWorkerName}' (${targetWorkerIp})의 'oom-crash-app' 파드가 OOMKilled(Exit 137) ➔ CrashLoopBackOff 발생`
+          });
+        }
+      }
+
+      // [도메인 3: 스토리지 & 시스템 하드웨어 고갈]
+      else if (type === 'disk_pressure') {
+        if (targetWorker && targetWorker.disks?.[0]) {
+          const makeFull = (act === 'inject') || (act !== 'resolve' && targetWorker.disks[0].usedGb < 40);
+          if (makeFull) {
+            targetWorker.disks[0].usedGb = Math.round(targetWorker.disks[0].sizeGb * 0.96);
+            targetWorker.unschedulable = true;
+            rescheduleAll(lab);
+            lab.activityLogs.unshift({
+              time: timeStr,
+              user: userName,
+              action: `🚨 [상용 장애 경보] 노드 '${targetWorkerName}' (${targetWorkerIp}) 디스크 96% 고갈 ➔ DiskPressure 조건 발생, 파드 스케줄링 차단`
+            });
+          } else {
+            targetWorker.disks[0].usedGb = 20;
+            targetWorker.unschedulable = false;
+            rescheduleAll(lab);
+            lab.activityLogs.unshift({
+              time: timeStr,
+              user: userName,
+              action: `✅ [디스크 정상화] 노드 '${targetWorkerName}' (${targetWorkerIp}) 로그 파일 정리 완료 (/dev/vda 사용량 20GB, DiskPressure 해제)`
+            });
+          }
+        }
+      } else if (type === 'cpu_spike') {
+        const makeSpike = (act === 'inject') || (act !== 'resolve' && (lab.trafficRps || 0) < 3000);
+        lab.trafficRps = makeSpike ? 4200 : 120;
         lab.activityLogs.unshift({
           time: timeStr,
           user: userName,
-          action: `🚇 [터널 장애] Cloudflare 하이브리드 터널 단절 발생 (외부 트래픽 502 유발)`
+          action: makeSpike
+            ? `🚨 [트래픽 폭증 경보] 대규모 사용자 유입으로 4200 RPS 도달 ➔ 워커 노드 vCPU 사용률 95% 초과 및 Throttling 발생`
+            : `✅ [트래픽 안정화] 트래픽이 평시 수준(120 RPS)으로 복귀하여 vCPU 부하가 안정화되었습니다.`
         });
+      }
+
+      // [도메인 4: 무중단 배포 & 유지보수]
+      else if (type === 'node_drain') {
+        if (targetWorker) {
+          const makeDrain = (act === 'inject') || (act !== 'resolve' && !targetWorker.unschedulable);
+          if (makeDrain) {
+            targetWorker.unschedulable = true;
+            let evicted = 0;
+            for (const p of (lab.pods || [])) {
+              if (p.node === targetWorkerName) {
+                p.node = 'None';
+                p.status = 'Pending';
+                p.ip = 'None';
+                schedulePod(p, lab);
+                evicted++;
+              }
+            }
+            lab.activityLogs.unshift({
+              time: timeStr,
+              user: userName,
+              action: `🚨 [긴급 유지보수] 노드 '${targetWorkerName}' (${targetWorkerIp}) 커널 패치용 Drain 수행 완료 (${evicted}개 파드 안전 대피)`
+            });
+          } else {
+            targetWorker.unschedulable = false;
+            rescheduleAll(lab);
+            lab.activityLogs.unshift({
+              time: timeStr,
+              user: userName,
+              action: `✅ [노드 복귀] 노드 '${targetWorkerName}' (${targetWorkerIp}) 보안 패치 완료 후 uncordoned 처리 (정상 스케줄링 재개)`
+            });
+          }
+        }
+      } else if (type === 'rolling_update') {
+        const dep = lab.deployments?.[0] || { name: 'web-service', replicas: 3 };
+        const isUndo = act === 'resolve';
+        if (isUndo) {
+          dep.image = 'nginx:1.24-stable';
+          lab.pods?.filter(p => p.name.startsWith(dep.name)).forEach(p => {
+            p.image = 'nginx:1.24-stable';
+            p.status = 'Running';
+          });
+          lab.activityLogs.unshift({
+            time: timeStr,
+            user: userName,
+            action: `⏪ [즉각 롤백] 'kubectl rollout undo deploy/${dep.name}' 직전 안정 버전(nginx:1.24-stable)으로 무중단 롤백 완료`
+          });
+        } else {
+          dep.image = 'nginx:1.25.3-alpine';
+          const depPods = lab.pods?.filter(p => p.name.startsWith(dep.name)) || [];
+          if (depPods[0]) {
+            depPods[0].image = 'nginx:1.25.3-alpine';
+            depPods[0].restarts = 0;
+            depPods[0].age = '3s';
+          }
+          lab.activityLogs.unshift({
+            time: timeStr,
+            user: userName,
+            action: `🔄 [롤링 업데이트] '${dep.name}' 신규 버전(nginx:1.25.3-alpine) 무중단 점진 교체 롤아웃 시작`
+          });
+        }
       } else if (type === 'resolve_all') {
-        // 모든 장애 복구
+        // 모든 장애 일괄 복원
         lab.network.tunnel.status = 'CONNECTED';
-        if (lab.network.loadBalancer.targetPool) {
-          lab.network.loadBalancer.targetPool.forEach((p) => p.status = 'Healthy');
+        lab.network.tunnel.latencyMs = 2.4;
+        lab.network.tunnel.throughputMbps = 250;
+        
+        if (!lab.network.vpn) lab.network.vpn = createDefaultNetwork().vpn;
+        lab.network.vpn.status = 'CONNECTED';
+        lab.network.vpn.latencyMs = 12.5;
+        lab.network.vpn.throughputMbps = 120;
+
+        if (lab.network.loadBalancer?.targetPool) {
+          lab.network.loadBalancer.targetPool.forEach((p) => {
+            p.status = 'Healthy';
+            p.latencyMs = 1.8;
+          });
         }
         for (const n of lab.nodes) {
           n.status = 'Ready';
           n.unschedulable = false;
-          if (n.disks?.[0]) n.disks[0].usedGb = 20; // 디스크 정상화
+          if (n.disks?.[0]) n.disks[0].usedGb = 20;
+          if (!n.labels) n.labels = {};
+          n.labels.disktype = 'ssd';
         }
+        for (const p of (lab.pods || [])) {
+          p.status = 'Running';
+          if (p.name === 'oom-crash-app') p.ramReqMi = 256;
+          if (p.node === 'None' || !p.node) schedulePod(p, lab);
+        }
+        lab.trafficRps = 120;
         rescheduleAll(lab);
         lab.activityLogs.unshift({
           time: timeStr,
           user: userName,
-          action: `✅ [정상 복구] 모든 네트워크 터널, L7 로드밸런서 헬스체크 및 노드 디스크 정상 복원 완료`
+          action: `✅ [종합 정상 복원] 모든 네트워크(L7 ALB, Tunnel, VPN), 노드 디스크, OOM 파드 및 스케줄링이 100% 정상화되었습니다.`
         });
       }
 
+      syncLbTargetPool(lab);
       await saveLabDetail(env, lab);
       return new Response(JSON.stringify({ ok: true, lab }), { headers: jsonHeaders });
     }
@@ -3734,40 +4057,26 @@ export function renderSimulatorPage(user) {
           <div class="topo-tab-content" id="tab-content-scenario" style="display:none;">
             <div class="panel-card">
               <div class="panel-header">
-                <span class="panel-title">🚨 실제 상용 환경 장애 & 트러블슈팅 시뮬레이터</span>
-                <button class="btn sm primary" onclick="triggerScenario('resolve_all')">✅ 모든 장애 복구</button>
+                <div>
+                  <span class="panel-title">🚨 상용 운영 장애 & 트러블슈팅 시뮬레이터</span>
+                  <div style="font-size:11.5px; color:#94a3b8; margin-top:3px;">
+                    실제 상용 서비스에서 발생하는 4대 핵심 도메인별 장애를 실시간 주입하고 실제 IP 기반 진단 및 원클릭 복구를 실습합니다.
+                  </div>
+                </div>
+                <button class="btn sm primary" onclick="triggerScenario('resolve_all')">✅ 모든 장애 복구 (Resolve All)</button>
               </div>
-              <p style="font-size:11.5px; color:#94a3b8; margin-bottom:12px;">상용 서비스 현업에서 빈번하게 발생하는 장애 상황을 원클릭으로 주입하고 클러스터의 반응과 해결 절차를 체득합니다.</p>
 
-              <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
-                <!-- 시나리오 1 -->
-                <div style="background:#0f1523; border:1px solid #1f293d; border-radius:6px; padding:10px;">
-                  <div style="font-size:12px; font-weight:700; color:#f87171; margin-bottom:4px;">🔥 1. 노드 디스크 고갈 (DiskPressure)</div>
-                  <p style="font-size:11px; color:#94a3b8; margin-bottom:8px;">워커 노드 디스크가 96% 고갈되어 K8s가 파드 축출 및 스케줄링 중단 상태에 빠집니다.</p>
-                  <button class="btn sm danger" onclick="triggerScenario('disk_pressure')">디스크 고갈 장애 유발</button>
-                </div>
-
-                <!-- 시나리오 2 -->
-                <div style="background:#0f1523; border:1px solid #1f293d; border-radius:6px; padding:10px;">
-                  <div style="font-size:12px; font-weight:700; color:#fbbf24; margin-bottom:4px;">⚡ 2. L7 로드밸런서 페일오버</div>
-                  <p style="font-size:11px; color:#94a3b8; margin-bottom:8px;">타겟 파드 하나가 503 에러를 뿜을 때 LB가 헬스체크로 감지하고 정상 파드로 즉시 트래픽을 우회합니다.</p>
-                  <button class="btn sm warning" onclick="triggerScenario('lb_failover')">LB 페일오버 테스트</button>
-                </div>
-
-                <!-- 시나리오 3 -->
-                <div style="background:#0f1523; border:1px solid #1f293d; border-radius:6px; padding:10px;">
-                  <div style="font-size:12px; font-weight:700; color:#f87171; margin-bottom:4px;">🚇 3. 하이브리드 터널 단절</div>
-                  <p style="font-size:11px; color:#94a3b8; margin-bottom:8px;">온프레미스와 KT Cloud 간 연결 터널이 끊겨 외부 도메인 접속이 502 타임아웃에 빠집니다.</p>
-                  <button class="btn sm danger" onclick="triggerScenario('tunnel_cut')">터널 단절 유발</button>
-                </div>
-
-                <!-- 시나리오 4 -->
-                <div style="background:#0f1523; border:1px solid #1f293d; border-radius:6px; padding:10px;">
-                  <div style="font-size:12px; font-weight:700; color:#10b981; margin-bottom:4px;">🔄 4. 무중단 롤링 업데이트</div>
-                  <p style="font-size:11px; color:#94a3b8; margin-bottom:8px;">서비스 무중단으로 신규 컨테이너 이미지를 단계적으로 교체하며 파드 롤아웃을 관찰합니다.</p>
-                  <button class="btn sm primary" onclick="triggerScenario('rolling_update')">롤링 업데이트 시작</button>
-                </div>
+              <!-- 카테고리 필터 버튼 -->
+              <div style="display:flex; gap:6px; margin:12px 0 14px 0; border-bottom:1px solid #1f293d; padding-bottom:8px; flex-wrap:wrap;">
+                <button class="chip-btn primary scenario-cat-btn" onclick="filterScenarioCat('all', this)">전체 보기 (All)</button>
+                <button class="chip-btn scenario-cat-btn" onclick="filterScenarioCat('cat-net', this)">🌐 1. 네트워크 & LB</button>
+                <button class="chip-btn scenario-cat-btn" onclick="filterScenarioCat('cat-k8s', this)">☸️ 2. 파드 & 스케줄링</button>
+                <button class="chip-btn scenario-cat-btn" onclick="filterScenarioCat('cat-hw', this)">💽 3. 스토리지 & 자원</button>
+                <button class="chip-btn scenario-cat-btn" onclick="filterScenarioCat('cat-devops', this)">🔄 4. 배포 & 유지보수</button>
               </div>
+
+              <!-- 동적 시나리오 카드 컨테이너 -->
+              <div id="scenario-cards-container"></div>
             </div>
           </div>
 
@@ -4372,6 +4681,9 @@ export function renderSimulatorPage(user) {
 
       // AI 코파일럿 실시간 장애 배지 갱신
       updateAiCopilotBadge(lab);
+
+      // 상용 시나리오 카드 동적 렌더링
+      renderScenarioCards(lab);
     }
 
     // 6. 하드웨어 스펙 조정 API
@@ -4494,22 +4806,394 @@ export function renderSimulatorPage(user) {
       }
     }
 
-    // 8. 상용 시나리오 주입
-    async function triggerScenario(type) {
+    // 8. 상용 시나리오 주입 및 복구 API
+    let currentScenarioFilter = 'all';
+
+    function filterScenarioCat(cat, btn) {
+      currentScenarioFilter = cat;
+      document.querySelectorAll('.scenario-cat-btn').forEach(b => b.classList.remove('primary'));
+      if (btn) btn.classList.add('primary');
+      const sections = document.querySelectorAll('.scenario-category-section');
+      sections.forEach(sec => {
+        if (cat === 'all' || sec.dataset.cat === cat) {
+          sec.style.display = 'block';
+        } else {
+          sec.style.display = 'none';
+        }
+      });
+    }
+
+    async function triggerScenario(type, action = 'inject') {
       if (!currentLab) return;
       try {
         const res = await fetch(\`/api/simulator/labs/\${currentLab.id}/scenario\`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ type })
+          body: JSON.stringify({ type, action })
         });
         const data = await res.json();
         if (data.ok) {
           currentLab = data.lab;
           renderAll(currentLab);
-          appendTermLog(\`\\n<span style="color:#f59e0b;font-weight:700;">⚡ [상용 시나리오 이벤트 적용: \${type}]</span>\\n\`);
+          const actKor = action === 'resolve' ? '정상 복구' : (action === 'rollback' ? '롤백' : '장애 주입');
+          appendTermLog(\`\\n<span style="color:#f59e0b;font-weight:700;">⚡ [상용 트러블슈팅 이벤트: \${type} ➔ \${actKor}]</span>\\n\`);
+        } else {
+          alert('시나리오 실행 실패: ' + (data.error || '권한 부족'));
         }
       } catch (err) { alert('시나리오 실행 실패: ' + err.message); }
+    }
+
+    function renderScenarioCards(lab) {
+      const container = document.getElementById('scenario-cards-container');
+      if (!container || !lab) return;
+
+      const targetWorker = (lab.nodes || []).find(n => n.role === 'worker') || lab.nodes?.[0] || { name: 'w1', ip: '10.10.10.20' };
+      const targetWorkerName = targetWorker.name;
+      const targetWorkerIp = targetWorker.ip;
+      const lbVip = lab.network?.loadBalancer?.vip || '211.252.85.10';
+
+      // 1. 네트워크 상태
+      const targetAddr = \`\${targetWorkerIp}:30080\`;
+      const lbTarget = (lab.network?.loadBalancer?.targetPool || []).find(p => p.target === targetAddr || p.nodeName === targetWorkerName);
+      const isLbUnhealthy = lbTarget && lbTarget.status.includes('Unhealthy');
+      const isTunnelDown = lab.network?.tunnel?.status === 'DISCONNECTED';
+      const isVpnDown = lab.network?.vpn?.status === 'DISCONNECTED';
+
+      // 2. 파드 상태
+      const pendingPod = (lab.pods || []).find(p => p.name === 'web-pending' && p.status === 'Pending');
+      const crashPod = (lab.pods || []).find(p => p.name === 'oom-crash-app' || p.status === 'CrashLoopBackOff' || p.status === 'OOMKilled');
+
+      // 3. 하드웨어 상태
+      const osDisk = targetWorker.disks?.[0];
+      const isDiskPressure = targetWorker.unschedulable && osDisk && (osDisk.usedGb / osDisk.sizeGb) > 0.85;
+      const isCpuSpike = (lab.trafficRps || 0) >= 3000;
+
+      // 4. 배포 상태
+      const isDrained = targetWorker.unschedulable && !isDiskPressure;
+      const dep = (lab.deployments || [])[0] || { name: 'web-service', image: 'nginx:1.24-stable', replicas: 3 };
+      const isRollingActive = dep.image && dep.image.includes('1.25');
+
+      const badgeCrit = \`<span style="background:#450a0a; color:#f87171; border:1px solid #7f1d1d; border-radius:4px; padding:2px 6px; font-size:10px; font-weight:700;">CRITICAL</span>\`;
+      const badgeWarn = \`<span style="background:#451a03; color:#fbbf24; border:1px solid #78350f; border-radius:4px; padding:2px 6px; font-size:10px; font-weight:700;">WARNING</span>\`;
+      const badgeMaint = \`<span style="background:#172554; color:#60a5fa; border:1px solid #1e40af; border-radius:4px; padding:2px 6px; font-size:10px; font-weight:700;">MAINTENANCE</span>\`;
+
+      const pillRunning = \`<span class="status-pill status-running" style="font-size:10.5px;">● 정상 가동</span>\`;
+      const pillError = (msg) => \`<span class="status-pill status-pending" style="font-size:10.5px; background:#ef444422; color:#ef4444; border-color:#ef4444;">🚨 \${msg}</span>\`;
+
+      container.innerHTML = \`
+        <!-- 카테고리 1: 네트워크 & L7 로드밸런싱 -->
+        <div class="scenario-category-section" data-cat="cat-net" style="margin-bottom:16px; display:\${currentScenarioFilter === 'all' || currentScenarioFilter === 'cat-net' ? 'block' : 'none'};">
+          <div style="display:flex; align-items:center; gap:6px; font-size:13px; font-weight:700; color:#38bdf8; margin-bottom:8px; border-left:3px solid #38bdf8; padding-left:8px;">
+            🌐 1. 네트워크 & L7 로드밸런싱 장애 (Network & ALB)
+          </div>
+          <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+            <!-- 시나리오 1-1 -->
+            <div style="background:#0f1523; border:1px solid \${isLbUnhealthy ? '#ef4444' : '#1f293d'}; border-radius:6px; padding:12px; display:flex; flex-direction:column; justify-content:space-between;">
+              <div>
+                <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:6px;">
+                  <div style="display:flex; align-items:center; gap:6px;">
+                    \${badgeCrit}
+                    <span style="font-size:12.5px; font-weight:700; color:#f8fafc;">L7 ALB 타겟 장애 & 503 페일오버</span>
+                  </div>
+                  \${isLbUnhealthy ? pillError('503 페일오버 중') : pillRunning}
+                </div>
+                <p style="font-size:11.5px; color:#94a3b8; line-height:1.4; margin-bottom:8px;">
+                  특정 워커 노드의 서비스 프로세스 다운 시 ALB가 헬스체크 실패를 감지하고 트래픽을 정상 워커로 자동 우회(Failover)합니다.
+                </p>
+                <div style="font-size:11px; color:#cbd5e1; background:#1e293b55; padding:6px 8px; border-radius:4px; margin-bottom:10px; font-family:monospace;">
+                  <div>• 대상 타겟: <span style="color:#38bdf8; font-weight:bold;">\${targetWorkerIp}:30080 [\${targetWorkerName}]</span></div>
+                  <div>• L7 VIP: <span style="color:#a855f7;">\${lbVip}</span> (Host: app.ktci5.kr)</div>
+                </div>
+              </div>
+              <div>
+                <div style="display:flex; gap:6px; margin-bottom:8px;">
+                  <button class="btn sm danger" style="flex:1;" onclick="triggerScenario('lb_failover', 'inject')">🚨 503 장애 유발</button>
+                  <button class="btn sm primary" style="flex:1;" onclick="triggerScenario('lb_failover', 'resolve')">✅ 헬스체크 복구</button>
+                </div>
+                <div style="font-size:10.5px; color:#64748b; display:flex; align-items:center; gap:4px; flex-wrap:wrap;">
+                  <span>검증:</span>
+                  <span class="chip-btn" onclick="runChip('curl -H &quot;Host: app.ktci5.kr&quot; http://\${lbVip}')">curl app.ktci5.kr</span>
+                  <span class="chip-btn" onclick="runChip('netstat -tuln')">netstat</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- 시나리오 1-2 -->
+            <div style="background:#0f1523; border:1px solid \${isTunnelDown ? '#ef4444' : '#1f293d'}; border-radius:6px; padding:12px; display:flex; flex-direction:column; justify-content:space-between;">
+              <div>
+                <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:6px;">
+                  <div style="display:flex; align-items:center; gap:6px;">
+                    \${badgeCrit}
+                    <span style="font-size:12.5px; font-weight:700; color:#f8fafc;">Cloudflare 하이브리드 터널 단절</span>
+                  </div>
+                  \${isTunnelDown ? pillError('502 단절') : pillRunning}
+                </div>
+                <p style="font-size:11.5px; color:#94a3b8; line-height:1.4; margin-bottom:8px;">
+                  KT Cloud 클러스터와 외부 Cloudflare 엣지 간 아르고 터널이 끊겨 외부 도메인 인입 시 502 Bad Gateway 에러가 발생합니다.
+                </p>
+                <div style="font-size:11px; color:#cbd5e1; background:#1e293b55; padding:6px 8px; border-radius:4px; margin-bottom:10px; font-family:monospace;">
+                  <div>• 터널 경로: <span style="color:#38bdf8;">origin.ktci5.internal ➔ Edge</span></div>
+                  <div>• 연결 상태: <span style="color:\${isTunnelDown ? '#ef4444' : '#10b981'}; font-weight:bold;">\${lab.network?.tunnel?.status || 'CONNECTED'}</span></div>
+                </div>
+              </div>
+              <div>
+                <div style="display:flex; gap:6px; margin-bottom:8px;">
+                  <button class="btn sm danger" style="flex:1;" onclick="triggerScenario('tunnel_cut', 'inject')">🚨 터널 단절</button>
+                  <button class="btn sm primary" style="flex:1;" onclick="triggerScenario('tunnel_cut', 'resolve')">✅ 터널 재연결</button>
+                </div>
+                <div style="font-size:10.5px; color:#64748b; display:flex; align-items:center; gap:4px; flex-wrap:wrap;">
+                  <span>검증:</span>
+                  <span class="chip-btn" onclick="runChip('tunnel status')">tunnel status</span>
+                  <span class="chip-btn" onclick="runChip('curl -H &quot;Host: app.ktci5.kr&quot; http://\${lbVip}')">curl 테스트</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- 시나리오 1-3 -->
+            <div style="background:#0f1523; border:1px solid \${isVpnDown ? '#f59e0b' : '#1f293d'}; border-radius:6px; padding:12px; display:flex; flex-direction:column; justify-content:space-between; grid-column:span 2;">
+              <div>
+                <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:6px;">
+                  <div style="display:flex; align-items:center; gap:6px;">
+                    \${badgeWarn}
+                    <span style="font-size:12.5px; font-weight:700; color:#f8fafc;">기업 Site-to-Site VPN 세션 타임아웃</span>
+                  </div>
+                  \${isVpnDown ? pillError('VPN 단절') : pillRunning}
+                </div>
+                <p style="font-size:11.5px; color:#94a3b8; line-height:1.4; margin-bottom:8px;">
+                  본사 인트라넷-클라우드 간 IPsec/WireGuard VPN 터널링 세션이 타임아웃되어 사내 관리 대역(192.168.100.0/24) 패킷 통신이 두절됩니다.
+                </p>
+                <div style="font-size:11px; color:#cbd5e1; background:#1e293b55; padding:6px 8px; border-radius:4px; margin-bottom:10px; font-family:monospace;">
+                  <div>• VPN 엔드포인트: <span style="color:#38bdf8;">vpn.ktci5.kr:51820</span> | 서브넷: <span style="color:#a855f7;">192.168.100.0/24</span></div>
+                </div>
+              </div>
+              <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+                <div style="display:flex; gap:6px;">
+                  <button class="btn sm warning" onclick="triggerScenario('vpn_timeout', 'inject')">🚨 VPN 세션 단절 유발</button>
+                  <button class="btn sm primary" onclick="triggerScenario('vpn_timeout', 'resolve')">✅ VPN 세션 재수립</button>
+                </div>
+                <div style="font-size:10.5px; color:#64748b; display:flex; align-items:center; gap:4px;">
+                  <span>검증:</span>
+                  <span class="chip-btn" onclick="runChip('vpn status')">vpn status</span>
+                  <span class="chip-btn" onclick="runChip('ip route')">ip route</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 카테고리 2: 쿠버네티스 파드 & 스케줄링 장애 -->
+        <div class="scenario-category-section" data-cat="cat-k8s" style="margin-bottom:16px; display:\${currentScenarioFilter === 'all' || currentScenarioFilter === 'cat-k8s' ? 'block' : 'none'};">
+          <div style="display:flex; align-items:center; gap:6px; font-size:13px; font-weight:700; color:#a855f7; margin-bottom:8px; border-left:3px solid #a855f7; padding-left:8px;">
+            ☸️ 2. 쿠버네티스 파드 & 스케줄링 장애 (K8s Pods & Lifecycle)
+          </div>
+          <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+            <!-- 시나리오 2-1 -->
+            <div style="background:#0f1523; border:1px solid \${pendingPod ? '#ef4444' : '#1f293d'}; border-radius:6px; padding:12px; display:flex; flex-direction:column; justify-content:space-between;">
+              <div>
+                <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:6px;">
+                  <div style="display:flex; align-items:center; gap:6px;">
+                    \${badgeCrit}
+                    <span style="font-size:12.5px; font-weight:700; color:#f8fafc;">nodeSelector 불일치로 인한 파드 Pending</span>
+                  </div>
+                  \${pendingPod ? pillError('Pending 대기') : pillRunning}
+                </div>
+                <p style="font-size:11.5px; color:#94a3b8; line-height:1.4; margin-bottom:8px;">
+                  파드가 특정 라벨(disktype=ssd)을 요구하지만 조건에 일치하는 노드가 0대여서 스케줄러가 배치를 중단하고 대기합니다.
+                </p>
+                <div style="font-size:11px; color:#cbd5e1; background:#1e293b55; padding:6px 8px; border-radius:4px; margin-bottom:10px; font-family:monospace;">
+                  <div>• 대상 파드: <span style="color:#f59e0b; font-weight:bold;">web-pending</span> (요구: disktype=ssd)</div>
+                  <div>• 배치 대상 노드: <span style="color:#38bdf8;">\${targetWorkerName} (\${targetWorkerIp})</span></div>
+                </div>
+              </div>
+              <div>
+                <div style="display:flex; gap:6px; margin-bottom:8px;">
+                  <button class="btn sm danger" style="flex:1;" onclick="triggerScenario('pod_pending', 'inject')">🚨 Pending 파드 생성</button>
+                  <button class="btn sm primary" style="flex:1;" onclick="triggerScenario('pod_pending', 'resolve')">✅ 노드 라벨 부여 해결</button>
+                </div>
+                <div style="font-size:10.5px; color:#64748b; display:flex; align-items:center; gap:4px; flex-wrap:wrap;">
+                  <span>검증/해결:</span>
+                  <span class="chip-btn" onclick="runChip('k get pods -o wide')">k get pods</span>
+                  <span class="chip-btn" onclick="runChip('k describe pod web-pending')">describe pod</span>
+                  <span class="chip-btn" onclick="runChip('k label nodes \${targetWorkerName} disktype=ssd')">k label nodes</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- 시나리오 2-2 -->
+            <div style="background:#0f1523; border:1px solid \${crashPod ? '#ef4444' : '#1f293d'}; border-radius:6px; padding:12px; display:flex; flex-direction:column; justify-content:space-between;">
+              <div>
+                <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:6px;">
+                  <div style="display:flex; align-items:center; gap:6px;">
+                    \${badgeCrit}
+                    <span style="font-size:12.5px; font-weight:700; color:#f8fafc;">컨테이너 OOMKilled & CrashLoopBackOff</span>
+                  </div>
+                  \${crashPod ? pillError('CrashLoopBackOff') : pillRunning}
+                </div>
+                <p style="font-size:11.5px; color:#94a3b8; line-height:1.4; margin-bottom:8px;">
+                  메모리 누수로 limit(128Mi)을 초과하여 Linux OOM-Killer에 의해 강제 종료(Exit 137)되고 파드가 무한 재기동에 빠집니다.
+                </p>
+                <div style="font-size:11px; color:#cbd5e1; background:#1e293b55; padding:6px 8px; border-radius:4px; margin-bottom:10px; font-family:monospace;">
+                  <div>• 대상 파드: <span style="color:#ef4444; font-weight:bold;">oom-crash-app</span> (Exit 137)</div>
+                  <div>• 호스트 노드: <span style="color:#38bdf8;">\${targetWorkerName} (\${targetWorkerIp})</span></div>
+                </div>
+              </div>
+              <div>
+                <div style="display:flex; gap:6px; margin-bottom:8px;">
+                  <button class="btn sm danger" style="flex:1;" onclick="triggerScenario('pod_crash', 'inject')">🚨 OOM Crash 유발</button>
+                  <button class="btn sm primary" style="flex:1;" onclick="triggerScenario('pod_crash', 'resolve')">✅ 메모리 한도 상향 복구</button>
+                </div>
+                <div style="font-size:10.5px; color:#64748b; display:flex; align-items:center; gap:4px; flex-wrap:wrap;">
+                  <span>검증:</span>
+                  <span class="chip-btn" onclick="runChip('k get pods -o wide')">k get pods</span>
+                  <span class="chip-btn" onclick="runChip('k describe pod oom-crash-app')">describe pod</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 카테고리 3: 스토리지 & 시스템 자원 고갈 -->
+        <div class="scenario-category-section" data-cat="cat-hw" style="margin-bottom:16px; display:\${currentScenarioFilter === 'all' || currentScenarioFilter === 'cat-hw' ? 'block' : 'none'};">
+          <div style="display:flex; align-items:center; gap:6px; font-size:13px; font-weight:700; color:#f59e0b; margin-bottom:8px; border-left:3px solid #f59e0b; padding-left:8px;">
+            💽 3. 스토리지 & 시스템 자원 고갈 (Storage & Compute)
+          </div>
+          <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+            <!-- 시나리오 3-1 -->
+            <div style="background:#0f1523; border:1px solid \${isDiskPressure ? '#ef4444' : '#1f293d'}; border-radius:6px; padding:12px; display:flex; flex-direction:column; justify-content:space-between;">
+              <div>
+                <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:6px;">
+                  <div style="display:flex; align-items:center; gap:6px;">
+                    \${badgeCrit}
+                    <span style="font-size:12.5px; font-weight:700; color:#f8fafc;">노드 루트 디스크 96% 고갈 (DiskPressure)</span>
+                  </div>
+                  \${isDiskPressure ? pillError('DiskPressure') : pillRunning}
+                </div>
+                <p style="font-size:11.5px; color:#94a3b8; line-height:1.4; margin-bottom:8px;">
+                  로그 폭증으로 워커 노드(/dev/vda)가 96% 고갈되어 Kubelet이 DiskPressure를 발동하고 신규 파드 배치를 즉시 차단(Cordon)합니다.
+                </p>
+                <div style="font-size:11px; color:#cbd5e1; background:#1e293b55; padding:6px 8px; border-radius:4px; margin-bottom:10px; font-family:monospace;">
+                  <div>• 대상 노드: <span style="color:#38bdf8; font-weight:bold;">\${targetWorkerName} (\${targetWorkerIp})</span></div>
+                  <div>• 마운트: <span style="color:#f59e0b;">/dev/vda (/): \${osDisk?.usedGb || 20}/\${osDisk?.sizeGb || 50}GB</span></div>
+                </div>
+              </div>
+              <div>
+                <div style="display:flex; gap:6px; margin-bottom:8px;">
+                  <button class="btn sm danger" style="flex:1;" onclick="triggerScenario('disk_pressure', 'inject')">🚨 디스크 96% 고갈 유발</button>
+                  <button class="btn sm primary" style="flex:1;" onclick="triggerScenario('disk_pressure', 'resolve')">✅ 로그 정리 (정상화)</button>
+                </div>
+                <div style="font-size:10.5px; color:#64748b; display:flex; align-items:center; gap:4px; flex-wrap:wrap;">
+                  <span>검증:</span>
+                  <span class="chip-btn" onclick="runChip('df -h')">df -h</span>
+                  <span class="chip-btn" onclick="runChip('k describe node \${targetWorkerName}')">describe node</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- 시나리오 3-2 -->
+            <div style="background:#0f1523; border:1px solid \${isCpuSpike ? '#f59e0b' : '#1f293d'}; border-radius:6px; padding:12px; display:flex; flex-direction:column; justify-content:space-between;">
+              <div>
+                <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:6px;">
+                  <div style="display:flex; align-items:center; gap:6px;">
+                    \${badgeWarn}
+                    <span style="font-size:12.5px; font-weight:700; color:#f8fafc;">트래픽 폭증 & vCPU 95% 스파이크</span>
+                  </div>
+                  \${isCpuSpike ? pillError('vCPU 스파이크') : pillRunning}
+                </div>
+                <p style="font-size:11.5px; color:#94a3b8; line-height:1.4; margin-bottom:8px;">
+                  대규모 접속자가 몰려 4,200 RPS의 트래픽이 인입되면서 vCPU 한계에 도달하고 Throttling 및 응답 지연이 급증합니다.
+                </p>
+                <div style="font-size:11px; color:#cbd5e1; background:#1e293b55; padding:6px 8px; border-radius:4px; margin-bottom:10px; font-family:monospace;">
+                  <div>• 인바운드 트래픽: <span style="color:#f59e0b; font-weight:bold;">\${lab.trafficRps || 0} RPS</span></div>
+                  <div>• 대상 노드: <span style="color:#38bdf8;">\${targetWorkerName} (\${targetWorkerIp})</span></div>
+                </div>
+              </div>
+              <div>
+                <div style="display:flex; gap:6px; margin-bottom:8px;">
+                  <button class="btn sm warning" style="flex:1;" onclick="triggerScenario('cpu_spike', 'inject')">🚨 4200 RPS 스파이크</button>
+                  <button class="btn sm primary" style="flex:1;" onclick="triggerScenario('cpu_spike', 'resolve')">✅ 트래픽 안정화 (120 RPS)</button>
+                </div>
+                <div style="font-size:10.5px; color:#64748b; display:flex; align-items:center; gap:4px; flex-wrap:wrap;">
+                  <span>검증:</span>
+                  <span class="chip-btn" onclick="runChip('k top nodes')">k top nodes</span>
+                  <span class="chip-btn" onclick="runChip('k top pods')">k top pods</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 카테고리 4: 무중단 배포 & 유지보수 실습 -->
+        <div class="scenario-category-section" data-cat="cat-devops" style="display:\${currentScenarioFilter === 'all' || currentScenarioFilter === 'cat-devops' ? 'block' : 'none'};">
+          <div style="display:flex; align-items:center; gap:6px; font-size:13px; font-weight:700; color:#10b981; margin-bottom:8px; border-left:3px solid #10b981; padding-left:8px;">
+            🔄 4. 무중단 배포 & 유지보수 실습 (DevOps & Maintenance)
+          </div>
+          <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+            <!-- 시나리오 4-1 -->
+            <div style="background:#0f1523; border:1px solid \${isDrained ? '#3b82f6' : '#1f293d'}; border-radius:6px; padding:12px; display:flex; flex-direction:column; justify-content:space-between;">
+              <div>
+                <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:6px;">
+                  <div style="display:flex; align-items:center; gap:6px;">
+                    \${badgeMaint}
+                    <span style="font-size:12.5px; font-weight:700; color:#f8fafc;">노드 커널 패치용 무중단 대피 (Drain)</span>
+                  </div>
+                  \${isDrained ? \`<span class="status-pill status-pending" style="color:#60a5fa; border-color:#60a5fa;">🔧 Drain 격리 중</span>\` : pillRunning}
+                </div>
+                <p style="font-size:11.5px; color:#94a3b8; line-height:1.4; margin-bottom:8px;">
+                  OS 보안 패치를 위해 워커 노드를 격리(Cordon)하고 구동 중인 파드를 타 노드로 안전하게 무중단 축출(Evict)합니다.
+                </p>
+                <div style="font-size:11px; color:#cbd5e1; background:#1e293b55; padding:6px 8px; border-radius:4px; margin-bottom:10px; font-family:monospace;">
+                  <div>• 작업 대상 노드: <span style="color:#38bdf8; font-weight:bold;">\${targetWorkerName} (\${targetWorkerIp})</span></div>
+                  <div>• 스케줄링 상태: <span style="color:\${isDrained ? '#ef4444' : '#10b981'}; font-weight:bold;">\${targetWorker.unschedulable ? 'SchedulingDisabled' : 'Schedulable'}</span></div>
+                </div>
+              </div>
+              <div>
+                <div style="display:flex; gap:6px; margin-bottom:8px;">
+                  <button class="btn sm warning" style="flex:1;" onclick="triggerScenario('node_drain', 'inject')">🚨 노드 Drain 파드 퇴출</button>
+                  <button class="btn sm primary" style="flex:1;" onclick="triggerScenario('node_drain', 'resolve')">✅ 노드 복귀 (Uncordon)</button>
+                </div>
+                <div style="font-size:10.5px; color:#64748b; display:flex; align-items:center; gap:4px; flex-wrap:wrap;">
+                  <span>명령어:</span>
+                  <span class="chip-btn" onclick="runChip('k drain \${targetWorkerName} --ignore-daemonsets')">k drain</span>
+                  <span class="chip-btn" onclick="runChip('k uncordon \${targetWorkerName}')">k uncordon</span>
+                  <span class="chip-btn" onclick="runChip('k get nodes -o wide')">k get nodes</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- 시나리오 4-2 -->
+            <div style="background:#0f1523; border:1px solid #1f293d; border-radius:6px; padding:12px; display:flex; flex-direction:column; justify-content:space-between;">
+              <div>
+                <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:6px;">
+                  <div style="display:flex; align-items:center; gap:6px;">
+                    \${badgeMaint}
+                    <span style="font-size:12.5px; font-weight:700; color:#f8fafc;">무중단 롤링 업데이트 & 즉각 롤백</span>
+                  </div>
+                  <span class="status-pill status-running" style="color:#10b981; border-color:#10b981;">● \${dep.image || 'nginx:1.24-stable'}</span>
+                </div>
+                <p style="font-size:11.5px; color:#94a3b8; line-height:1.4; margin-bottom:8px;">
+                  신규 컨테이너 이미지를 단계적으로 교체하고, 배포 이상 감지 시 1초 만에 'rollout undo'로 무중단 원상 복구합니다.
+                </p>
+                <div style="font-size:11px; color:#cbd5e1; background:#1e293b55; padding:6px 8px; border-radius:4px; margin-bottom:10px; font-family:monospace;">
+                  <div>• 대상 디플로이먼트: <span style="color:#38bdf8; font-weight:bold;">\${dep.name} (\${dep.replicas || 3} Pods)</span></div>
+                  <div>• 현재 이미지: <span style="color:#10b981;">\${dep.image || 'nginx:1.24-stable'}</span></div>
+                </div>
+              </div>
+              <div>
+                <div style="display:flex; gap:6px; margin-bottom:8px;">
+                  <button class="btn sm primary" style="flex:1;" onclick="triggerScenario('rolling_update', 'inject')">🔄 신규 버전 배포 (v1.25)</button>
+                  <button class="btn sm warning" style="flex:1;" onclick="triggerScenario('rolling_update', 'resolve')">⏪ 즉각 롤백 (Rollout Undo)</button>
+                </div>
+                <div style="font-size:10.5px; color:#64748b; display:flex; align-items:center; gap:4px; flex-wrap:wrap;">
+                  <span>명령어:</span>
+                  <span class="chip-btn" onclick="runChip('k rollout status deploy/\${dep.name}')">rollout status</span>
+                  <span class="chip-btn" onclick="runChip('k rollout undo deploy/\${dep.name}')">rollout undo</span>
+                  <span class="chip-btn" onclick="runChip('k get deploy -o wide')">k get deploy</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      \`;
     }
 
     // 9. 터미널 명령 실행
