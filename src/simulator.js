@@ -1078,6 +1078,396 @@ Content-Length: 512
   };
 }
 
+// AI 모델 기반 인프라 운영 팁 & 트러블슈팅 엔진
+export function generateAiCopilotAdvice(prompt = '', topic = 'general', lab = null) {
+  const p = (prompt || '').toLowerCase().trim();
+
+  // 1. 현재 클러스터 실시간 장애 및 경보 감지
+  const activeIssues = [];
+  if (lab) {
+    // 디스크 압박(DiskPressure) 및 수동 격리(Cordoned) 감지
+    (lab.nodes || []).forEach(n => {
+      if (n.diskPressure) {
+        activeIssues.push({
+          level: 'CRITICAL',
+          badge: '디스크 고갈 (DiskPressure)',
+          target: n.name,
+          desc: `노드 [${n.name}] 디스크 사용량이 85%를 초과하여 Kubelet 스케줄링이 자동 차단(Eviction/Cordon)되었습니다. 신규 파드가 배치되지 않습니다.`,
+          fixCmd: `kubectl uncordon ${n.name}`,
+          fixGuide: `GUI 노드 카드에서 [vCPU/RAM/스토리지]를 확장하거나 터미널에서 'df -h' 점검 후 'kubectl uncordon ${n.name}'으로 격리를 해제하세요.`,
+          modalId: null
+        });
+      } else if (n.status === 'SchedulingDisabled') {
+        activeIssues.push({
+          level: 'WARN',
+          badge: '노드 스케줄링 차단 (Cordoned)',
+          target: n.name,
+          desc: `노드 [${n.name}]가 수동 격리(Cordon) 상태로 지정되어 워크로드가 스케줄링되지 않습니다.`,
+          fixCmd: `kubectl uncordon ${n.name}`,
+          fixGuide: `'kubectl uncordon ${n.name}' 명령어로 노드 스케줄링을 재개하세요.`
+        });
+      }
+
+      // vCPU 고부하 감지
+      const cpuPct = n.cpuTotalM > 0 ? Math.round(((n.cpuAllocated || 0) / n.cpuTotalM) * 100) : 0;
+      if (cpuPct >= 85) {
+        activeIssues.push({
+          level: 'WARN',
+          badge: 'vCPU 임계치 초과',
+          target: n.name,
+          desc: `노드 [${n.name}]의 vCPU 사용률이 ${cpuPct}%로 과부하 상태입니다. 신규 파드가 Pending 상태에 빠질 수 있습니다.`,
+          fixCmd: `kubectl top nodes`,
+          fixGuide: `GUI 노드 카드 상단의 [+2C (Hot-Add)] 버튼을 클릭하여 무중단 vCPU를 확장하세요.`
+        });
+      }
+    });
+
+    // 파드 Pending 및 CrashLoop 상태 감지
+    (lab.pods || []).forEach(pod => {
+      if (pod.status === 'Pending') {
+        activeIssues.push({
+          level: 'CRITICAL',
+          badge: '파드 Pending 대기',
+          target: pod.name,
+          desc: `파드 [${pod.name}]가 클러스터 내 가용 CPU/RAM 부족 또는 nodeSelector 불일치로 배포되지 못하고 있습니다.`,
+          fixCmd: `kubectl describe pod ${pod.name}`,
+          fixGuide: `'kubectl describe pod ${pod.name}'으로 사유를 확인하고, 노드 사양을 증설하거나 타겟 노드를 추가하세요.`,
+          modalId: 'add-node-modal'
+        });
+      }
+    });
+
+    // L7 로드밸런서 헬스체크 실패 감지
+    if (lab.network && lab.network.loadBalancer && !lab.network.loadBalancer.healthy) {
+      activeIssues.push({
+        level: 'CRITICAL',
+        badge: 'L7 로드밸런서 503 비정상',
+        target: 'LoadBalancer (L7)',
+        desc: `L7 로드밸런서의 헬스체크가 실패하여 백엔드 라우팅이 중단되고 인입 요청에 대해 503 Service Unavailable 에러가 발생 중입니다.`,
+        fixCmd: `curl -I https://ktci5.kr/healthz`,
+        fixGuide: `네트워크 토폴로지 패널의 로드밸런서 카드에서 헬스체크 상태를 리셋하거나 백엔드 파드가 정상 동작 중인지 확인하세요.`
+      });
+    }
+
+    // Cloudflare Zero Trust 터널 단절 감지
+    if (lab.network && lab.network.tunnel && lab.network.tunnel.status !== 'connected') {
+      activeIssues.push({
+        level: 'WARN',
+        badge: 'Cloudflare 터널 단절 (502)',
+        target: 'Cloudflare Tunnel',
+        desc: `Cloudflare Zero Trust 터널 연결이 끊겨 외부 도메인 인입 시 502 Bad Gateway가 발생할 수 있습니다.`,
+        fixCmd: `tunnel status`,
+        fixGuide: `네트워크 토폴로지 패널에서 [터널 연결] 토글 스위치를 클릭하여 터널 데몬을 즉시 재연결하세요.`
+      });
+    }
+  }
+
+  // 사용자 질문(Prompt)에 따른 카테고리 자동 감지
+  let selectedTopic = topic;
+  if (p) {
+    if (p.includes('팁') || p.includes('사용') || p.includes('단축키') || p.includes('터미널') || p.includes('어떻게 써') || p.includes('화면') || p.includes('뷰')) {
+      selectedTopic = 'tips';
+    } else if (p.includes('관리') || p.includes('운영') || p.includes('증설') || p.includes('cpu') || p.includes('ram') || p.includes('메모리') || p.includes('알고리즘') || p.includes('최적화') || p.includes('스펙') || p.includes('스토리지')) {
+      selectedTopic = 'management';
+    } else if (p.includes('메뉴') || p.includes('추가') || p.includes('어디서') || p.includes('생성') || p.includes('노드추가') || p.includes('파드배포') || p.includes('도메인') || p.includes('어떻게 추가')) {
+      selectedTopic = 'menu';
+    } else if (p.includes('문제') || p.includes('장애') || p.includes('대처') || p.includes('오류') || p.includes('에러') || p.includes('진단') || p.includes('해결') || p.includes('503') || p.includes('502') || p.includes('pending') || p.includes('diskpressure')) {
+      selectedTopic = 'troubleshoot';
+    }
+  }
+
+  // 1. [사용팁] 주제
+  if (selectedTopic === 'tips') {
+    return {
+      topic: 'tips',
+      title: '💡 시뮬레이터 조작 및 CLI 사용팁',
+      summary: '실무 상용 환경과 동일한 터미널 인터랙션, 스플릿 뷰 조작, 다중 사용자 협업 및 트래픽 시뮬레이션 활용 팁입니다.',
+      statusBadge: { text: '사용 가이드', type: 'ok' },
+      sections: [
+        {
+          title: '1. 가상 터미널 효율적 조작 노하우',
+          icon: '⌨️',
+          items: [
+            {
+              title: '명령어 히스토리 및 키 탐색',
+              desc: '터미널 입력창에서 [위/아래 방향키]를 누르면 이전에 실행했던 명령어들을 순차적으로 불러올 수 있습니다. 빠른 반복 작업에 매우 유용합니다.',
+              tag: '단축키'
+            },
+            {
+              title: '실무 Alias 단축어 완벽 지원',
+              desc: '상용 환경 표준 alias가 기본 적용되어 있습니다:\\n• k → kubectl\\n• kgp → kubectl get pods\\n• kgn → kubectl get nodes\\n• kgs → kubectl get svc',
+              cmd: 'k get pods -o wide',
+              tag: 'Alias'
+            },
+            {
+              title: 'Linux 시스템 & 네트워크 진단 명령어',
+              desc: 'K8s 명령어 외에도 노드 하드웨어 및 네트워크 상태를 직접 점검하는 Linux 명령어를 지원합니다:\\n• df -h (디스크 용량 및 파티션)\\n• free -m (메모리 사용 현황)\\n• uptime (서버 가동시간 & 로드 애버리지)\\n• tunnel status (터널 연결 진단)',
+              cmd: 'df -h',
+              tag: '시스템 진단'
+            },
+            {
+              title: '터미널 로그 정리',
+              desc: '화면이 길어졌을 때 \'clear\' 명령어를 입력하면 터미널 화면이 즉시 깨끗하게 초기화됩니다.',
+              cmd: 'clear',
+              tag: '화면 정리'
+            }
+          ]
+        },
+        {
+          title: '2. 인터페이스 뷰 모드 조작팁',
+          icon: '🖥️',
+          items: [
+            {
+              title: '작업 스타일에 맞춤 스플릿 뷰 전환',
+              desc: '상단 툴바의 뷰 버튼으로 자유롭게 레이아웃을 전환할 수 있습니다:\\n• [50:50]: 터미널과 인프라 모니터링 표준 반반 분할\\n• [70:30]: 터미널 CLI 작업 집중 모드\\n• [30:70]: 대시보드 및 네트워크 토폴로지 모니터링 집중 모드\\n• [100:0]: 터미널 전용 풀스크린\\n• [0:100]: 대시보드 전용 풀스크린',
+              tag: 'UI 팁'
+            },
+            {
+              title: '수정 권한 (Editable) 잠금 및 협업 팁',
+              desc: '우측 상단의 [수정 권한: 허용됨] 버튼을 클릭해 OFF(읽기 전용)로 전환하면, 다른 수강생이나 팀원이 실습 중 노드/파드를 임의로 삭제하거나 변경하는 사고를 방지할 수 있습니다.',
+              tag: '보안/협업'
+            },
+            {
+              title: '실시간 자동 동기화 (Polling Sync)',
+              desc: '동일한 랩에 접속해 있는 다른 사용자가 명령어를 실행하거나 자원을 변경하면 새로고침할 필요 없이 2.5초 이내에 모든 화면에 실시간 자동 반영됩니다.',
+              tag: '실시간'
+            }
+          ]
+        },
+        {
+          title: '3. 트래픽 시뮬레이터 활용팁',
+          icon: '⚡',
+          items: [
+            {
+              title: '초당 트래픽 (RPS) 부하 테스트',
+              desc: '네트워크 토폴로지의 슬라이더를 0~1000 RPS까지 조절하여 실시간 부하가 마스터 노드(15%)와 워커 노드에 어떻게 분산되고 파드당 부하가 산출되는지 모니터링하세요.',
+              tag: '부하 테스트'
+            }
+          ]
+        }
+      ],
+      quickPrompts: [
+        { label: '⚙️ 인프라 관리팁 보기', topic: 'management' },
+        { label: '➕ 메뉴별 자원 추가법', topic: 'menu' },
+        { label: '🚨 장애 대처법 & 실시간 진단', topic: 'troubleshoot' }
+      ]
+    };
+  }
+
+  // 2. [관리팁] 주제
+  if (selectedTopic === 'management') {
+    return {
+      topic: 'management',
+      title: '⚙️ 상용 인프라 운영 & 클러스터 관리팁',
+      summary: '대규모 트래픽 분산, 하드웨어 무중단 증설(Hot-Add), 스토리지 티어링, 안전한 노드 유지보수 등 실무 엔지니어링 핵심 노하우입니다.',
+      statusBadge: { text: '운영 노하우', type: 'ok' },
+      sections: [
+        {
+          title: '1. 하드웨어 무중단 증설 (Hot-Add)',
+          icon: '🚀',
+          items: [
+            {
+              title: 'vCPU / RAM 즉각 확장 실무',
+              desc: '서버 재부팅 없이 노드 하드웨어 용량을 증설하려면 노드 카드 상단의 [+2C (Hot-Add)] 또는 [+4G] 버튼을 클릭하세요. Kubelet의 Allocatable 리소스가 즉시 갱신되어 Pending 파드가 자동으로 스케줄링됩니다.',
+              cmd: 'kubectl top nodes',
+              tag: 'Hot-Add'
+            },
+            {
+              title: '자원 임계치 모니터링 기준',
+              desc: '노드의 CPU 또는 RAM 사용률이 85%를 초과하면 OOMKilled나 Throttling이 발생할 수 있습니다. 사전 경보 시점에 즉시 증설하는 것이 서비스 SLA를 지키는 핵심입니다.',
+              cmd: 'kubectl get nodes -o wide',
+              tag: '가용성'
+            }
+          ]
+        },
+        {
+          title: '2. 스토리지 티어링 & 노드 친화도 (nodeSelector)',
+          icon: '💾',
+          items: [
+            {
+              title: 'NVMe SSD vs Standard HDD 분리 정책',
+              desc: '• 고성능 I/O 워크로드(MySQL, Redis 등)는 \'disktype=ssd\' 레이블을 지정하여 고속 NVMe 노드에 배치하세요.\\n• 로그 수집기, 배치 잡 등 I/O 부하가 낮은 작업은 \'disktype=hdd\' 노드에 배치하여 인프라 비용을 절감합니다.',
+              cmd: 'kubectl get nodes --show-labels',
+              tag: '스토리지'
+            }
+          ]
+        },
+        {
+          title: '3. L4 / L7 로드밸런싱 알고리즘 최적화',
+          icon: '🌐',
+          items: [
+            {
+              title: '상황별 최적 분산 알고리즘 선정',
+              desc: '• 라운드로빈 (Round Robin): 요청 처리 시간이 짧고 일정한 일반 REST API 및 마이크로서비스에 최적\\n• 최소 연결 (Least Connections): DB 쿼리, 웹소켓 등 커넥션 유지 시간이 길고 트랜잭션 무게가 제각각인 서비스에 최적\\n• IP 해시 (IP Hash): 클라이언트 IP 기반으로 동일 백엔드로 라우팅하여 세션 고정(Sticky Session)이 필요한 서비스에 최적',
+              tag: '네트워크'
+            },
+            {
+              title: '로드밸런서 헬스체크 임계치 관리',
+              desc: '헬스체크 주기가 너무 짧으면 정상 파드에 불필요한 부하를 주고, 너무 길면 비정상 파드로의 요청 전달이 지연됩니다. 상용 기준 5~10초 인터벌이 권장됩니다.',
+              cmd: 'curl -I https://ktci5.kr/healthz',
+              tag: '헬스체크'
+            }
+          ]
+        },
+        {
+          title: '4. 안전한 노드 유지보수 (Drain & Cordon)',
+          icon: '🛡️',
+          items: [
+            {
+              title: '노드 점검 전 파드 안전 대피',
+              desc: '노드 OS 패치나 물리 점검 시 먼저 \'kubectl cordon <node>\'로 신규 파드 배치를 막고, \'kubectl drain <node> --ignore-daemonsets\'로 가동 중인 파드를 다른 건강한 노드로 안전하게 이주시키세요.',
+              cmd: 'kubectl cordon worker-01',
+              tag: '유지보수'
+            }
+          ]
+        }
+      ],
+      quickPrompts: [
+        { label: '💡 인터페이스 사용팁', topic: 'tips' },
+        { label: '➕ 메뉴별 자원 추가법', topic: 'menu' },
+        { label: '🚨 실시간 진단 & 장애 대처', topic: 'troubleshoot' }
+      ]
+    };
+  }
+
+  // 3. [어떤 메뉴 어떻게 추가] 주제
+  if (selectedTopic === 'menu') {
+    return {
+      topic: 'menu',
+      title: '➕ 어떤 메뉴에서 어떻게 추가하나요? (자원 생성 가이드)',
+      summary: 'VM 노드 증설, 파드/디플로이먼트 배포, 도메인 Ingress 바인딩 등 각 메뉴의 위치와 정확한 생성 절차입니다.',
+      statusBadge: { text: '메뉴 가이드', type: 'ok' },
+      sections: [
+        {
+          title: '1. VM 노드 신규 프로비저닝 (노드 확장)',
+          icon: '🖥️',
+          items: [
+            {
+              title: '메뉴 위치: 우측 GUI 대시보드 상단 [+ VM 노드 추가]',
+              desc: '1. 우측 상단의 [+ VM 노드 추가] 버튼을 클릭하여 모달을 엽니다.\\n2. 호스트명(예: worker-03), 사설 IP(예: 10.244.0.13), vCPU(2~8 Core), RAM(4~8 GiB), 스토리지(SSD/HDD)를 선택합니다.\\n3. [노드 프로비저닝]을 클릭하면 1초 만에 클러스터에 Ready 상태로 편입됩니다.',
+              menuGuide: '우측 상단 [+ VM 노드 추가]',
+              modalId: 'add-node-modal',
+              cmd: 'kubectl add node worker-03 --ip 10.244.0.13 --cpu 4000 --ram 8192 --disk ssd',
+              tag: 'VM 증설'
+            }
+          ]
+        },
+        {
+          title: '2. 파드 / 디플로이먼트 배포 (초/분/시간/랜덤 수명)',
+          icon: '📦',
+          items: [
+            {
+              title: '메뉴 위치: 파드 목록 상단 [+ 파드 배포]',
+              desc: '1. 파드 목록 헤더의 [+ 파드 배포 (초/분/랜덤 동작)] 버튼 클릭\\n2. 워크로드명(예: order-api), 이미지(nginx:1.25), 레플리카(파드 수 1~10), CPU Request(100m~500m) 지정\\n3. [동작 주기/수명]: 영구 지속(Service), 초 단위(테스트잡), 분 단위(배치), 시간 단위, 🎲랜덤 라이프사이클(자동 버스트 트래픽 발생) 선택\\n4. [배포하기]를 누르면 스케줄러가 타겟 노드에 즉시 배치합니다.',
+              menuGuide: '파드 목록 상단 [+ 파드 배포]',
+              modalId: 'deploy-modal',
+              cmd: 'kubectl create deployment web-app --image=nginx --replicas=3',
+              tag: '워크로드'
+            }
+          ]
+        },
+        {
+          title: '3. Ingress 서브도메인 & 포트 바인딩',
+          icon: '🌐',
+          items: [
+            {
+              title: '메뉴 위치: 네트워크 패널 L7 로드밸런서 [+ 도메인/포트 매핑 추가]',
+              desc: '1. 네트워크 토폴로지 카드 내 L7 로드밸런서 영역의 [+ 도메인/포트 매핑 추가] 클릭\\n2. 호스트 FQDN(예: shop.ktci5.kr), 인입 포트(80 또는 443), 경로(/), 타겟 서비스(web-service:80) 입력\\n3. [도메인/포트 매핑] 클릭 시 Cloudflare 터널 및 L7 Ingress에 즉시 바인딩됩니다.',
+              menuGuide: '네트워크 패널 [+ 도메인/포트 매핑]',
+              modalId: 'domain-modal',
+              cmd: 'curl -I http://shop.ktci5.kr',
+              tag: 'Ingress'
+            }
+          ]
+        },
+        {
+          title: '4. 장애 시나리오 주입 및 훈련 메뉴',
+          icon: '🚨',
+          items: [
+            {
+              title: '메뉴 위치: 상단 운영자 툴바 [🚨 장애 주입/해결 시나리오] 드롭다운',
+              desc: '1. 상단 툴바의 드롭다운 선택상자에서 원하는 시나리오 선택:\\n   - [디스크 고갈 & 스케줄링 불가]\\n   - [로드밸런서 헬스체크 실패 503]\\n   - [Cloudflare 터널 단절 502]\\n2. 선택 즉시 상용 장애가 주입되며, 대처법에 따라 복구 훈련을 진행할 수 있습니다.',
+              menuGuide: '상단 툴바 [장애 시나리오 드롭다운]',
+              tag: '장애 실습'
+            }
+          ]
+        }
+      ],
+      quickPrompts: [
+        { label: '💡 인터페이스 사용팁', topic: 'tips' },
+        { label: '⚙️ 인프라 관리팁', topic: 'management' },
+        { label: '🚨 문제 발생시 대처법', topic: 'troubleshoot' }
+      ]
+    };
+  }
+
+  // 4. [문제로 나왔을 때 어떻게 대처] 주제 (Default / Troubleshoot)
+  const isHealthy = activeIssues.length === 0;
+
+  return {
+    topic: 'troubleshoot',
+    title: isHealthy ? '🛡️ 인프라 상태 정상 & 실전 장애 대처 런북' : '🚨 실시간 감지된 장애 및 단계별 대처법',
+    summary: isHealthy
+      ? '현재 클러스터에 감지된 심각한 장애가 없습니다. 상용 환경 및 CKA 시험에 자주 출제되는 4대 핵심 장애 대처 런북을 확인하세요.'
+      : `현재 클러스터에서 총 ${activeIssues.length}건의 장애/주의사항이 실시간 감지되었습니다! 아래 단계별 조치 가이드를 확인하세요.`,
+    statusBadge: isHealthy
+      ? { text: '클러스터 정상', type: 'ok' }
+      : { text: `${activeIssues.length}건 장애 감지`, type: 'critical' },
+    sections: [
+      // 현재 랩에서 발생 중인 실시간 장애가 있다면 최우선 표시!
+      ...(activeIssues.length > 0 ? [{
+        title: '🔥 현재 랩 실시간 감지 문제 및 즉시 조치 가이드',
+        icon: '⚠️',
+        items: activeIssues.map(issue => ({
+          title: `[${issue.level}] ${issue.badge} - ${issue.target}`,
+          desc: issue.desc + '\n\n🛠️ 조치 방법: ' + issue.fixGuide,
+          cmd: issue.fixCmd,
+          modalId: issue.modalId || null,
+          menuGuide: issue.modalId ? '타겟 자원 증설 메뉴 열기' : null,
+          tag: issue.level === 'CRITICAL' ? '긴급 조치' : '주의'
+        }))
+      }] : []),
+      {
+        title: '📚 상용 인프라 & CKA 시험 빈출 4대 장애 대처 런북',
+        icon: '📖',
+        items: [
+          {
+            title: '1. 파드가 Pending 상태에 멈춰 있을 때',
+            desc: '• 원인: 노드의 CPU/메모리 가용량 부족(Insufficient cpu), nodeSelector 불일치, Taints\\n• 진단: \'kubectl describe pod <pod>\'로 Events 섹션 메시지 확인\\n• 해결: 노드 카드 상단의 [+2C], [+4G] 버튼으로 노드를 확장하거나 신규 VM 노드를 추가합니다.',
+            cmd: 'kubectl describe pod web-app',
+            modalId: 'add-node-modal',
+            menuGuide: '신규 VM 노드 추가 모달',
+            tag: 'Pending'
+          },
+          {
+            title: '2. 노드에 DiskPressure 발생 시 (스케줄링 차단)',
+            desc: '• 원인: 루트 디스크 85% 초과로 Kubelet Eviction 발생 및 노드 Cordon 처리됨\\n• 진단: \'df -h\'로 디스크 파티션 사용량 확인\\n• 해결: 노드 카드에서 디스크 사양을 증설하고 \'kubectl uncordon <node>\' 명령으로 격리를 해제합니다.',
+            cmd: 'kubectl uncordon worker-02',
+            tag: 'DiskPressure'
+          },
+          {
+            title: '3. 로드밸런서 503 Service Unavailable 오류 발생 시',
+            desc: '• 원인: 백엔드 타겟 파드가 응답하지 않거나 헬스체크 경로(/healthz) 오류 발생\\n• 진단: \'curl -I https://ktci5.kr/healthz\'로 직접 응답 코드 확인\\n• 해결: 네트워크 패널의 로드밸런서 카드에서 헬스체크를 복구하고 타겟 파드 상태를 점검합니다.',
+            cmd: 'curl -I https://ktci5.kr/healthz',
+            tag: '503 에러'
+          },
+          {
+            title: '4. Cloudflare 터널 단절 (502 Bad Gateway) 발생 시',
+            desc: '• 원인: Cloudflare Zero Trust 터널 에이전트(cloudflared) 프로세스 종료 또는 인증 토큰 만료\\n• 진단: \'tunnel status\'로 터널 링크 확인\\n• 해결: 네트워크 토폴로지 카드에서 [터널 연결] 토글 버튼을 클릭하여 데몬을 즉시 재연결합니다.',
+            cmd: 'tunnel status',
+            tag: '502 터널'
+          }
+        ]
+      }
+    ],
+    quickPrompts: [
+      { label: '💡 인터페이스 사용팁', topic: 'tips' },
+      { label: '⚙️ 인프라 관리팁', topic: 'management' },
+      { label: '➕ 메뉴별 자원 추가법', topic: 'menu' }
+    ]
+  };
+}
+
 // REST API 핸들러
 export async function handleSimulatorApi(request, path, env, user) {
   const method = request.method;
@@ -1085,6 +1475,23 @@ export async function handleSimulatorApi(request, path, env, user) {
     'content-type': 'application/json; charset=UTF-8',
     'cache-control': 'no-store'
   };
+
+  // 0. GET / POST /api/simulator/ai : 전역 AI 코파일럿 조언
+  if (path === '/api/simulator/ai') {
+    let body = {};
+    if (method === 'POST') {
+      try { body = await request.json(); } catch {}
+    }
+    const prompt = (body.prompt || '').trim();
+    const topic = body.topic || 'general';
+    const aiResponse = generateAiCopilotAdvice(prompt, topic, null);
+    return new Response(JSON.stringify({
+      ok: true,
+      topic,
+      response: aiResponse,
+      timestamp: new Date().toLocaleTimeString('ko-KR')
+    }), { headers: jsonHeaders });
+  }
 
   // 1. GET /api/simulator/labs : 랩 목록 조회
   if (path === '/api/simulator/labs' && method === 'GET') {
@@ -1596,7 +2003,23 @@ export async function handleSimulatorApi(request, path, env, user) {
       return new Response(JSON.stringify({ ok: false, error: 'Custom lab reset not supported' }), { headers: jsonHeaders });
     }
 
-    // 12. DELETE /api/simulator/labs/:id : 랩 삭제
+    // 12. POST /api/simulator/labs/:id/ai : AI 모델 기반 인프라 운영 팁 & 트러블슈팅 가이드
+    if (action === 'ai' && method === 'POST') {
+      let body = {};
+      try { body = await request.json(); } catch {}
+      const prompt = (body.prompt || '').trim();
+      const topic = body.topic || 'general'; // 'tips' | 'troubleshoot' | 'menu' | 'exam' | 'general'
+      
+      const aiResponse = generateAiCopilotAdvice(prompt, topic, lab);
+      return new Response(JSON.stringify({
+        ok: true,
+        topic,
+        response: aiResponse,
+        timestamp: new Date().toLocaleTimeString('ko-KR')
+      }), { headers: jsonHeaders });
+    }
+
+    // 13. DELETE /api/simulator/labs/:id : 랩 삭제
     if (!action && method === 'DELETE') {
       if (['default', 'scheduling-lab', 'hpa-traffic-lab'].includes(labId)) {
         return new Response(JSON.stringify({ ok: false, error: '기본 시드 랩은 삭제할 수 없습니다.' }), { headers: jsonHeaders, status: 400 });
@@ -1814,6 +2237,385 @@ export function renderSimulatorPage(user) {
     .form-control:focus { outline: none; border-color: #6366f1; }
     .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
     .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+
+    /* 우측 하단 AI 인프라 코파일럿 플로팅 위젯 */
+    .ai-copilot-trigger {
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      z-index: 999;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 9px 16px;
+      background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+      color: #ffffff;
+      border: 1px solid rgba(196, 181, 253, 0.4);
+      border-radius: 999px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 700;
+      box-shadow: 0 10px 25px rgba(79, 70, 229, 0.45);
+      transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+      user-select: none;
+    }
+    .ai-copilot-trigger:hover {
+      transform: translateY(-2px) scale(1.02);
+      box-shadow: 0 14px 30px rgba(124, 58, 237, 0.55);
+      border-color: #a78bfa;
+    }
+    .ai-copilot-trigger:active {
+      transform: translateY(0) scale(0.98);
+    }
+    .ai-sparkle {
+      font-size: 15px;
+      animation: ai-pulse 2s infinite ease-in-out;
+    }
+    @keyframes ai-pulse {
+      0%, 100% { transform: scale(1); opacity: 1; }
+      50% { transform: scale(1.2); opacity: 0.8; }
+    }
+    .ai-trigger-badge {
+      font-size: 10.5px;
+      padding: 2px 7px;
+      border-radius: 999px;
+      font-weight: 700;
+      background: rgba(16, 185, 129, 0.25);
+      color: #6ee7b7;
+      border: 1px solid rgba(16, 185, 129, 0.5);
+    }
+    .ai-trigger-badge.warn {
+      background: rgba(239, 68, 68, 0.25);
+      color: #fca5a5;
+      border-color: rgba(239, 68, 68, 0.5);
+      animation: ai-blink 1.5s infinite;
+    }
+    @keyframes ai-blink {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+
+    /* AI 코파일럿 대화창 패널 */
+    .ai-copilot-panel {
+      position: fixed;
+      bottom: 72px;
+      right: 20px;
+      width: 450px;
+      max-width: calc(100vw - 40px);
+      height: 600px;
+      max-height: calc(100vh - 90px);
+      background: #0f172a;
+      border: 1px solid #334155;
+      border-radius: 14px;
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7);
+      display: none;
+      flex-direction: column;
+      z-index: 1000;
+      overflow: hidden;
+      backdrop-filter: blur(12px);
+      animation: ai-slide-up 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    .ai-copilot-panel.active {
+      display: flex;
+    }
+    @keyframes ai-slide-up {
+      from { opacity: 0; transform: translateY(16px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .ai-copilot-header {
+      padding: 12px 14px;
+      background: linear-gradient(90deg, #1e1b4b 0%, #1e293b 100%);
+      border-bottom: 1px solid #334155;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-shrink: 0;
+    }
+    .ai-header-left {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+    }
+    .ai-avatar {
+      width: 30px;
+      height: 30px;
+      border-radius: 8px;
+      background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 16px;
+      box-shadow: 0 2px 8px rgba(99, 102, 241, 0.4);
+    }
+    .ai-header-title {
+      font-size: 13.5px;
+      font-weight: 700;
+      color: #f8fafc;
+      line-height: 1.2;
+    }
+    .ai-header-subtitle {
+      font-size: 10.5px;
+      color: #a5b4fc;
+    }
+    .ai-close-btn {
+      background: transparent;
+      border: none;
+      color: #94a3b8;
+      cursor: pointer;
+      font-size: 16px;
+      padding: 4px;
+      border-radius: 4px;
+      line-height: 1;
+      transition: color 0.15s;
+    }
+    .ai-close-btn:hover {
+      color: #ffffff;
+      background: rgba(255, 255, 255, 0.1);
+    }
+
+    /* 프리셋 칩 바 */
+    .ai-presets-bar {
+      padding: 8px 12px;
+      background: #131d33;
+      border-bottom: 1px solid #1f293d;
+      display: flex;
+      gap: 6px;
+      overflow-x: auto;
+      flex-shrink: 0;
+    }
+    .ai-preset-chip {
+      white-space: nowrap;
+      background: #1e293b;
+      border: 1px solid #334155;
+      color: #cbd5e1;
+      font-size: 11px;
+      font-weight: 600;
+      padding: 4px 9px;
+      border-radius: 999px;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .ai-preset-chip:hover {
+      background: #312e81;
+      color: #e0e7ff;
+      border-color: #6366f1;
+    }
+    .ai-preset-chip.active {
+      background: #4f46e5;
+      color: #ffffff;
+      border-color: #818cf8;
+    }
+
+    /* 대화창 본체 */
+    .ai-chat-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      background: #090d16;
+    }
+
+    /* AI 메시지 카드 */
+    .ai-msg {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .ai-msg.user {
+      align-self: flex-end;
+      max-width: 85%;
+    }
+    .ai-msg.user .ai-msg-bubble {
+      background: #4f46e5;
+      color: #ffffff;
+      padding: 8px 12px;
+      border-radius: 12px 12px 2px 12px;
+      font-size: 12px;
+      line-height: 1.4;
+    }
+    .ai-msg.bot {
+      align-self: stretch;
+    }
+    .ai-card {
+      background: #141c2e;
+      border: 1px solid #23304a;
+      border-radius: 10px;
+      padding: 12px;
+      font-size: 12px;
+      color: #e2e8f0;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.25);
+    }
+    .ai-card-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      margin-bottom: 6px;
+      padding-bottom: 6px;
+      border-bottom: 1px solid #1f293d;
+    }
+    .ai-card-title {
+      font-size: 13px;
+      font-weight: 700;
+      color: #f8fafc;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .ai-card-summary {
+      font-size: 12px;
+      color: #94a3b8;
+      line-height: 1.45;
+      margin-bottom: 10px;
+    }
+    .ai-card-section {
+      background: #0e1524;
+      border: 1px solid #1a253c;
+      border-radius: 8px;
+      padding: 8px 10px;
+      margin-bottom: 8px;
+    }
+    .ai-section-title {
+      font-size: 11.5px;
+      font-weight: 700;
+      color: #818cf8;
+      margin-bottom: 6px;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .ai-item {
+      padding: 6px 0;
+      border-top: 1px solid #151d2f;
+    }
+    .ai-item:first-child {
+      border-top: none;
+      padding-top: 2px;
+    }
+    .ai-item-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      margin-bottom: 4px;
+    }
+    .ai-item-name {
+      font-weight: 700;
+      color: #f1f5f9;
+      font-size: 11.5px;
+    }
+    .ai-tag {
+      font-size: 9.5px;
+      font-weight: 600;
+      padding: 1px 5px;
+      border-radius: 4px;
+      background: #1e293b;
+      color: #a5b4fc;
+      border: 1px solid #312e81;
+    }
+    .ai-tag.critical {
+      background: rgba(239, 68, 68, 0.15);
+      color: #f87171;
+      border-color: rgba(239, 68, 68, 0.4);
+    }
+    .ai-item-desc {
+      font-size: 11.5px;
+      color: #94a3b8;
+      line-height: 1.45;
+      white-space: pre-line;
+      margin-bottom: 6px;
+    }
+    .ai-cmd-box {
+      background: #050811;
+      border: 1px solid #1e293b;
+      border-radius: 6px;
+      padding: 6px 8px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      margin-top: 4px;
+    }
+    .ai-cmd-text {
+      font-family: monospace;
+      font-size: 11px;
+      color: #38bdf8;
+      overflow-x: auto;
+      white-space: nowrap;
+    }
+    .ai-cmd-actions {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      flex-shrink: 0;
+    }
+    .ai-mini-btn {
+      background: #1e293b;
+      border: 1px solid #334155;
+      color: #cbd5e1;
+      font-size: 10px;
+      font-weight: 600;
+      padding: 2px 6px;
+      border-radius: 4px;
+      cursor: pointer;
+      transition: all 0.1s;
+    }
+    .ai-mini-btn:hover {
+      background: #334155;
+      color: #ffffff;
+      border-color: #6366f1;
+    }
+    .ai-mini-btn.primary {
+      background: #4338ca;
+      border-color: #6366f1;
+      color: #ffffff;
+    }
+    .ai-mini-btn.primary:hover {
+      background: #3730a3;
+    }
+
+    /* 하단 입력 영역 */
+    .ai-input-wrap {
+      padding: 10px 12px;
+      background: #111827;
+      border-top: 1px solid #1f293d;
+      flex-shrink: 0;
+    }
+    .ai-input-form {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .ai-text-input {
+      flex: 1;
+      background: #0b0f19;
+      border: 1px solid #232d42;
+      border-radius: 6px;
+      padding: 7px 10px;
+      color: #f8fafc;
+      font-size: 12px;
+    }
+    .ai-text-input:focus {
+      outline: none;
+      border-color: #6366f1;
+    }
+    .ai-send-btn {
+      background: #4f46e5;
+      border: 1px solid #6366f1;
+      color: #ffffff;
+      border-radius: 6px;
+      padding: 7px 12px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    .ai-send-btn:hover {
+      background: #4338ca;
+    }
 
     ::-webkit-scrollbar { width: 5px; height: 5px; }
     ::-webkit-scrollbar-track { background: transparent; }
@@ -2314,6 +3116,45 @@ export function renderSimulatorPage(user) {
     </div>
   </div>
 
+  <!-- 우측 하단 AI 인프라 코파일럿 플로팅 버튼 & 패널 -->
+  <div id="ai-copilot-trigger" class="ai-copilot-trigger" onclick="toggleAiCopilot()" title="AI 인프라 코파일럿 열기">
+    <span class="ai-sparkle">✨</span>
+    <span>AI 코파일럿</span>
+    <span id="ai-alert-badge" class="ai-trigger-badge">정상</span>
+  </div>
+
+  <div id="ai-copilot-panel" class="ai-copilot-panel">
+    <div class="ai-copilot-header">
+      <div class="ai-header-left">
+        <div class="ai-avatar">🤖</div>
+        <div>
+          <div class="ai-header-title">AI 인프라 코파일럿</div>
+          <div class="ai-header-subtitle">운영팁 · 관리팁 · 메뉴가이드 · 장애대처</div>
+        </div>
+      </div>
+      <button class="ai-close-btn" onclick="toggleAiCopilot()" title="닫기">✕</button>
+    </div>
+
+    <!-- 4대 핵심 주제 탭 -->
+    <div class="ai-presets-bar">
+      <button class="ai-preset-chip active" id="chip-troubleshoot" onclick="askAiPreset('troubleshoot')">🚨 문제 대처법</button>
+      <button class="ai-preset-chip" id="chip-menu" onclick="askAiPreset('menu')">➕ 메뉴/자원 추가법</button>
+      <button class="ai-preset-chip" id="chip-management" onclick="askAiPreset('management')">⚙️ 관리팁</button>
+      <button class="ai-preset-chip" id="chip-tips" onclick="askAiPreset('tips')">💡 사용팁</button>
+    </div>
+
+    <!-- 대화 본체 -->
+    <div class="ai-chat-body" id="ai-chat-body"></div>
+
+    <!-- 질문 입력 바 -->
+    <div class="ai-input-wrap">
+      <form class="ai-input-form" onsubmit="handleAiInputSubmit(event)">
+        <input type="text" id="ai-user-input" class="ai-text-input" placeholder="궁금한 사용법, 관리법, 장애 대처법을 질문하세요..." autocomplete="off" />
+        <button type="submit" class="ai-send-btn">전송</button>
+      </form>
+    </div>
+  </div>
+
   <script>
     let currentLab = null;
     let labList = [];
@@ -2691,6 +3532,9 @@ export function renderSimulatorPage(user) {
           </div>
         </div>
       \`).join('');
+
+      // AI 코파일럿 실시간 장애 배지 갱신
+      updateAiCopilotBadge(lab);
     }
 
     // 6. 하드웨어 스펙 조정 API
@@ -3052,7 +3896,237 @@ export function renderSimulatorPage(user) {
         .replace(/'/g, '&#039;');
     }
 
+    // ==========================================
+    // 10. AI 인프라 코파일럿 컨트롤러
+    // ==========================================
+    let aiPanelOpen = false;
+
+    function toggleAiCopilot() {
+      aiPanelOpen = !aiPanelOpen;
+      const panel = document.getElementById('ai-copilot-panel');
+      if (!panel) return;
+      if (aiPanelOpen) {
+        panel.classList.add('active');
+        const chatBody = document.getElementById('ai-chat-body');
+        if (!chatBody.children.length) {
+          askAiPreset('troubleshoot');
+        }
+      } else {
+        panel.classList.remove('active');
+      }
+    }
+
+    function updateAiCopilotBadge(lab) {
+      const badge = document.getElementById('ai-alert-badge');
+      if (!badge) return;
+      if (!lab) {
+        badge.className = 'ai-trigger-badge';
+        badge.innerText = '가이드';
+        return;
+      }
+      let issues = 0;
+      if (lab.nodes) {
+        lab.nodes.forEach(n => {
+          if (n.diskPressure || n.status === 'SchedulingDisabled') issues++;
+          const cpuPct = n.cpuTotalM > 0 ? Math.round(((n.cpuAllocated || 0) / n.cpuTotalM) * 100) : 0;
+          if (cpuPct >= 85) issues++;
+        });
+      }
+      if (lab.pods) {
+        lab.pods.forEach(p => {
+          if (p.status === 'Pending') issues++;
+        });
+      }
+      if (lab.network && lab.network.loadBalancer && !lab.network.loadBalancer.healthy) issues++;
+      if (lab.network && lab.network.tunnel && lab.network.tunnel.status !== 'connected') issues++;
+
+      if (issues > 0) {
+        badge.className = 'ai-trigger-badge warn';
+        badge.innerText = issues + '개 장애 감지';
+      } else {
+        badge.className = 'ai-trigger-badge';
+        badge.innerText = '정상';
+      }
+    }
+
+    async function askAiPreset(topic) {
+      document.querySelectorAll('.ai-preset-chip').forEach(c => c.classList.remove('active'));
+      const activeChip = document.getElementById('chip-' + topic);
+      if (activeChip) activeChip.classList.add('active');
+
+      const chatBody = document.getElementById('ai-chat-body');
+      const loadId = 'ai-loading-' + Date.now();
+      chatBody.innerHTML += '<div class="ai-msg bot" id="' + loadId + '">' +
+        '<div class="ai-card" style="text-align:center; color:#94a3b8; padding:16px;">' +
+          '<div style="font-size:20px; margin-bottom:6px;">🤖</div>' +
+          'AI 코파일럿이 인프라 상태와 운영 지식을 분석하고 있습니다...' +
+        '</div>' +
+      '</div>';
+      chatBody.scrollTop = chatBody.scrollHeight;
+
+      try {
+        const labId = currentLab ? currentLab.id : 'default';
+        const res = await fetch('/api/simulator/labs/' + labId + '/ai', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ topic: topic })
+        });
+        const data = await res.json();
+        const loadElem = document.getElementById(loadId);
+        if (loadElem) loadElem.remove();
+
+        if (data.ok && data.response) {
+          renderAiResponse(data.response);
+        } else {
+          chatBody.innerHTML += '<div class="ai-msg bot"><div class="ai-card" style="color:#ef4444;">조언을 불러오지 못했습니다.</div></div>';
+        }
+      } catch (err) {
+        const loadElem = document.getElementById(loadId);
+        if (loadElem) loadElem.remove();
+        chatBody.innerHTML += '<div class="ai-msg bot"><div class="ai-card" style="color:#ef4444;">통신 오류: ' + escapeHtml(err.message) + '</div></div>';
+      }
+      chatBody.scrollTop = chatBody.scrollHeight;
+    }
+
+    async function handleAiInputSubmit(e) {
+      e.preventDefault();
+      const input = document.getElementById('ai-user-input');
+      const prompt = (input.value || '').trim();
+      if (!prompt) return;
+      input.value = '';
+
+      const chatBody = document.getElementById('ai-chat-body');
+      chatBody.innerHTML += '<div class="ai-msg user">' +
+        '<div class="ai-msg-bubble">' + escapeHtml(prompt) + '</div>' +
+      '</div>';
+      chatBody.scrollTop = chatBody.scrollHeight;
+
+      const loadId = 'ai-loading-' + Date.now();
+      chatBody.innerHTML += '<div class="ai-msg bot" id="' + loadId + '">' +
+        '<div class="ai-card" style="text-align:center; color:#94a3b8; padding:16px;">' +
+          '<div style="font-size:20px; margin-bottom:6px;">🤖</div>' +
+          '인프라 모델 분석 중...' +
+        '</div>' +
+      '</div>';
+      chatBody.scrollTop = chatBody.scrollHeight;
+
+      try {
+        const labId = currentLab ? currentLab.id : 'default';
+        const res = await fetch('/api/simulator/labs/' + labId + '/ai', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ prompt: prompt, topic: 'general' })
+        });
+        const data = await res.json();
+        const loadElem = document.getElementById(loadId);
+        if (loadElem) loadElem.remove();
+
+        if (data.ok && data.response) {
+          renderAiResponse(data.response);
+        } else {
+          chatBody.innerHTML += '<div class="ai-msg bot"><div class="ai-card" style="color:#ef4444;">답변을 생성하지 못했습니다.</div></div>';
+        }
+      } catch (err) {
+        const loadElem = document.getElementById(loadId);
+        if (loadElem) loadElem.remove();
+        chatBody.innerHTML += '<div class="ai-msg bot"><div class="ai-card" style="color:#ef4444;">통신 오류: ' + escapeHtml(err.message) + '</div></div>';
+      }
+      chatBody.scrollTop = chatBody.scrollHeight;
+    }
+
+    function renderAiResponse(resp) {
+      const chatBody = document.getElementById('ai-chat-body');
+      let sectionsHtml = '';
+
+      (resp.sections || []).forEach(sec => {
+        let itemsHtml = '';
+        (sec.items || []).forEach(item => {
+          let cmdHtml = '';
+          if (item.cmd) {
+            const escapedCmd = escapeHtml(item.cmd);
+            const cmdJson = JSON.stringify(item.cmd).replace(/"/g, '&quot;');
+            cmdHtml = '<div class="ai-cmd-box">' +
+              '<span class="ai-cmd-text">' + escapedCmd + '</span>' +
+              '<div class="ai-cmd-actions">' +
+                '<button type="button" class="ai-mini-btn" onclick="copyAiCmd(' + cmdJson + ')">📋 복사</button>' +
+                '<button type="button" class="ai-mini-btn" onclick="pasteAiCmd(' + cmdJson + ')">⌨️ 입력</button>' +
+                '<button type="button" class="ai-mini-btn primary" onclick="execAiCmd(' + cmdJson + ')">⚡ 즉시 실행</button>' +
+              '</div>' +
+            '</div>';
+          }
+          let menuActionHtml = '';
+          if (item.modalId) {
+            menuActionHtml = '<div style="margin-top:6px;">' +
+              '<button type="button" class="btn sm primary" style="font-size:10.5px; padding:3px 8px;" onclick="openModal(\'' + item.modalId + '\')">👉 ' + escapeHtml(item.menuGuide || '해당 메뉴 열기') + '</button>' +
+            '</div>';
+          }
+
+          itemsHtml += '<div class="ai-item">' +
+            '<div class="ai-item-head">' +
+              '<span class="ai-item-name">' + escapeHtml(item.title) + '</span>' +
+              '<span class="ai-tag ' + (item.tag === '긴급 조치' ? 'critical' : '') + '">' + escapeHtml(item.tag || '안내') + '</span>' +
+            '</div>' +
+            '<div class="ai-item-desc">' + escapeHtml(item.desc) + '</div>' +
+            cmdHtml +
+            menuActionHtml +
+          '</div>';
+        });
+
+        sectionsHtml += '<div class="ai-card-section">' +
+          '<div class="ai-section-title">' + escapeHtml(sec.icon || '📌') + ' ' + escapeHtml(sec.title) + '</div>' +
+          itemsHtml +
+        '</div>';
+      });
+
+      const isWarn = resp.statusBadge?.type === 'critical';
+      const cardHtml = '<div class="ai-msg bot">' +
+        '<div class="ai-card">' +
+          '<div class="ai-card-head">' +
+            '<div class="ai-card-title">' + escapeHtml(resp.title) + '</div>' +
+            '<span class="ai-trigger-badge ' + (isWarn ? 'warn' : '') + '">' + escapeHtml(resp.statusBadge?.text || '완료') + '</span>' +
+          '</div>' +
+          '<div class="ai-card-summary">' + escapeHtml(resp.summary) + '</div>' +
+          sectionsHtml +
+        '</div>' +
+      '</div>';
+
+      chatBody.innerHTML += cardHtml;
+      chatBody.scrollTop = chatBody.scrollHeight;
+    }
+
+    function copyAiCmd(text) {
+      navigator.clipboard.writeText(text).then(() => {
+        alert('명령어가 클립보드에 복사되었습니다:\n' + text);
+      }).catch(() => {
+        prompt('명령어를 복사하세요:', text);
+      });
+    }
+
+    function pasteAiCmd(cmd) {
+      const canvas = document.getElementById('split-canvas');
+      if (canvas && canvas.classList.contains('mode-0-100')) {
+        setViewMode('mode-50-50');
+      }
+      const termInput = document.getElementById('term-input');
+      if (termInput) {
+        termInput.value = cmd;
+        termInput.focus();
+      }
+    }
+
+    async function execAiCmd(cmd) {
+      const canvas = document.getElementById('split-canvas');
+      if (canvas && canvas.classList.contains('mode-0-100')) {
+        setViewMode('mode-50-50');
+      }
+      const promptEl = document.getElementById('term-prompt');
+      const promptText = promptEl ? promptEl.innerText : 'admin@ktci5-control:~$';
+      appendTermLog('\n<span style="color:#10b981;font-weight:700;">' + escapeHtml(promptText) + '</span> ' + escapeHtml(cmd) + '\n');
+      await executeCommand(cmd);
+    }
+
     loadLabs();
+    updateAiCopilotBadge(null);
   </script>
 </body>
 </html>
