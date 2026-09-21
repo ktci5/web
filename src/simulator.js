@@ -90,6 +90,49 @@ function createDefaultNetwork() {
   };
 }
 
+// L7 로드밸런서 타겟 풀 및 vSwitch 포트 자동 동기화
+export function syncLbTargetPool(lab) {
+  if (!lab) return;
+  if (!lab.network) lab.network = createDefaultNetwork();
+  if (!lab.network.loadBalancer) lab.network.loadBalancer = createDefaultNetwork().loadBalancer;
+  const lb = lab.network.loadBalancer;
+  const nodes = lab.nodes || [];
+  if (!lb.targetPool) lb.targetPool = [];
+
+  const existingPool = lb.targetPool;
+  const newPool = [];
+
+  nodes.forEach((n, idx) => {
+    const targetAddr = `${n.ip}:30080`;
+    const prev = existingPool.find((p) => p.target === targetAddr || p.nodeName === n.name);
+    let status = prev ? prev.status : 'Healthy';
+    if (n.status !== 'Ready' || n.unschedulable) {
+      status = 'Unhealthy (503 Error)';
+    }
+    newPool.push({
+      target: targetAddr,
+      nodeName: n.name,
+      status: status,
+      latencyMs: prev ? prev.latencyMs : parseFloat((1.5 + (idx * 0.3)).toFixed(1)),
+      weight: Math.round(100 / (nodes.length || 1))
+    });
+  });
+
+  lb.targetPool = newPool;
+
+  // L2 가상 스위치 포트 동기화
+  if (lab.network.switch) {
+    lab.network.switch.ports = nodes.map((n, idx) => ({
+      port: idx + 1,
+      node: n.name,
+      ip: n.ip,
+      mac: `52:54:00:12:34:${(56 + idx).toString(16).padStart(2, '0')}`,
+      speed: '10Gbps',
+      state: n.status === 'Ready' ? 'UP' : 'DOWN'
+    }));
+  }
+}
+
 // 기본 제공 시드 랩
 export const DEFAULT_LABS = [
   {
@@ -411,11 +454,26 @@ export async function getLabDetail(env, id) {
       }
     }
     if (lab && lab.nodes) {
+      const usedIps = new Set();
+      let maxOctet = 20;
       for (const n of lab.nodes) {
         if (!n.disks) {
           n.disks = [{ name: 'vda (OS)', sizeGb: 50, usedGb: 20, type: 'SSD', mount: '/' }];
         }
+        if (n.role === 'control-plane') {
+          n.ip = n.ip || '10.10.10.12';
+          usedIps.add(n.ip);
+        } else {
+          if (usedIps.has(n.ip) || !n.ip) {
+            maxOctet += 10;
+            n.ip = `10.10.10.${maxOctet}`;
+          }
+          usedIps.add(n.ip);
+          const m = n.ip.match(/^10\.10\.10\.(\d+)$/);
+          if (m) maxOctet = Math.max(maxOctet, parseInt(m[1], 10));
+        }
       }
+      syncLbTargetPool(lab);
     }
     return lab;
   } catch (err) {
@@ -750,8 +808,21 @@ export function evalK8sCommand(cmdLine, lab, user) {
       const targetPods = lab.pods?.filter((p) => p.status === 'Running' && (p.name.includes('web') || p.name.includes('api')));
       
       if (targetPods && targetPods.length > 0) {
-        // Round Robin 라운드로빈 파드 선택
-        const chosenPod = targetPods[Math.floor(Math.random() * targetPods.length)];
+        // Unhealthy 타겟 노드 제외하고 정상 파드 선택 (LB 페일오버 자동 우회)
+        const unhealthyNodeNames = (net.loadBalancer?.targetPool || [])
+          .filter(p => !p.status.includes('Healthy'))
+          .map(p => p.nodeName || lab.nodes?.find(n => p.target.startsWith(n.ip))?.name)
+          .filter(Boolean);
+
+        const healthyPods = targetPods.filter(p => !unhealthyNodeNames.includes(p.node));
+        if (healthyPods.length === 0 && unhealthyNodeNames.length > 0) {
+          return {
+            output: `HTTP/1.1 503 Service Unavailable (All target endpoints in pool are Unhealthy)`,
+            labChanged: false
+          };
+        }
+        const candidatePods = healthyPods.length > 0 ? healthyPods : targetPods;
+        const chosenPod = candidatePods[Math.floor(Math.random() * candidatePods.length)];
         return {
           output: `\x1b[32mHTTP/1.1 200 OK\x1b[0m
 Date: ${new Date().toUTCString()}
@@ -2274,8 +2345,20 @@ export async function handleSimulatorApi(request, path, env, user) {
       if (!lab.editable) return new Response(JSON.stringify({ ok: false, error: '수정 권한이 OFF 상태입니다.' }), { headers: jsonHeaders, status: 403 });
       let body = {};
       try { body = await request.json(); } catch {}
-      const name = (body.name || `w${(lab.nodes?.length || 1)}`).trim();
-      const ip = (body.ip || `10.10.10.${20 + (lab.nodes?.length || 1) * 10}`).trim();
+      const existingNums = (lab.nodes || []).map(n => {
+        const m = n.name.match(/^w(\d+)$/);
+        return m ? parseInt(m[1], 10) : 0;
+      });
+      const nextWorkerNum = Math.max(0, ...existingNums) + 1;
+
+      const existingIps = (lab.nodes || []).map(n => {
+        const m = n.ip.match(/^10\.10\.10\.(\d+)$/);
+        return m ? parseInt(m[1], 10) : 0;
+      });
+      const nextIpLast = Math.max(10, ...existingIps) + 10;
+
+      const name = (body.name || `w${nextWorkerNum}`).trim();
+      const ip = (body.ip || `10.10.10.${nextIpLast}`).trim();
       const cpu = parseInt(body.cpu || '2000', 10);
       const ram = parseInt(body.ram || '4096', 10);
       const disktype = body.disktype || 'ssd';
@@ -2301,6 +2384,7 @@ export async function handleSimulatorApi(request, path, env, user) {
       };
 
       lab.nodes.push(newNode);
+      syncLbTargetPool(lab);
       rescheduleAll(lab);
 
       lab.activityLogs.unshift({
@@ -2370,7 +2454,7 @@ export async function handleSimulatorApi(request, path, env, user) {
       }
 
       const deletedNode = lab.nodes.splice(idx, 1)[0];
-      // 해당 노드에 있던 파드 재스케줄링
+      syncLbTargetPool(lab);
       rescheduleAll(lab);
 
       lab.activityLogs.unshift({
@@ -3911,9 +3995,22 @@ export function renderSimulatorPage(user) {
     function closeModal(id) { document.getElementById(id).classList.remove('active'); }
     function openAddNodeModal() {
       if (!currentLab) return;
-      const nextNum = (currentLab.nodes?.length || 1);
-      document.getElementById('node-form-name').value = 'w' + nextNum;
-      document.getElementById('node-form-ip').value = '10.10.10.' + (20 + (nextNum - 1) * 10);
+      const existingNums = (currentLab.nodes || [])
+        .map(n => {
+          const m = n.name.match(/^w(\d+)$/);
+          return m ? parseInt(m[1], 10) : 0;
+        });
+      const nextWorkerNum = Math.max(0, ...existingNums) + 1;
+
+      const existingIps = (currentLab.nodes || [])
+        .map(n => {
+          const m = n.ip.match(/^10\.10\.10\.(\d+)$/);
+          return m ? parseInt(m[1], 10) : 0;
+        });
+      const nextIpLast = Math.max(10, ...existingIps) + 10;
+
+      document.getElementById('node-form-name').value = 'w' + nextWorkerNum;
+      document.getElementById('node-form-ip').value = '10.10.10.' + nextIpLast;
       openModal('add-node-modal');
     }
 
@@ -4165,11 +4262,28 @@ export function renderSimulatorPage(user) {
         document.getElementById('lb-algo-select').value = net.loadBalancer?.algorithm || 'RoundRobin';
       }
 
+      const rawPool = net.loadBalancer?.targetPool || [];
+      const nodes = lab.nodes || [];
       const poolList = document.getElementById('lb-target-pool-list');
-      poolList.innerHTML = (net.loadBalancer?.targetPool || []).map(p => {
+      
+      const displayPool = nodes.map((n, idx) => {
+        const targetAddr = \`\${n.ip}:30080\`;
+        const matched = rawPool.find(p => p.target === targetAddr || p.nodeName === n.name);
+        let status = matched ? matched.status : 'Healthy';
+        if (n.status !== 'Ready' || n.unschedulable) status = 'Unhealthy (503 Error)';
+        return {
+          target: targetAddr,
+          nodeName: n.name,
+          status: status,
+          latencyMs: matched ? matched.latencyMs : (1.5 + idx * 0.3).toFixed(1),
+          weight: Math.round(100 / (nodes.length || 1))
+        };
+      });
+
+      poolList.innerHTML = displayPool.map(p => {
         const isH = p.status.includes('Healthy');
         return \`<div style="display:flex; justify-content:space-between; font-size:11px;">
-          <span>• \${p.target} (가중치: \${p.weight || 50}%)</span>
+          <span>• \${p.target} [\${p.nodeName}] (가중치: \${p.weight}%)</span>
           <span style="color:\${isH ? '#10b981' : '#f87171'}; font-weight:bold;">\${p.status} (\${p.latencyMs}ms)</span>
         </div>\`;
       }).join('');
@@ -4213,9 +4327,10 @@ export function renderSimulatorPage(user) {
         \`).join('');
       }
 
-      if (net.switch) {
-        document.getElementById('switch-ports-list').innerHTML = (net.switch.ports || []).map(p => \`
-          <div>Port \${p.port}: \${p.mac} [\${p.node}] \${p.speed} \${p.state}</div>
+      const switchList = document.getElementById('switch-ports-list');
+      if (switchList) {
+        switchList.innerHTML = nodes.map((n, idx) => \`
+          <div>Port \${idx + 1}: 52:54:00:12:34:\${(56 + idx).toString(16).padStart(2, '0')} [\${n.name}] 10Gbps \${n.status === 'Ready' ? 'UP' : 'DOWN'}</div>
         \`).join('');
       }
 
