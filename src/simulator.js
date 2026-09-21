@@ -354,16 +354,29 @@ export async function getLabsIndex(env) {
     return DEFAULT_LABS.map(summarizeLab);
   }
   try {
-    const list = await env.ROSTER.get('sim:labs:index', 'json');
-    if (list && Array.isArray(list) && list.length > 0) {
-      return list;
+    let list = await env.ROSTER.get('sim:labs:index', 'json');
+    if (!list || !Array.isArray(list) || list.length === 0) {
+      const seedIndex = DEFAULT_LABS.map(summarizeLab);
+      await env.ROSTER.put('sim:labs:index', JSON.stringify(seedIndex));
+      for (const lab of DEFAULT_LABS) {
+        await env.ROSTER.put(`sim:lab:${lab.id}`, JSON.stringify(lab));
+      }
+      return seedIndex;
     }
-    const seedIndex = DEFAULT_LABS.map(summarizeLab);
-    await env.ROSTER.put('sim:labs:index', JSON.stringify(seedIndex));
-    for (const lab of DEFAULT_LABS) {
-      await env.ROSTER.put(`sim:lab:${lab.id}`, JSON.stringify(lab));
+    // Always ensure the default seed labs (기본 예제 3개) exist in the list!
+    const existingIds = new Set(list.map(l => l.id));
+    let updated = false;
+    for (const seedLab of DEFAULT_LABS) {
+      if (!existingIds.has(seedLab.id)) {
+        list.unshift(summarizeLab(seedLab));
+        await env.ROSTER.put(`sim:lab:${seedLab.id}`, JSON.stringify(seedLab));
+        updated = true;
+      }
     }
-    return seedIndex;
+    if (updated) {
+      await env.ROSTER.put('sim:labs:index', JSON.stringify(list));
+    }
+    return list;
   } catch (err) {
     console.error('getLabsIndex error:', err);
     return DEFAULT_LABS.map(summarizeLab);
@@ -3965,8 +3978,8 @@ export function renderSimulatorPage(user) {
       chatBody.scrollTop = chatBody.scrollHeight;
 
       try {
-        const labId = currentLab ? currentLab.id : 'default';
-        const res = await fetch('/api/simulator/labs/' + labId + '/ai', {
+        const apiUrl = currentLab ? ('/api/simulator/labs/' + currentLab.id + '/ai') : '/api/simulator/ai';
+        const res = await fetch(apiUrl, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ topic: topic })
@@ -4011,8 +4024,8 @@ export function renderSimulatorPage(user) {
       chatBody.scrollTop = chatBody.scrollHeight;
 
       try {
-        const labId = currentLab ? currentLab.id : 'default';
-        const res = await fetch('/api/simulator/labs/' + labId + '/ai', {
+        const apiUrl = currentLab ? ('/api/simulator/labs/' + currentLab.id + '/ai') : '/api/simulator/ai';
+        const res = await fetch(apiUrl, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ prompt: prompt, topic: 'general' })
@@ -4044,20 +4057,20 @@ export function renderSimulatorPage(user) {
           let cmdHtml = '';
           if (item.cmd) {
             const escapedCmd = escapeHtml(item.cmd);
-            const cmdJson = JSON.stringify(item.cmd).replace(/"/g, '&quot;');
+            const encodedCmd = encodeURIComponent(item.cmd);
             cmdHtml = '<div class="ai-cmd-box">' +
               '<span class="ai-cmd-text">' + escapedCmd + '</span>' +
               '<div class="ai-cmd-actions">' +
-                '<button type="button" class="ai-mini-btn" onclick="copyAiCmd(' + cmdJson + ')">📋 복사</button>' +
-                '<button type="button" class="ai-mini-btn" onclick="pasteAiCmd(' + cmdJson + ')">⌨️ 입력</button>' +
-                '<button type="button" class="ai-mini-btn primary" onclick="execAiCmd(' + cmdJson + ')">⚡ 즉시 실행</button>' +
+                '<button type="button" class="ai-mini-btn btn-ai-copy" data-cmd="' + encodedCmd + '">📋 복사</button>' +
+                '<button type="button" class="ai-mini-btn btn-ai-paste" data-cmd="' + encodedCmd + '">⌨️ 입력</button>' +
+                '<button type="button" class="ai-mini-btn primary btn-ai-exec" data-cmd="' + encodedCmd + '">⚡ 즉시 실행</button>' +
               '</div>' +
             '</div>';
           }
           let menuActionHtml = '';
           if (item.modalId) {
             menuActionHtml = '<div style="margin-top:6px;">' +
-              '<button type="button" class="btn sm primary" style="font-size:10.5px; padding:3px 8px;" onclick="openModal(\'' + item.modalId + '\')">👉 ' + escapeHtml(item.menuGuide || '해당 메뉴 열기') + '</button>' +
+              '<button type="button" class="btn sm primary btn-ai-modal" style="font-size:10.5px; padding:3px 8px;" data-modal="' + escapeHtml(item.modalId) + '">👉 ' + escapeHtml(item.menuGuide || '해당 메뉴 열기') + '</button>' +
             '</div>';
           }
 
@@ -4094,9 +4107,28 @@ export function renderSimulatorPage(user) {
       chatBody.scrollTop = chatBody.scrollHeight;
     }
 
+    // AI 카드 버튼 클릭 이벤트 위임
+    const aiChatBodyEl = document.getElementById('ai-chat-body');
+    if (aiChatBodyEl) {
+      aiChatBodyEl.addEventListener('click', function(e) {
+        const btn = e.target.closest('button');
+        if (!btn) return;
+        if (btn.classList.contains('btn-ai-copy')) {
+          copyAiCmd(decodeURIComponent(btn.dataset.cmd || ''));
+        } else if (btn.classList.contains('btn-ai-paste')) {
+          pasteAiCmd(decodeURIComponent(btn.dataset.cmd || ''));
+        } else if (btn.classList.contains('btn-ai-exec')) {
+          execAiCmd(decodeURIComponent(btn.dataset.cmd || ''));
+        } else if (btn.classList.contains('btn-ai-modal')) {
+          const modalId = btn.dataset.modal;
+          if (modalId) openModal(modalId);
+        }
+      });
+    }
+
     function copyAiCmd(text) {
       navigator.clipboard.writeText(text).then(() => {
-        alert('명령어가 클립보드에 복사되었습니다:\n' + text);
+        alert('명령어가 클립보드에 복사되었습니다: ' + text);
       }).catch(() => {
         prompt('명령어를 복사하세요:', text);
       });
@@ -4121,7 +4153,7 @@ export function renderSimulatorPage(user) {
       }
       const promptEl = document.getElementById('term-prompt');
       const promptText = promptEl ? promptEl.innerText : 'admin@ktci5-control:~$';
-      appendTermLog('\n<span style="color:#10b981;font-weight:700;">' + escapeHtml(promptText) + '</span> ' + escapeHtml(cmd) + '\n');
+      appendTermLog('\\n<span style="color:#10b981;font-weight:700;">' + escapeHtml(promptText) + '</span> ' + escapeHtml(cmd) + '\\n');
       await executeCommand(cmd);
     }
 
