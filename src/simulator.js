@@ -1091,91 +1091,135 @@ Content-Length: 512
   };
 }
 
-// AI 모델 기반 인프라 운영 팁 & 트러블슈팅 엔진
+/// AI 모델 기반 인프라 운영 팁 & 트러블슈팅 엔진 (화면 기준 상태 분석 & 제안 유도 힌트)
 export function generateAiCopilotAdvice(prompt = '', topic = 'general', lab = null) {
   const p = (prompt || '').toLowerCase().trim();
 
-  // 1. 현재 클러스터 실시간 장애 및 경보 감지
+  // ============================================================
+  // 1. 현재 화면 기본 정보 & 실제 인프라 리소스 추출 (Screen State)
+  // ============================================================
+  const isLabView = !!lab;
+  const labTitle = lab?.title || '실습 랩 목록 화면';
+  const labId = lab?.id || 'list';
+
+  // 실제 화면에 보이는 도메인 및 L7 로드밸런서
+  const ingressRules = lab?.network?.ingress?.rules || [];
+  const primaryHost = ingressRules[0]?.host || 'app.ktci5.kr';
+  const allHosts = ingressRules.map(r => r.host).join(', ') || 'app.ktci5.kr, api.ktci5.kr';
+  const vip = lab?.network?.loadBalancer?.vip || '211.252.85.10';
+  const lbAlgo = lab?.network?.loadBalancer?.algorithm || 'RoundRobin';
+  const lbStatus = lab?.network?.loadBalancer?.status || 'Healthy';
+  const isLbHealthy = lbStatus === 'Healthy';
+  const tunnelStatus = lab?.network?.tunnel?.status || 'CONNECTED';
+  const isTunnelHealthy = tunnelStatus === 'CONNECTED';
+  const vpnStatus = lab?.network?.vpn?.status || 'CONNECTED';
+  const trafficRps = lab?.trafficRps || 0;
+
+  // 실제 화면에 보이는 노드 및 파드
+  const nodes = lab?.nodes || [];
+  const pods = lab?.pods || [];
+  const masterNode = nodes.find(n => n.role === 'control-plane') || nodes[0] || { name: 'master1', ip: '10.10.10.12' };
+  const workerNodes = nodes.filter(n => n.role === 'worker');
+  const firstWorker = workerNodes[0] || masterNode || { name: 'w1', ip: '10.10.10.20' };
+  const nodeNames = nodes.map(n => n.name).join(', ') || 'master1, w1';
+  const pendingPods = pods.filter(p => p.status === 'Pending');
+  const runningPods = pods.filter(p => p.status === 'Running');
+  const targetPod = pendingPods[0] || runningPods[0] || { name: 'web-app-7b89f-8j2xl' };
+
+  // ============================================================
+  // 2. 실시간 화면 장애 및 경보 감지 (Screen State Diagnostics)
+  // ============================================================
   const activeIssues = [];
   if (lab) {
     // 디스크 압박(DiskPressure) 및 수동 격리(Cordoned) 감지
-    (lab.nodes || []).forEach(n => {
-      if (n.diskPressure) {
+    nodes.forEach(n => {
+      const osDisk = n.disks?.[0];
+      const diskUsedPct = osDisk ? Math.round((osDisk.usedGb / osDisk.sizeGb) * 100) : (n.diskPressure ? 92 : 36);
+      const isDiskPres = n.diskPressure || (osDisk && (osDisk.usedGb / osDisk.sizeGb) > 0.85);
+
+      if (isDiskPres) {
         activeIssues.push({
           level: 'CRITICAL',
           badge: '디스크 고갈 (DiskPressure)',
           target: n.name,
-          desc: `노드 [${n.name}] 디스크 사용량이 85%를 초과하여 Kubelet 스케줄링이 자동 차단(Eviction/Cordon)되었습니다. 신규 파드가 배치되지 않습니다.`,
+          screenResult: `화면의 노드 [${n.name}] 디스크 사용량이 ${diskUsedPct}%로 85% 임계치를 초과하여 Kubelet 스케줄링이 자동 격리(Cordon)되었습니다.`,
+          hint: `GUI 노드 카드의 [+ 100GB SSD 디스크 Hot-Add]를 클릭하여 스토리지를 증설한 후 터미널에서 'kubectl uncordon ${n.name}'을 실행하세요.`,
           fixCmd: `kubectl uncordon ${n.name}`,
-          fixGuide: `GUI 노드 카드에서 [vCPU/RAM/스토리지]를 확장하거나 터미널에서 'df -h' 점검 후 'kubectl uncordon ${n.name}'으로 격리를 해제하세요.`,
           modalId: null
         });
-      } else if (n.status === 'SchedulingDisabled') {
+      } else if (n.status === 'SchedulingDisabled' || n.unschedulable) {
         activeIssues.push({
           level: 'WARN',
           badge: '노드 스케줄링 차단 (Cordoned)',
           target: n.name,
-          desc: `노드 [${n.name}]가 수동 격리(Cordon) 상태로 지정되어 워크로드가 스케줄링되지 않습니다.`,
+          screenResult: `화면의 노드 [${n.name}]가 현재 수동 격리(SchedulingDisabled) 상태로 신규 워크로드가 스케줄링되지 않습니다.`,
+          hint: `'kubectl uncordon ${n.name}' 명령을 실행하여 정상 스케줄링 상태로 즉시 복구해보세요.`,
           fixCmd: `kubectl uncordon ${n.name}`,
-          fixGuide: `'kubectl uncordon ${n.name}' 명령어로 노드 스케줄링을 재개하세요.`
+          modalId: null
         });
       }
 
       // vCPU 고부하 감지
       const cpuPct = n.cpuTotalM > 0 ? Math.round(((n.cpuAllocated || 0) / n.cpuTotalM) * 100) : 0;
-      if (cpuPct >= 85) {
+      if (cpuPct >= 80) {
         activeIssues.push({
           level: 'WARN',
           badge: 'vCPU 임계치 초과',
           target: n.name,
-          desc: `노드 [${n.name}]의 vCPU 사용률이 ${cpuPct}%로 과부하 상태입니다. 신규 파드가 Pending 상태에 빠질 수 있습니다.`,
+          screenResult: `화면의 노드 [${n.name}] vCPU 사용률이 ${cpuPct}%에 달해 워크로드 처리 한계에 임박했습니다.`,
+          hint: `노드 카드 상단의 [+2C (Hot-Add)] 버튼을 클릭하여 무중단 vCPU 확장을 시도하세요.`,
           fixCmd: `kubectl top nodes`,
-          fixGuide: `GUI 노드 카드 상단의 [+2C (Hot-Add)] 버튼을 클릭하여 무중단 vCPU를 확장하세요.`
+          modalId: null
         });
       }
     });
 
-    // 파드 Pending 및 CrashLoop 상태 감지
-    (lab.pods || []).forEach(pod => {
-      if (pod.status === 'Pending') {
-        activeIssues.push({
-          level: 'CRITICAL',
-          badge: '파드 Pending 대기',
-          target: pod.name,
-          desc: `파드 [${pod.name}]가 클러스터 내 가용 CPU/RAM 부족 또는 nodeSelector 불일치로 배포되지 못하고 있습니다.`,
-          fixCmd: `kubectl describe pod ${pod.name}`,
-          fixGuide: `'kubectl describe pod ${pod.name}'으로 사유를 확인하고, 노드 사양을 증설하거나 타겟 노드를 추가하세요.`,
-          modalId: 'add-node-modal'
-        });
-      }
-    });
-
-    // L7 로드밸런서 헬스체크 실패 감지
-    if (lab.network && lab.network.loadBalancer && !lab.network.loadBalancer.healthy) {
+    // 파드 Pending 감지
+    if (pendingPods.length > 0) {
+      const isSchedulingLab = lab.id === 'scheduling-lab';
       activeIssues.push({
         level: 'CRITICAL',
-        badge: 'L7 로드밸런서 503 비정상',
-        target: 'LoadBalancer (L7)',
-        desc: `L7 로드밸런서의 헬스체크가 실패하여 백엔드 라우팅이 중단되고 인입 요청에 대해 503 Service Unavailable 에러가 발생 중입니다.`,
-        fixCmd: `curl -I https://ktci5.kr/healthz`,
-        fixGuide: `네트워크 토폴로지 패널의 로드밸런서 카드에서 헬스체크 상태를 리셋하거나 백엔드 파드가 정상 동작 중인지 확인하세요.`
+        badge: '파드 Pending 대기',
+        target: pendingPods.map(p => p.name).join(', '),
+        screenResult: isSchedulingLab
+          ? `화면의 파드 ${pendingPods.length}개가 'disktype=ssd' 라벨을 요구하지만 워커 노드 [${firstWorker.name}]에 해당 라벨이 없어 Pending 상태로 멈춰 있습니다.`
+          : `화면의 파드 ${pendingPods.length}개가 클러스터 내 가용 자원 부족 또는 nodeSelector 불일치로 배치되지 못하고 있습니다.`,
+        hint: isSchedulingLab
+          ? `'kubectl label nodes ${firstWorker.name} disktype=ssd' 명령을 실행하여 워커 노드에 라벨을 부여하면 즉시 파드가 가동(Running)됩니다.`
+          : `'kubectl describe pod ${pendingPods[0].name}'으로 이벤트를 확인하고 노드 리소스를 증설하세요.`,
+        fixCmd: isSchedulingLab ? `kubectl label nodes ${firstWorker.name} disktype=ssd` : `kubectl describe pod ${pendingPods[0].name}`,
+        modalId: 'add-node-modal'
       });
     }
 
-    // Cloudflare Zero Trust 터널 단절 감지
-    if (lab.network && lab.network.tunnel && lab.network.tunnel.status !== 'connected') {
+    // L7 로드밸런서 장애 감지
+    if (!isLbHealthy) {
+      activeIssues.push({
+        level: 'CRITICAL',
+        badge: 'L7 로드밸런서 503 오류',
+        target: `KT Cloud ALB (VIP: ${vip})`,
+        screenResult: `화면의 L7 로드밸런서 헬스체크가 비정상(Unhealthy) 상태이며, 도메인 '${primaryHost}' 접속 시 503 Service Unavailable 에러가 반환됩니다.`,
+        hint: `네트워크 토폴로지 패널의 로드밸런서 카드를 확인하고 백엔드 서비스 파드 상태를 점검하거나 헬스체크를 복구하세요.`,
+        fixCmd: `curl -I https://${primaryHost}/healthz`,
+        modalId: null
+      });
+    }
+
+    // Cloudflare 터널 단절 감지
+    if (!isTunnelHealthy) {
       activeIssues.push({
         level: 'WARN',
         badge: 'Cloudflare 터널 단절 (502)',
-        target: 'Cloudflare Tunnel',
-        desc: `Cloudflare Zero Trust 터널 연결이 끊겨 외부 도메인 인입 시 502 Bad Gateway가 발생할 수 있습니다.`,
+        target: 'kt-hybrid-argo-tunnel',
+        screenResult: `화면의 Cloudflare Zero Trust 터널 연결이 끊겨 외부 도메인 '${primaryHost}' 인입 시 502 Bad Gateway가 발생합니다.`,
+        hint: `네트워크 토폴로지 카드에서 [터널 재연결] 토글을 클릭하거나 터미널에서 터널 데몬 상태를 점검하세요.`,
         fixCmd: `tunnel status`,
-        fixGuide: `네트워크 토폴로지 패널에서 [터널 연결] 토글 스위치를 클릭하여 터널 데몬을 즉시 재연결하세요.`
+        modalId: null
       });
     }
   }
 
-  // 사용자 질문(Prompt)에 따른 카테고리 자동 감지
+  // 사용자 질문(Prompt) 키워드에 따른 카테고리 자동 라우팅
   let selectedTopic = topic;
   if (p) {
     if (p.includes('팁') || p.includes('사용') || p.includes('단축키') || p.includes('터미널') || p.includes('어떻게 써') || p.includes('화면') || p.includes('뷰')) {
@@ -1189,90 +1233,86 @@ export function generateAiCopilotAdvice(prompt = '', topic = 'general', lab = nu
     }
   }
 
-  // 1. [사용팁] 주제
+  // ============================================================
+  // Topic 1: [사용팁] (화면 상태 결과 & 제안 유도 힌트)
+  // ============================================================
   if (selectedTopic === 'tips') {
+    const screenStateDesc = isLabView
+      ? `현재 [${labTitle}] 화면에서 작업 중입니다. Ingress 도메인은 '${primaryHost}', VIP는 '${vip}'이며, 총 ${nodes.length}개 노드와 ${pods.length}개 파드가 화면에 표시되고 있습니다.`
+      : `현재 [실습 랩 목록] 화면입니다. 상용 운영 환경을 모사한 기본 예제 3종과 수강생 랩 카드가 화면에 표시되고 있습니다.`;
+
     return {
       topic: 'tips',
-      title: '💡 시뮬레이터 조작 및 CLI 사용팁',
-      summary: '실무 상용 환경과 동일한 터미널 인터랙션, 스플릿 뷰 조작, 다중 사용자 협업 및 트래픽 시뮬레이션 활용 팁입니다.',
-      statusBadge: { text: '사용 가이드', type: 'ok' },
+      title: '💡 화면 기준 조작 결과 & 사용 가이드',
+      summary: screenStateDesc,
+      statusBadge: { text: isLabView ? `${lab.id} 랩 가이드` : '목록 가이드', type: 'ok' },
       sections: [
         {
-          title: '1. 가상 터미널 효율적 조작 노하우',
-          icon: '⌨️',
+          title: '1. 화면에 바인딩된 실제 도메인 & CLI 테스트 힌트',
+          icon: '🌐',
           items: [
             {
-              title: '명령어 히스토리 및 키 탐색',
-              desc: '터미널 입력창에서 [위/아래 방향키]를 누르면 이전에 실행했던 명령어들을 순차적으로 불러올 수 있습니다. 빠른 반복 작업에 매우 유용합니다.',
-              tag: '단축키'
+              title: `현재 화면 Ingress 도메인 '${primaryHost}' curl 점검`,
+              desc: `📊 화면 상태 결과: 화면 L7 Ingress에 '${allHosts}'이(가) VIP '${vip}'와 바인딩되어 있습니다.\n💡 제안 유도 힌트: 터미널에서 실제 바인딩된 도메인 헤더로 직접 요청을 보내 응답 상태코드(HTTP 200)와 리버스 프록시 라우팅을 검증하세요.`,
+              cmd: `curl -H "Host: ${primaryHost}" http://${vip}`,
+              tag: '도메인 검증'
             },
             {
-              title: '실무 Alias 단축어 완벽 지원',
-              desc: '상용 환경 표준 alias가 기본 적용되어 있습니다:\\n• k → kubectl\\n• kgp → kubectl get pods\\n• kgn → kubectl get nodes\\n• kgs → kubectl get svc',
+              title: '가상 터미널 명령어 히스토리 & 축약어(Alias)',
+              desc: `📊 화면 상태 결과: 터미널 프롬프트에서 실무 표준 축약어가 활성화되어 있습니다.\n💡 제안 유도 힌트: [위/아래 방향키]로 최근 명령을 탐색하고, 'k get pods -o wide' 또는 'k top nodes'로 화면의 자원 상태를 CLI로 즉시 비교 확인하세요.`,
               cmd: 'k get pods -o wide',
-              tag: 'Alias'
+              tag: 'CLI 팁'
             },
             {
-              title: 'Linux 시스템 & 네트워크 진단 명령어',
-              desc: 'K8s 명령어 외에도 노드 하드웨어 및 네트워크 상태를 직접 점검하는 Linux 명령어를 지원합니다:\\n• df -h (디스크 용량 및 파티션)\\n• free -m (메모리 사용 현황)\\n• uptime (서버 가동시간 & 로드 애버리지)\\n• tunnel status (터널 연결 진단)',
-              cmd: 'df -h',
-              tag: '시스템 진단'
-            },
-            {
-              title: '터미널 로그 정리',
-              desc: '화면이 길어졌을 때 \'clear\' 명령어를 입력하면 터미널 화면이 즉시 깨끗하게 초기화됩니다.',
+              title: '터미널 화면 정리',
+              desc: `💡 제안 유도 힌트: 터미널 로그가 길어졌을 때 'clear'를 실행하면 화면이 즉시 깨끗하게 초기화됩니다.`,
               cmd: 'clear',
               tag: '화면 정리'
             }
           ]
         },
         {
-          title: '2. 인터페이스 뷰 모드 조작팁',
+          title: '2. 인터페이스 뷰 모드 조작 & 협업 힌트',
           icon: '🖥️',
           items: [
             {
-              title: '작업 스타일에 맞춤 스플릿 뷰 전환',
-              desc: '상단 툴바의 뷰 버튼으로 자유롭게 레이아웃을 전환할 수 있습니다:\\n• [50:50]: 터미널과 인프라 모니터링 표준 반반 분할\\n• [70:30]: 터미널 CLI 작업 집중 모드\\n• [30:70]: 대시보드 및 네트워크 토폴로지 모니터링 집중 모드\\n• [100:0]: 터미널 전용 풀스크린\\n• [0:100]: 대시보드 전용 풀스크린',
+              title: '5가지 화면 분할 뷰 전환',
+              desc: `📊 화면 상태 결과: 상단 툴바의 뷰 스위처를 통해 작업 레이아웃을 조절할 수 있습니다.\n💡 제안 유도 힌트: CLI 실습에 집중하려면 [70:30], 인프라 토폴로지 모니터링에 집중하려면 [30:70] 버튼을 클릭하세요.`,
               tag: 'UI 팁'
             },
             {
-              title: '수정 권한 (Editable) 잠금 및 협업 팁',
-              desc: '우측 상단의 [수정 권한: 허용됨] 버튼을 클릭해 OFF(읽기 전용)로 전환하면, 다른 수강생이나 팀원이 실습 중 노드/파드를 임의로 삭제하거나 변경하는 사고를 방지할 수 있습니다.',
+              title: '수정 권한 (Editable) 잠금 스위치',
+              desc: `📊 화면 상태 결과: 우측 상단의 [수정 권한] 토글이 현재 '${lab?.editable ? '허용됨 (ON)' : '조회 전용 (OFF)'}' 상태입니다.\n💡 제안 유도 힌트: 다른 팀원과의 공동 실습 중 실수로 인한 파드/노드 삭제를 방지하려면 권한을 OFF로 잠가두세요.`,
               tag: '보안/협업'
             },
             {
               title: '실시간 자동 동기화 (Polling Sync)',
-              desc: '동일한 랩에 접속해 있는 다른 사용자가 명령어를 실행하거나 자원을 변경하면 새로고침할 필요 없이 2.5초 이내에 모든 화면에 실시간 자동 반영됩니다.',
+              desc: `💡 제안 유도 힌트: 다른 사용자가 자원을 변경하거나 명령어를 실행하면 새로고침 없이 2.5초 이내에 모든 화면에 실시간 자동 반영됩니다.`,
               tag: '실시간'
-            }
-          ]
-        },
-        {
-          title: '3. 트래픽 시뮬레이터 활용팁',
-          icon: '⚡',
-          items: [
-            {
-              title: '초당 트래픽 (RPS) 부하 테스트',
-              desc: '네트워크 토폴로지의 슬라이더를 0~1000 RPS까지 조절하여 실시간 부하가 마스터 노드(15%)와 워커 노드에 어떻게 분산되고 파드당 부하가 산출되는지 모니터링하세요.',
-              tag: '부하 테스트'
             }
           ]
         }
       ],
       quickPrompts: [
-        { label: '⚙️ 인프라 관리팁 보기', topic: 'management' },
+        { label: '⚙️ 화면 기준 관리팁', topic: 'management' },
         { label: '➕ 메뉴별 자원 추가법', topic: 'menu' },
-        { label: '🚨 장애 대처법 & 실시간 진단', topic: 'troubleshoot' }
+        { label: '🚨 실시간 진단 & 장애 대처', topic: 'troubleshoot' }
       ]
     };
   }
 
-  // 2. [관리팁] 주제
+  // ============================================================
+  // Topic 2: [관리팁] (화면 상태 결과 & 제안 유도 힌트)
+  // ============================================================
   if (selectedTopic === 'management') {
+    const screenStateDesc = isLabView
+      ? `현재 화면에 [${nodeNames}] 노드가 가동 중이며, L7 분산 알고리즘은 '${lbAlgo}', 현재 인입 트래픽은 '${trafficRps} req/s'입니다.`
+      : `현재 실습 랩 목록 화면입니다. 상용 클러스터 운영 및 하드웨어 무중단 관리 핵심 노하우를 안내합니다.`;
+
     return {
       topic: 'management',
-      title: '⚙️ 상용 인프라 운영 & 클러스터 관리팁',
-      summary: '대규모 트래픽 분산, 하드웨어 무중단 증설(Hot-Add), 스토리지 티어링, 안전한 노드 유지보수 등 실무 엔지니어링 핵심 노하우입니다.',
+      title: '⚙️ 화면 기준 상용 인프라 운영 & 클러스터 관리팁',
+      summary: screenStateDesc,
       statusBadge: { text: '운영 노하우', type: 'ok' },
       sections: [
         {
@@ -1280,56 +1320,44 @@ export function generateAiCopilotAdvice(prompt = '', topic = 'general', lab = nu
           icon: '🚀',
           items: [
             {
-              title: 'vCPU / RAM 즉각 확장 실무',
-              desc: '서버 재부팅 없이 노드 하드웨어 용량을 증설하려면 노드 카드 상단의 [+2C (Hot-Add)] 또는 [+4G] 버튼을 클릭하세요. Kubelet의 Allocatable 리소스가 즉시 갱신되어 Pending 파드가 자동으로 스케줄링됩니다.',
-              cmd: 'kubectl top nodes',
+              title: `워커 노드 [${firstWorker.name}] vCPU / RAM Hot-Add 증설`,
+              desc: `📊 화면 상태 결과: 화면 노드 카드에 표시된 [${firstWorker.name}]의 현재 할당량은 ${firstWorker.cpuTotalM ? firstWorker.cpuTotalM / 1000 : 2} Core / ${firstWorker.ramTotalMi ? firstWorker.ramTotalMi / 1024 : 4} GiB입니다.\n💡 제안 유도 힌트: 서버 재부팅 없이 노드 카드 상단의 [+2C (Hot-Add)] 또는 [+4G] 버튼을 클릭해보세요. Kubelet의 Allocatable 리소스가 즉시 갱신되어 Pending 파드가 자동으로 스케줄링됩니다.`,
+              cmd: `kubectl top nodes`,
               tag: 'Hot-Add'
             },
             {
-              title: '자원 임계치 모니터링 기준',
-              desc: '노드의 CPU 또는 RAM 사용률이 85%를 초과하면 OOMKilled나 Throttling이 발생할 수 있습니다. 사전 경보 시점에 즉시 증설하는 것이 서비스 SLA를 지키는 핵심입니다.',
-              cmd: 'kubectl get nodes -o wide',
+              title: '클러스터 용량 임계치(80%) 사전 대응',
+              desc: `💡 제안 유도 힌트: 노드의 CPU 사용률이 80%를 초과하면 OOMKilled나 Throttling이 발생할 수 있습니다. 사전 경보 시점에 즉시 증설하는 것이 서비스 SLA를 지키는 핵심입니다.`,
+              cmd: `kubectl get nodes -o wide`,
               tag: '가용성'
             }
           ]
         },
         {
-          title: '2. 스토리지 티어링 & 노드 친화도 (nodeSelector)',
-          icon: '💾',
-          items: [
-            {
-              title: 'NVMe SSD vs Standard HDD 분리 정책',
-              desc: '• 고성능 I/O 워크로드(MySQL, Redis 등)는 \'disktype=ssd\' 레이블을 지정하여 고속 NVMe 노드에 배치하세요.\\n• 로그 수집기, 배치 잡 등 I/O 부하가 낮은 작업은 \'disktype=hdd\' 노드에 배치하여 인프라 비용을 절감합니다.',
-              cmd: 'kubectl get nodes --show-labels',
-              tag: '스토리지'
-            }
-          ]
-        },
-        {
-          title: '3. L4 / L7 로드밸런싱 알고리즘 최적화',
+          title: '2. L4 / L7 로드밸런싱 알고리즘 최적화',
           icon: '🌐',
           items: [
             {
-              title: '상황별 최적 분산 알고리즘 선정',
-              desc: '• 라운드로빈 (Round Robin): 요청 처리 시간이 짧고 일정한 일반 REST API 및 마이크로서비스에 최적\\n• 최소 연결 (Least Connections): DB 쿼리, 웹소켓 등 커넥션 유지 시간이 길고 트랜잭션 무게가 제각각인 서비스에 최적\\n• IP 해시 (IP Hash): 클라이언트 IP 기반으로 동일 백엔드로 라우팅하여 세션 고정(Sticky Session)이 필요한 서비스에 최적',
+              title: `현재 분산 알고리즘 '${lbAlgo}' 최적화 힌트`,
+              desc: `📊 화면 상태 결과: 현재 L7 로드밸런서(VIP ${vip})는 '${primaryHost}' 도메인에 대해 '${lbAlgo}' 알고리즘으로 트래픽을 워커 노드에 분산하고 있습니다.\n💡 제안 유도 힌트: 긴 세션이나 웹소켓 워크로드가 증가할 경우, 네트워크 패널에서 알고리즘을 'LeastConnection'으로 변경하여 커넥션 편차를 완화해보세요.`,
               tag: '네트워크'
             },
             {
-              title: '로드밸런서 헬스체크 임계치 관리',
-              desc: '헬스체크 주기가 너무 짧으면 정상 파드에 불필요한 부하를 주고, 너무 길면 비정상 파드로의 요청 전달이 지연됩니다. 상용 기준 5~10초 인터벌이 권장됩니다.',
-              cmd: 'curl -I https://ktci5.kr/healthz',
+              title: `현재 도메인 '${primaryHost}' 헬스체크 관리`,
+              desc: `💡 제안 유도 힌트: 헬스체크 주기가 너무 짧으면 정상 파드에 불필요한 부하를 주고, 너무 길면 비정상 인스턴스로의 유입 차단이 지연됩니다. 상용 기준 5~10초 인터벌이 권장됩니다.`,
+              cmd: `curl -I http://${vip}`,
               tag: '헬스체크'
             }
           ]
         },
         {
-          title: '4. 안전한 노드 유지보수 (Drain & Cordon)',
+          title: '3. 안전한 노드 유지보수 (Drain & Cordon)',
           icon: '🛡️',
           items: [
             {
-              title: '노드 점검 전 파드 안전 대피',
-              desc: '노드 OS 패치나 물리 점검 시 먼저 \'kubectl cordon <node>\'로 신규 파드 배치를 막고, \'kubectl drain <node> --ignore-daemonsets\'로 가동 중인 파드를 다른 건강한 노드로 안전하게 이주시키세요.',
-              cmd: 'kubectl cordon worker-01',
+              title: `노드 [${firstWorker.name}] 점검 전 파드 안전 대피`,
+              desc: `💡 제안 유도 힌트: 노드 OS 패치나 물리 점검 시 먼저 'kubectl cordon ${firstWorker.name}'으로 신규 파드 배치를 막고, 'kubectl drain ${firstWorker.name} --ignore-daemonsets'로 가동 중인 파드를 다른 건강한 노드로 안전하게 이주시키세요.`,
+              cmd: `kubectl cordon ${firstWorker.name}`,
               tag: '유지보수'
             }
           ]
@@ -1343,24 +1371,32 @@ export function generateAiCopilotAdvice(prompt = '', topic = 'general', lab = nu
     };
   }
 
-  // 3. [어떤 메뉴 어떻게 추가] 주제
+  // ============================================================
+  // Topic 3: [어떤 메뉴 어떻게 추가] (화면 상태 결과 & 제안 유도 힌트)
+  // ============================================================
   if (selectedTopic === 'menu') {
+    const screenStateDesc = isLabView
+      ? `현재 화면의 대시보드 상단 [+ VM 노드 추가], 파드 목록의 [+ 파드 배포], 네트워크 패널의 [+ 도메인/포트 매핑 추가] 메뉴를 통해 인프라를 확장할 수 있습니다.`
+      : `현재 실습 랩 목록 화면입니다. 상단 우측의 [+ 새 클러스터 랩 생성] 버튼을 눌러 신규 가상 클러스터를 생성할 수 있습니다.`;
+
+    const nextNodeNum = nodes.length + 1;
+
     return {
       topic: 'menu',
-      title: '➕ 어떤 메뉴에서 어떻게 추가하나요? (자원 생성 가이드)',
-      summary: 'VM 노드 증설, 파드/디플로이먼트 배포, 도메인 Ingress 바인딩 등 각 메뉴의 위치와 정확한 생성 절차입니다.',
+      title: '➕ 화면 기준 메뉴 위치 & 자원 추가 가이드',
+      summary: screenStateDesc,
       statusBadge: { text: '메뉴 가이드', type: 'ok' },
       sections: [
         {
-          title: '1. VM 노드 신규 프로비저닝 (노드 확장)',
+          title: '1. VM 노드 신규 프로비저닝 (노드 증설)',
           icon: '🖥️',
           items: [
             {
               title: '메뉴 위치: 우측 GUI 대시보드 상단 [+ VM 노드 추가]',
-              desc: '1. 우측 상단의 [+ VM 노드 추가] 버튼을 클릭하여 모달을 엽니다.\\n2. 호스트명(예: worker-03), 사설 IP(예: 10.244.0.13), vCPU(2~8 Core), RAM(4~8 GiB), 스토리지(SSD/HDD)를 선택합니다.\\n3. [노드 프로비저닝]을 클릭하면 1초 만에 클러스터에 Ready 상태로 편입됩니다.',
+              desc: `📊 화면 상태 결과: 현재 화면에 총 ${nodes.length}개 노드(${nodeNames})가 등록되어 있습니다.\n💡 제안 유도 힌트:\n1. 화면 우측 상단의 [+ VM 노드 추가] 버튼 클릭\n2. 호스트명(예: w${nextNodeNum}), 사설 IP(예: 10.10.10.${20 + (nextNodeNum - 1) * 10}), vCPU, RAM, 스토리지(SSD/HDD) 선택\n3. [노드 프로비저닝]을 클릭하면 1초 만에 클러스터에 Ready 상태로 편입됩니다.\n👉 아래 버튼을 누르면 해당 모달이 즉시 열립니다.`,
               menuGuide: '우측 상단 [+ VM 노드 추가]',
               modalId: 'add-node-modal',
-              cmd: 'kubectl add node worker-03 --ip 10.244.0.13 --cpu 4000 --ram 8192 --disk ssd',
+              cmd: `kubectl add node w${nextNodeNum} --ip 10.10.10.${20 + (nextNodeNum - 1) * 10} --cpu 4000 --ram 8192 --disk ssd`,
               tag: 'VM 증설'
             }
           ]
@@ -1370,11 +1406,11 @@ export function generateAiCopilotAdvice(prompt = '', topic = 'general', lab = nu
           icon: '📦',
           items: [
             {
-              title: '메뉴 위치: 파드 목록 상단 [+ 파드 배포]',
-              desc: '1. 파드 목록 헤더의 [+ 파드 배포 (초/분/랜덤 동작)] 버튼 클릭\\n2. 워크로드명(예: order-api), 이미지(nginx:1.25), 레플리카(파드 수 1~10), CPU Request(100m~500m) 지정\\n3. [동작 주기/수명]: 영구 지속(Service), 초 단위(테스트잡), 분 단위(배치), 시간 단위, 🎲랜덤 라이프사이클(자동 버스트 트래픽 발생) 선택\\n4. [배포하기]를 누르면 스케줄러가 타겟 노드에 즉시 배치합니다.',
+              title: '메뉴 위치: 파드 목록 상단 [+ 파드 배포 (초/분/랜덤 동작)]',
+              desc: `📊 화면 상태 결과: 현재 화면에 총 ${pods.length}개 파드가 가동 중입니다.\n💡 제안 유도 힌트:\n1. 파드 목록 헤더의 [+ 파드 배포] 버튼 클릭\n2. 워크로드명(예: payment-api), 이미지(nginx:1.25), 레플리카 수, CPU Request 지정\n3. [동작 주기/수명]: 영구 지속, 초 단위(테스트잡), 분 단위(배치), 시간 단위, 🎲랜덤 라이프사이클 선택 후 배포`,
               menuGuide: '파드 목록 상단 [+ 파드 배포]',
               modalId: 'deploy-modal',
-              cmd: 'kubectl create deployment web-app --image=nginx --replicas=3',
+              cmd: 'kubectl create deployment payment-api --image=nginx --replicas=2',
               tag: '워크로드'
             }
           ]
@@ -1384,11 +1420,11 @@ export function generateAiCopilotAdvice(prompt = '', topic = 'general', lab = nu
           icon: '🌐',
           items: [
             {
-              title: '메뉴 위치: 네트워크 패널 L7 로드밸런서 [+ 도메인/포트 매핑 추가]',
-              desc: '1. 네트워크 토폴로지 카드 내 L7 로드밸런서 영역의 [+ 도메인/포트 매핑 추가] 클릭\\n2. 호스트 FQDN(예: shop.ktci5.kr), 인입 포트(80 또는 443), 경로(/), 타겟 서비스(web-service:80) 입력\\n3. [도메인/포트 매핑] 클릭 시 Cloudflare 터널 및 L7 Ingress에 즉시 바인딩됩니다.',
+              title: `네트워크 패널 L7 로드밸런서 [+ 도메인/포트 매핑 추가]`,
+              desc: `📊 화면 상태 결과: 현재 화면에 기본 도메인 '${primaryHost}' 및 '${allHosts}'이 바인딩되어 있습니다.\n💡 제안 유도 힌트:\n1. L7 로드밸런서 카드의 [+ 도메인/포트 매핑 추가] 클릭\n2. FQDN(예: order.${primaryHost.replace(/^[^.]+\./, '')} 또는 api.ktci5.kr), 인입 포트(80 또는 443), 경로(/), 타겟 서비스(web-service:80) 입력\n3. [도메인/포트 매핑] 클릭 시 Cloudflare 터널 및 L7 Ingress에 즉시 바인딩됩니다.`,
               menuGuide: '네트워크 패널 [+ 도메인/포트 매핑]',
               modalId: 'domain-modal',
-              cmd: 'curl -I http://shop.ktci5.kr',
+              cmd: `curl -H "Host: ${primaryHost}" http://${vip}`,
               tag: 'Ingress'
             }
           ]
@@ -1399,7 +1435,7 @@ export function generateAiCopilotAdvice(prompt = '', topic = 'general', lab = nu
           items: [
             {
               title: '메뉴 위치: 상단 운영자 툴바 [🚨 장애 주입/해결 시나리오] 드롭다운',
-              desc: '1. 상단 툴바의 드롭다운 선택상자에서 원하는 시나리오 선택:\\n   - [디스크 고갈 & 스케줄링 불가]\\n   - [로드밸런서 헬스체크 실패 503]\\n   - [Cloudflare 터널 단절 502]\\n2. 선택 즉시 상용 장애가 주입되며, 대처법에 따라 복구 훈련을 진행할 수 있습니다.',
+              desc: `💡 제안 유도 힌트: 상단 툴바의 드롭다운 선택상자에서 [디스크 고갈], [로드밸런서 헬스체크 실패 503], [Cloudflare 터널 단절 502] 중 원하는 시나리오를 선택하면 실시간 장애가 주입되며 대처 실습을 진행할 수 있습니다.`,
               menuGuide: '상단 툴바 [장애 시나리오 드롭다운]',
               tag: '장애 실습'
             }
@@ -1414,60 +1450,133 @@ export function generateAiCopilotAdvice(prompt = '', topic = 'general', lab = nu
     };
   }
 
-  // 4. [문제로 나왔을 때 어떻게 대처] 주제 (Default / Troubleshoot)
+  // ============================================================
+  // Topic 4: [문제로 나왔을 때 어떻게 대처] (Default / Troubleshoot)
+  // ============================================================
   const isHealthy = activeIssues.length === 0;
+
+  // 1순위: 현재 화면에서 감지된 실제 장애가 있는 경우
+  if (!isHealthy) {
+    return {
+      topic: 'troubleshoot',
+      title: `🚨 화면 상태 감지: 총 ${activeIssues.length}건의 장애 및 단계별 대처법`,
+      summary: `현재 화면에서 총 ${activeIssues.length}건의 실제 장애/경보가 감지되었습니다. 아래 화면 분석 결과와 유도 힌트를 확인하고 즉시 조치하세요.`,
+      statusBadge: { text: `${activeIssues.length}건 장애 감지`, type: 'critical' },
+      sections: [
+        {
+          title: '🔥 현재 화면 실시간 감지 문제 & 즉시 조치 힌트',
+          icon: '⚠️',
+          items: activeIssues.map(issue => ({
+            title: `[${issue.level}] ${issue.badge} - ${issue.target}`,
+            desc: `📊 화면 상태 결과: ${issue.screenResult}\n\n💡 제안 유도 힌트: ${issue.hint}`,
+            cmd: issue.fixCmd,
+            modalId: issue.modalId || null,
+            menuGuide: issue.modalId ? '타겟 자원 증설 메뉴 열기' : null,
+            tag: issue.level === 'CRITICAL' ? '긴급 조치' : '주의'
+          }))
+        }
+      ],
+      quickPrompts: [
+        { label: '💡 인터페이스 사용팁', topic: 'tips' },
+        { label: '⚙️ 인프라 관리팁', topic: 'management' },
+        { label: '➕ 메뉴별 자원 추가법', topic: 'menu' }
+      ]
+    };
+  }
+
+  // 2순위: 현재 화면이 정상일 때 (랩별 특화 힌트 및 상용 런북)
+  let specificLabHint = null;
+  if (labId === 'scheduling-lab') {
+    specificLabHint = {
+      title: '🎯 [scheduling-lab] 실습 랩 목표 & 스케줄링 힌트',
+      icon: '🎯',
+      items: [
+        {
+          title: '마스터 NoSchedule Taint 및 워커 nodeSelector 라벨 불일치 해결',
+          desc: `📊 화면 상태 결과: 현재 워커 노드 [${firstWorker.name}]에 'disktype=ssd' 라벨이 부재합니다.\n💡 제안 유도 힌트: 터미널에서 'kubectl label nodes ${firstWorker.name} disktype=ssd'를 실행하여 노드 라벨을 맞추면 대기 중인 파드가 즉시 스케줄링되어 정상 가동됩니다.`,
+          cmd: `kubectl label nodes ${firstWorker.name} disktype=ssd`,
+          tag: '실습 힌트'
+        }
+      ]
+    };
+  } else if (labId === 'hpa-traffic-lab') {
+    specificLabHint = {
+      title: '🎯 [hpa-traffic-lab] 실습 랩 목표 & 부하 분산 힌트',
+      icon: '⚡',
+      items: [
+        {
+          title: `대규모 트래픽(${trafficRps} req/s) 부하 테스트 및 로드밸런싱 검증`,
+          desc: `📊 화면 상태 결과: L7 로드밸런서(VIP ${vip})를 통해 도메인 '${primaryHost}'으로 트래픽이 유입 중입니다.\n💡 제안 유도 힌트: 트래픽 슬라이더를 0~1000으로 조절하거나, 상단 툴바의 [🚨 장애 주입] 메뉴에서 '로드밸런서 헬스체크 실패 503'을 주입하여 페일오버를 실습해보세요.`,
+          cmd: `curl -H "Host: ${primaryHost}" http://${vip}`,
+          tag: '부하 힌트'
+        }
+      ]
+    };
+  } else if (isLabView) {
+    specificLabHint = {
+      title: '🎯 [기본 랩] 가상 인프라 가동 상태 & 도전 힌트',
+      icon: '✅',
+      items: [
+        {
+          title: `상용 Nginx 3-Tier 서비스(${primaryHost}) 가동 점검`,
+          desc: `📊 화면 상태 결과: 노드(${nodeNames}), 파드(${runningPods.length}개 가동), 도메인('${primaryHost}'), 터널(${tunnelStatus})이 모두 정상 가동 중입니다.\n💡 제안 유도 힌트: 상단 툴바의 [🚨 장애 주입/해결 시나리오] 메뉴에서 '워커 디스크 압박' 또는 '터널 단절'을 주입하고 직접 트러블슈팅 훈련을 진행해보세요.`,
+          cmd: `curl -H "Host: ${primaryHost}" http://${vip}`,
+          tag: '정상 가동'
+        }
+      ]
+    };
+  } else {
+    // 랩 목록 뷰인 경우
+    specificLabHint = {
+      title: '📋 실습 랩 목록 화면 가이드 & 랩 선택 힌트',
+      icon: '📚',
+      items: [
+        {
+          title: '기본 예제 랩 3종 실습 목표 가이드',
+          desc: `📊 화면 상태 결과: 현재 화면에 3개의 대표 실습 랩이 등록되어 있습니다.\n💡 제안 유도 힌트:\n1. [기본 랩]: 상용 도메인(app.ktci5.kr)과 L7 ALB 연동 기초 실습\n2. [스케줄링 랩]: Taint & nodeSelector 스케줄링 트러블슈팅 실습\n3. [HPA 부하 랩]: 대규모 RPS 트래픽 분산 실습\n원하는 카드의 [실습 랩 입장하기 ➔] 버튼을 클릭하세요.`,
+          tag: '랩 선택'
+        }
+      ]
+    };
+  }
 
   return {
     topic: 'troubleshoot',
-    title: isHealthy ? '🛡️ 인프라 상태 정상 & 실전 장애 대처 런북' : '🚨 실시간 감지된 장애 및 단계별 대처법',
-    summary: isHealthy
-      ? '현재 클러스터에 감지된 심각한 장애가 없습니다. 상용 환경 및 CKA 시험에 자주 출제되는 4대 핵심 장애 대처 런북을 확인하세요.'
-      : `현재 클러스터에서 총 ${activeIssues.length}건의 장애/주의사항이 실시간 감지되었습니다! 아래 단계별 조치 가이드를 확인하세요.`,
-    statusBadge: isHealthy
-      ? { text: '클러스터 정상', type: 'ok' }
-      : { text: `${activeIssues.length}건 장애 감지`, type: 'critical' },
+    title: '🛡️ 화면 상태 정상 & 실전 장애 대처 런북',
+    summary: isLabView
+      ? `현재 [${labTitle}] 화면에 심각한 장애가 감지되지 않았습니다. 현재 화면 상태 분석 결과와 CKA/상용 빈출 4대 장애 대처 런북을 안내합니다.`
+      : `현재 실습 랩 목록 화면입니다. 실습 목적에 맞는 랩을 선택하거나 신규 랩을 생성하세요.`,
+    statusBadge: { text: '화면 상태 정상', type: 'ok' },
     sections: [
-      // 현재 랩에서 발생 중인 실시간 장애가 있다면 최우선 표시!
-      ...(activeIssues.length > 0 ? [{
-        title: '🔥 현재 랩 실시간 감지 문제 및 즉시 조치 가이드',
-        icon: '⚠️',
-        items: activeIssues.map(issue => ({
-          title: `[${issue.level}] ${issue.badge} - ${issue.target}`,
-          desc: issue.desc + '\n\n🛠️ 조치 방법: ' + issue.fixGuide,
-          cmd: issue.fixCmd,
-          modalId: issue.modalId || null,
-          menuGuide: issue.modalId ? '타겟 자원 증설 메뉴 열기' : null,
-          tag: issue.level === 'CRITICAL' ? '긴급 조치' : '주의'
-        }))
-      }] : []),
+      ...(specificLabHint ? [specificLabHint] : []),
       {
         title: '📚 상용 인프라 & CKA 시험 빈출 4대 장애 대처 런북',
         icon: '📖',
         items: [
           {
             title: '1. 파드가 Pending 상태에 멈춰 있을 때',
-            desc: '• 원인: 노드의 CPU/메모리 가용량 부족(Insufficient cpu), nodeSelector 불일치, Taints\\n• 진단: \'kubectl describe pod <pod>\'로 Events 섹션 메시지 확인\\n• 해결: 노드 카드 상단의 [+2C], [+4G] 버튼으로 노드를 확장하거나 신규 VM 노드를 추가합니다.',
-            cmd: 'kubectl describe pod web-app',
+            desc: `• 원인: 노드의 CPU/메모리 가용량 부족(Insufficient cpu), nodeSelector 불일치, Taints\n• 진단: 'kubectl describe pod <pod>'로 Events 섹션 메시지 확인\n• 해결: 노드 카드 상단의 [+2C], [+4G] 버튼으로 노드를 확장하거나 신규 VM 노드를 추가합니다.`,
+            cmd: `kubectl describe pod ${targetPod.name}`,
             modalId: 'add-node-modal',
             menuGuide: '신규 VM 노드 추가 모달',
             tag: 'Pending'
           },
           {
             title: '2. 노드에 DiskPressure 발생 시 (스케줄링 차단)',
-            desc: '• 원인: 루트 디스크 85% 초과로 Kubelet Eviction 발생 및 노드 Cordon 처리됨\\n• 진단: \'df -h\'로 디스크 파티션 사용량 확인\\n• 해결: 노드 카드에서 디스크 사양을 증설하고 \'kubectl uncordon <node>\' 명령으로 격리를 해제합니다.',
-            cmd: 'kubectl uncordon worker-02',
+            desc: `• 원인: 루트 디스크 85% 초과로 Kubelet Eviction 발생 및 노드 Cordon 처리됨\n• 진단: 'df -h'로 디스크 파티션 사용량 확인\n• 해결: 노드 카드에서 [+ 100GB SSD 디스크 Hot-Add] 후 'kubectl uncordon <node>' 명령으로 격리를 해제합니다.`,
+            cmd: `kubectl uncordon ${firstWorker.name}`,
             tag: 'DiskPressure'
           },
           {
             title: '3. 로드밸런서 503 Service Unavailable 오류 발생 시',
-            desc: '• 원인: 백엔드 타겟 파드가 응답하지 않거나 헬스체크 경로(/healthz) 오류 발생\\n• 진단: \'curl -I https://ktci5.kr/healthz\'로 직접 응답 코드 확인\\n• 해결: 네트워크 패널의 로드밸런서 카드에서 헬스체크를 복구하고 타겟 파드 상태를 점검합니다.',
-            cmd: 'curl -I https://ktci5.kr/healthz',
+            desc: `• 원인: 백엔드 타겟 파드가 응답하지 않거나 헬스체크 경로(/healthz) 오류 발생\n• 진단: 'curl -I http://${vip}'로 직접 응답 코드 확인\n• 해결: 네트워크 패널의 로드밸런서 카드에서 헬스체크를 복구하고 타겟 파드 상태를 점검합니다.`,
+            cmd: `curl -I http://${vip}`,
             tag: '503 에러'
           },
           {
             title: '4. Cloudflare 터널 단절 (502 Bad Gateway) 발생 시',
-            desc: '• 원인: Cloudflare Zero Trust 터널 에이전트(cloudflared) 프로세스 종료 또는 인증 토큰 만료\\n• 진단: \'tunnel status\'로 터널 링크 확인\\n• 해결: 네트워크 토폴로지 카드에서 [터널 연결] 토글 버튼을 클릭하여 데몬을 즉시 재연결합니다.',
-            cmd: 'tunnel status',
+            desc: `• 원인: Cloudflare Zero Trust 터널 에이전트(cloudflared) 프로세스 종료 또는 인증 토큰 만료\n• 진단: 'tunnel status'로 터널 링크 확인\n• 해결: 네트워크 토폴로지 카드에서 [터널 연결] 토글 버튼을 클릭하여 데몬을 즉시 재연결합니다.`,
+            cmd: `tunnel status`,
             tag: '502 터널'
           }
         ]
@@ -1497,7 +1606,8 @@ export async function handleSimulatorApi(request, path, env, user) {
     }
     const prompt = (body.prompt || '').trim();
     const topic = body.topic || 'general';
-    const aiResponse = generateAiCopilotAdvice(prompt, topic, null);
+    const effectiveLab = body.lab || null;
+    const aiResponse = generateAiCopilotAdvice(prompt, topic, effectiveLab);
     return new Response(JSON.stringify({
       ok: true,
       topic,
@@ -2022,8 +2132,9 @@ export async function handleSimulatorApi(request, path, env, user) {
       try { body = await request.json(); } catch {}
       const prompt = (body.prompt || '').trim();
       const topic = body.topic || 'general'; // 'tips' | 'troubleshoot' | 'menu' | 'exam' | 'general'
+      const effectiveLab = body.lab || lab;
       
-      const aiResponse = generateAiCopilotAdvice(prompt, topic, lab);
+      const aiResponse = generateAiCopilotAdvice(prompt, topic, effectiveLab);
       return new Response(JSON.stringify({
         ok: true,
         topic,
@@ -3982,7 +4093,7 @@ export function renderSimulatorPage(user) {
         const res = await fetch(apiUrl, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ topic: topic })
+          body: JSON.stringify({ topic: topic, lab: currentLab })
         });
         const data = await res.json();
         const loadElem = document.getElementById(loadId);
@@ -4028,7 +4139,7 @@ export function renderSimulatorPage(user) {
         const res = await fetch(apiUrl, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ prompt: prompt, topic: 'general' })
+          body: JSON.stringify({ prompt: prompt, topic: 'general', lab: currentLab })
         });
         const data = await res.json();
         const loadElem = document.getElementById(loadId);
