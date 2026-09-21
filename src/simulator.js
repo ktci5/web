@@ -56,7 +56,8 @@ function createDefaultNetwork() {
       domain: 'ktci5.kr',
       rules: [
         { host: 'app.ktci5.kr', path: '/', port: 80, targetPort: 80, service: 'web-service:80', ssl: true, protocol: 'HTTP/1.1 & HTTP/2' },
-        { host: 'dev.ktci5.kr', path: '/', port: 443, targetPort: 8080, service: 'dev-service:8080', ssl: true, protocol: 'HTTPS (TLS1.3)' }
+        { host: 'dev.ktci5.kr', path: '/', port: 443, targetPort: 8080, service: 'dev-service:8080', ssl: true, protocol: 'HTTPS (TLS1.3)' },
+        { host: '*.ktci5.kr', path: '/', port: 80, targetPort: 80, service: 'web-service:80', ssl: true, protocol: 'HTTP/1.1 & HTTP/2 (Wildcard)' }
       ]
     },
     router: {
@@ -462,17 +463,19 @@ export async function getLabDetail(env, id) {
         if (!lab.network.layers) lab.network.layers = def.layers;
         if (!lab.network.ingress) lab.network.ingress = def.ingress;
 
-        // 실등록 도메인 2개(app.ktci5.kr, dev.ktci5.kr) 보정
+        // Ingress 도메인 보정: app.ktci5.kr, dev.ktci5.kr 및 *.ktci5.kr 와일드카드 보장
         if (lab.network.ingress?.rules) {
-          lab.network.ingress.rules.forEach((r) => {
-            if (r.host === 'api.ktci5.kr' || r.host?.includes('api.')) {
-              r.host = 'dev.ktci5.kr';
-              r.service = 'dev-service:8080';
-              r.port = 443;
-              r.targetPort = 8080;
-              r.protocol = 'HTTPS (TLS1.3)';
-            }
-          });
+          if (!lab.network.ingress.rules.some(r => r.host === 'app.ktci5.kr')) {
+            lab.network.ingress.rules.unshift({
+              host: 'app.ktci5.kr',
+              path: '/',
+              port: 80,
+              targetPort: 80,
+              service: 'web-service:80',
+              ssl: true,
+              protocol: 'HTTP/1.1 & HTTP/2'
+            });
+          }
           if (!lab.network.ingress.rules.some(r => r.host === 'dev.ktci5.kr')) {
             lab.network.ingress.rules.push({
               host: 'dev.ktci5.kr',
@@ -482,6 +485,17 @@ export async function getLabDetail(env, id) {
               service: 'dev-service:8080',
               ssl: true,
               protocol: 'HTTPS (TLS1.3)'
+            });
+          }
+          if (!lab.network.ingress.rules.some(r => r.host === '*.ktci5.kr')) {
+            lab.network.ingress.rules.push({
+              host: '*.ktci5.kr',
+              path: '/',
+              port: 80,
+              targetPort: 80,
+              service: 'web-service:80',
+              ssl: true,
+              protocol: 'HTTP/1.1 & HTTP/2 (Wildcard)'
             });
           }
         }
@@ -788,7 +802,7 @@ export function evalK8sCommand(cmdLine, lab, user) {
     const net = lab.network || createDefaultNetwork();
     const l = net.layers || createDefaultNetwork().layers;
     let out = '\x1b[36;1m🌐 KT Cloud OSI 7-Layer Network Architecture Status:\x1b[0m\n';
-    out += `  • \x1b[35;1m[L7 응용]\x1b[0m     ALB/Ingress 실등록 도메인 라우팅 (app.ktci5.kr, dev.ktci5.kr) ➔ \x1b[32mACTIVE\x1b[0m\n`;
+    out += `  • \x1b[35;1m[L7 응용]\x1b[0m     ALB/Ingress 와일드카드 도메인 라우팅 (*.ktci5.kr, app, dev) ➔ \x1b[32mACTIVE\x1b[0m\n`;
     out += `  • \x1b[35;1m[L6 표현]\x1b[0m     TLSv1.3 SSL 암호화 & GZIP 압축 ➔ \x1b[32mENCRYPTED\x1b[0m\n`;
     out += `  • \x1b[35;1m[L5 세션]\x1b[0m     Cloudflare Argo / WireGuard Mesh 세션 유지 ➔ \x1b[32mESTABLISHED\x1b[0m\n`;
     out += `  • \x1b[35;1m[L4 전송]\x1b[0m     TCP 포트 포워딩 (VIP:80, 443 ➔ NodePort:30080, 30081) ➔ \x1b[32mLISTENING\x1b[0m\n`;
@@ -831,43 +845,76 @@ export function evalK8sCommand(cmdLine, lab, user) {
       };
     }
 
-    // 미등록 도메인 접근 차단 (가상 협업 랩 콘솔에는 app.ktci5.kr, dev.ktci5.kr 2개만 등록됨)
+    // 도메인 유효성 검증:
+    // 1) 등록된 Ingress 규칙과 일치하거나
+    // 2) 가상머신에서 자유롭게 생성/테스트하는 *.ktci5.kr 도메인이거나
+    // 3) L7 로드밸런서 VIP 직접 호출인 경우 지원
     const registeredRules = net.ingress?.rules || [];
     const isDomainMatch = Boolean(targetHost && registeredRules.some((r) => r.host === targetHost));
+    const isKtciDomain = Boolean(targetHost && (targetHost.endsWith('.ktci5.kr') || targetHost === 'ktci5.kr'));
     const isLbVip = !targetHost && (hostOrIp === net.loadBalancer?.vip);
 
-    if (targetHost && !isDomainMatch) {
+    if (targetHost && !isDomainMatch && !isKtciDomain) {
       return {
-        output: `curl: (6) Could not resolve host: ${targetHost}\nHTTP/1.1 404 Not Found (DNS Unregistered Host: 가상 협업 랩 콘솔에는 'app.ktci5.kr'(상용)과 'dev.ktci5.kr'(개발) 2개 도메인만 등록되어 있습니다)`,
+        output: `curl: (6) Could not resolve host: ${targetHost}\nHTTP/1.1 404 Not Found (DNS Host Unresolvable: KT Cloud 가상 실습 환경은 '*.ktci5.kr' 도메인 및 Ingress에 등록된 호스트만 지원합니다)`,
         labChanged: false
       };
     }
 
-    if (isLbVip || isDomainMatch) {
-      const matchedRule = registeredRules.find((r) => (targetHost && r.host === targetHost) || r.port === port) || registeredRules[0];
-      const isDevHost = targetHost === 'dev.ktci5.kr' || port === 443;
+    if (isLbVip || isDomainMatch || isKtciDomain) {
+      let matchedRule = registeredRules.find((r) => (targetHost && r.host === targetHost) || r.port === port);
+      const subPrefix = targetHost ? targetHost.split('.')[0] : 'app';
+      const isDevHost = targetHost === 'dev.ktci5.kr' || subPrefix === 'dev' || port === 443;
+      
+      if (!matchedRule) {
+        matchedRule = {
+          host: targetHost,
+          path: '/',
+          port: port,
+          targetPort: port === 443 ? 8080 : 80,
+          service: `${subPrefix}-service:${port === 443 ? 8080 : 80}`
+        };
+      }
+
       const targetService = matchedRule?.service?.split(':')[0] || (isDevHost ? 'dev-service' : 'web-service');
       
-      const targetPods = lab.pods?.filter((p) => p.status === 'Running' && (p.name.includes('web') || p.name.includes('dev') || p.name.includes('api')));
+      const allRunningPods = lab.pods?.filter((p) => p.status === 'Running') || [];
+      let candidatePods = allRunningPods.filter((p) => 
+        p.name.includes(subPrefix) || (targetService && p.name.includes(targetService.split('-')[0]))
+      );
+      if (candidatePods.length === 0) {
+        candidatePods = allRunningPods.filter((p) => p.name.includes('web') || p.name.includes('dev') || p.name.includes('api') || p.name.includes('app'));
+      }
+      if (candidatePods.length === 0) {
+        candidatePods = allRunningPods;
+      }
       
-      if (targetPods && targetPods.length > 0) {
+      if (candidatePods.length > 0) {
         // Unhealthy 타겟 노드 제외하고 정상 파드 선택 (LB 페일오버 자동 우회)
         const unhealthyNodeNames = (net.loadBalancer?.targetPool || [])
           .filter(p => !p.status.includes('Healthy'))
           .map(p => p.nodeName || lab.nodes?.find(n => p.target.startsWith(n.ip))?.name)
           .filter(Boolean);
 
-        const healthyPods = targetPods.filter(p => !unhealthyNodeNames.includes(p.node));
+        const healthyPods = candidatePods.filter(p => !unhealthyNodeNames.includes(p.node));
         if (healthyPods.length === 0 && unhealthyNodeNames.length > 0) {
           return {
             output: `HTTP/1.1 503 Service Unavailable (All target endpoints in pool are Unhealthy)`,
             labChanged: false
           };
         }
-        const candidatePods = healthyPods.length > 0 ? healthyPods : targetPods;
-        const chosenPod = candidatePods[Math.floor(Math.random() * candidatePods.length)];
+        const podsToSelect = healthyPods.length > 0 ? healthyPods : candidatePods;
+        const chosenPod = podsToSelect[Math.floor(Math.random() * podsToSelect.length)];
         const effectiveHost = targetHost || (isDevHost ? 'dev.ktci5.kr' : 'app.ktci5.kr');
-        const serviceTitle = isDevHost ? '🧪 Development & Staging Service via KT Cloud L7 ALB' : '🚀 Production Service via KT Cloud L7 ALB';
+
+        let serviceTitle = '🚀 Production Service via KT Cloud L7 ALB';
+        if (effectiveHost.startsWith('dev.')) {
+          serviceTitle = '🧪 Development & Staging Service via KT Cloud L7 ALB';
+        } else if (effectiveHost.startsWith('api.')) {
+          serviceTitle = '⚡ REST API Backend Service via KT Cloud L7 ALB';
+        } else if (!effectiveHost.startsWith('app.')) {
+          serviceTitle = `🌐 ${subPrefix.toUpperCase()} Application (*.ktci5.kr) via KT Cloud L7 ALB`;
+        }
 
         return {
           output: `\x1b[32mHTTP/1.1 200 OK\x1b[0m
@@ -1028,8 +1075,14 @@ Content-Length: 512
 
     const getIngressOutput = () => {
       const net = lab.network || createDefaultNetwork();
-      let out = 'NAME              CLASS   HOSTS                      ADDRESS         PORTS     AGE\n';
-      out += `kt-ingress-alb    nginx   app.ktci5.kr,dev.ktci5.kr  ${net.loadBalancer?.vip.padEnd(16)}80, 443   5d\n`;
+      let out = 'NAME              CLASS   HOSTS                               ADDRESS         PORTS     AGE\n';
+      const rules = net.ingress?.rules || [];
+      const hosts = rules.map(r => r.host).filter(Boolean);
+      if (!hosts.some(h => h.includes('*'))) {
+        hosts.push('*.ktci5.kr');
+      }
+      const hostStr = Array.from(new Set(hosts)).join(',');
+      out += `kt-ingress-alb    nginx   ${hostStr.padEnd(35)} ${net.loadBalancer?.vip.padEnd(16)}80, 443   5d\n`;
       return out.trimEnd();
     };
 
@@ -1420,6 +1473,98 @@ Events:            <none>`;
     return { output: `service/${svcName} exposed`, labChanged: true };
   }
 
+  // 12-1. CREATE INGRESS / DEPLOYMENT
+  if (sub === 'create') {
+    const kind = tokens[2];
+    const targetName = tokens[3];
+    if (kind === 'ingress' || kind === 'ing') {
+      if (!targetName) return { output: 'error: NAME required for kubectl create ingress', labChanged: false };
+      let host = `${targetName}.ktci5.kr`;
+      let svc = 'web-service:80';
+      let port = 80;
+      for (let i = 4; i < tokens.length; i++) {
+        const t = tokens[i];
+        if (t.startsWith('--rule=')) {
+          const rulePart = t.slice('--rule='.length).replace(/["']/g, '');
+          const eqIdx = rulePart.indexOf('=');
+          const h = (eqIdx !== -1 ? rulePart.slice(0, eqIdx) : rulePart).replace(/\/\*.*$/, '').replace(/\/.*$/, '');
+          const target = eqIdx !== -1 ? rulePart.slice(eqIdx + 1) : 'web-service:80';
+          if (h) host = h;
+          if (target) svc = target;
+        } else if (t === '--rule' && tokens[i + 1]) {
+          const rulePart = tokens[++i].replace(/["']/g, '');
+          const eqIdx = rulePart.indexOf('=');
+          const h = (eqIdx !== -1 ? rulePart.slice(0, eqIdx) : rulePart).replace(/\/\*.*$/, '').replace(/\/.*$/, '');
+          const target = eqIdx !== -1 ? rulePart.slice(eqIdx + 1) : 'web-service:80';
+          if (h) host = h;
+          if (target) svc = target;
+        }
+      }
+      if (!lab.network.ingress) lab.network.ingress = createDefaultNetwork().ingress;
+      if (!lab.network.ingress.rules) lab.network.ingress.rules = [];
+      const svcParts = svc.split(':');
+      const targetPort = parseInt(svcParts[1] || '80', 10);
+      lab.network.ingress.rules.push({
+        host,
+        path: '/',
+        port,
+        targetPort,
+        service: svc,
+        ssl: true,
+        protocol: 'HTTP/1.1 & HTTP/2'
+      });
+      lab.activityLogs.unshift({
+        time: timeStr,
+        user: userName,
+        action: `Ingress 규칙 '${targetName}' (${host} ➔ ${svc}) 생성 완료`
+      });
+      return { output: `ingress.networking.k8s.io/${targetName} created`, labChanged: true };
+    }
+
+    if (kind === 'deployment' || kind === 'deploy') {
+      if (!targetName) return { output: 'error: NAME required for kubectl create deployment', labChanged: false };
+      let image = 'nginx:1.25';
+      for (let i = 4; i < tokens.length; i++) {
+        const t = tokens[i];
+        if (t.startsWith('--image=')) image = t.split('=')[1];
+        else if (t === '--image' && tokens[i + 1]) image = tokens[++i];
+      }
+      if (!lab.deployments) lab.deployments = [];
+      lab.deployments.push({ name: targetName, replicas: 1, image, labels: { app: targetName } });
+      const newPod = {
+        name: `${targetName}-${Math.random().toString(36).substring(2, 7)}-${Math.random().toString(36).substring(2, 7)}`,
+        namespace: 'default',
+        node: 'w1',
+        status: 'Running',
+        ip: `172.20.1.${Math.floor(Math.random() * 200) + 10}`,
+        image,
+        cpuReqM: 100,
+        ramReqMi: 128,
+        labels: { app: targetName },
+        restarts: 0,
+        age: '10s'
+      };
+      lab.pods.push(newPod);
+      lab.activityLogs.unshift({ time: timeStr, user: userName, action: `디플로이먼트 '${targetName}' (${image}) 생성 완료` });
+      return { output: `deployment.apps/${targetName} created`, labChanged: true };
+    }
+  }
+
+  // 12-2. APPLY (선언적 YAML 매니페스트 적용)
+  if (sub === 'apply') {
+    const fileArg = tokens.find(t => t.endsWith('.yaml') || t.endsWith('.yml')) || 'manifest.yaml';
+    const baseName = fileArg.replace(/\.(yaml|yml)$/, '');
+    lab.activityLogs.unshift({
+      time: timeStr,
+      user: userName,
+      action: `kubectl apply -f ${fileArg} 매니페스트 적용 완료`
+    });
+    if (fileArg.includes('ing')) {
+      return { output: `ingress.networking.k8s.io/${baseName} configured`, labChanged: true };
+    }
+    return { output: `customresourcedefinition.apiextensions.k8s.io/${baseName} configured`, labChanged: true };
+  }
+
   // 13. TAINT NODES
   if (sub === 'taint' && (tokens[2] === 'nodes' || tokens[2] === 'node' || tokens[2] === 'no')) {
     const nodeName = tokens[3];
@@ -1738,12 +1883,12 @@ export const CURRICULUM_KNOWLEDGE = [
   {
     id: 'k8s-ingress-alb',
     chapter: '교안 05장 [네트워크] & 07장 인프라 라우팅',
-    title: 'L7 Ingress 호스트 라우팅(app.ktci5.kr, dev.ktci5.kr) 및 ALB VIP 로드밸런싱',
-    keywords: ['ingress', '인그레스', '로드밸런서', 'alb', 'vip', '도메인', 'app.ktci5.kr', 'dev.ktci5.kr', '211.252.85.10', '라운드로빈', 'leastconn'],
-    concept: `L7 Ingress는 단일 공인 VIP(211.252.85.10)에서 HTTP Host 헤더를 분석하여 요청된 실등록 도메인(app.ktci5.kr, dev.ktci5.kr)에 따라 클러스터 내부의 서로 다른 서비스 파드로 트래픽을 분기합니다. 현재 가상 협업 랩 콘솔에는 'app.ktci5.kr'(상용 웹: 80번 포트)과 'dev.ktci5.kr'(개발/스테이징: 443번 포트) 두 개의 도메인만 정식 등록되어 있습니다. 그 외 임의 도메인은 404 Unregistered 에러가 반환됩니다.\n\n• 상용 도메인 검증: curl -H "Host: app.ktci5.kr" http://211.252.85.10\n• 개발 도메인 검증: curl -H "Host: dev.ktci5.kr" http://211.252.85.10:443`,
+    title: 'L7 Ingress 호스트 라우팅(*.ktci5.kr 와일드카드) 및 ALB VIP 로드밸런싱',
+    keywords: ['ingress', '인그레스', '로드밸런서', 'alb', 'vip', '도메인', 'app.ktci5.kr', 'dev.ktci5.kr', 'api.ktci5.kr', '와일드카드', '*.ktci5.kr', '211.252.85.10', '라운드로빈', 'leastconn'],
+    concept: `L7 Ingress는 단일 공인 VIP(211.252.85.10)에서 HTTP Host 헤더를 분석하여 요청된 도메인(app.ktci5.kr, dev.ktci5.kr 및 가상머신에서 생성한 *.ktci5.kr 서브도메인)에 따라 클러스터 내부의 서로 다른 서비스 파드로 트래픽을 분기합니다.\n\nKT Cloud ALB는 와일드카드(*.ktci5.kr) 라우팅을 기본 지원하므로, 사용자가 실습 중 자유롭게 앱 도메인을 추가(예: order.ktci5.kr, api.ktci5.kr 등)하여 서비스를 검증할 수 있습니다.\n\n• 상용 도메인 검증: curl -H "Host: app.ktci5.kr" http://211.252.85.10\n• 개발 도메인 검증: curl -H "Host: dev.ktci5.kr" http://211.252.85.10:443\n• 신규 앱 도메인 검증: curl -H "Host: api.ktci5.kr" http://211.252.85.10`,
     recommendedCmd: 'curl -H "Host: app.ktci5.kr" http://211.252.85.10',
     verifyCmd: 'kubectl get ingress -A',
-    nextStepHint: '네트워크 토폴로지 패널에서 알고리즘을 LeastConnection으로 변경하거나 트래픽 슬라이더를 조절해보세요.',
+    nextStepHint: '네트워크 토폴로지 패널에서 [+ Ingress 도메인/포트 매핑 추가] 버튼 또는 \'kubectl create ingress\'로 새로운 서브도메인을 직접 등록해보세요.',
     tags: 'L7 Ingress / ALB'
   },
   {
@@ -3858,6 +4003,7 @@ export function renderSimulatorPage(user) {
             <button class="chip-btn" onclick="runChip('tunnel status')">tunnel status</button>
             <button class="chip-btn" onclick="runChip('curl -H &quot;Host: app.ktci5.kr&quot; http://211.252.85.10')">curl app.ktci5.kr</button>
             <button class="chip-btn" onclick="runChip('curl -H &quot;Host: dev.ktci5.kr&quot; http://211.252.85.10:443')">curl dev.ktci5.kr</button>
+            <button class="chip-btn" onclick="runChip('curl -H &quot;Host: api.ktci5.kr&quot; http://211.252.85.10')">curl api.ktci5.kr</button>
             <button class="chip-btn" onclick="runChip('help')">help</button>
           </div>
           <div class="term-input-row">
@@ -4441,7 +4587,7 @@ export function renderSimulatorPage(user) {
       termBody.innerHTML = \`<span style="color:#6366f1;">========================================================================</span>\\n\` +
         \`<span style="color:#10b981;font-weight:700;">☸️ KT Cloud 상용 인프라 & 가상 쿠버네티스 콘솔</span>\\n\` +
         \`클러스터: <b>\${escapeHtml(lab.title)}</b> (접속자: <b>\${currentUser}</b>)\\n\` +
-        \`L7 로드밸런서 VIP: <b>\${lab.network?.loadBalancer?.vip || '211.252.85.10'}</b> | 실등록 도메인: <b>app.ktci5.kr (상용), dev.ktci5.kr (개발)</b>\\n\` +
+        \`L7 로드밸런서 VIP: <b>\${lab.network?.loadBalancer?.vip || '211.252.85.10'}</b> | 지원 도메인: <b>*.ktci5.kr (app, dev 및 가상 앱 지원)</b>\\n\` +
         \`우측 상단 탭에서 <b>네트워크 & LB</b>, <b>vCPU/RAM/디스크 증설</b>, <b>상용 장애 시나리오</b> 제어가 가능합니다.\\n\` +
         \`<span style="color:#6366f1;">========================================================================</span>\\n\\n\`;
     }
