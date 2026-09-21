@@ -1,25 +1,61 @@
 /**
- * 쿠버네티스 협업 가상 랩 & 시뮬레이터 고도화 — /study/simulator
+ * 쿠버네티스 협업 가상 랩 & 상용 인프라 운영 콘솔 — /study/simulator
  *
- * 로그인한 수강생들이 공유 가상 클러스터를 생성·조회하고,
- * 인터페이스 뷰 모드(50:50, 70:30, 30:70, 전체화면) 조정,
- * VM 노드 프로비저닝, 파드 배포, 카오스 장애 주입 및 수정 권한(ON/OFF) 제어를 지원합니다.
+ * 1. 화면 짤림 방지 반응형 뷰포트 레이아웃 & 5가지 분할 뷰 모드
+ * 2. 네트워크 엔지니어링: L7 로드밸런서(VIP/헬스체크), 도메인/Ingress 바인딩, 하이브리드 터널(Argo/WireGuard)
+ * 3. 서버 하드웨어 확장: vCPU Hot-Add, RAM 동적 증설, 가상 디스크(Block Storage/PV/PVC) 추가
+ * 4. 상용 트러블슈팅 시나리오: 디스크 고갈(DiskPressure), LB 페일오버, 터널 단절, OOMKilled
  */
 
-export const SIMULATOR_TITLE = 'K8s 협업 가상 클러스터 랩 & 인프라 콘솔';
+export const SIMULATOR_TITLE = 'K8s 상용 인프라 & 협업 가상 랩 콘솔';
+
+// 기본 네트워크 템플릿
+function createDefaultNetwork() {
+  return {
+    loadBalancer: {
+      name: 'kt-cloud-alb-01',
+      vip: '211.252.85.10',
+      type: 'KT Cloud L7 Application Load Balancer',
+      status: 'Healthy',
+      algorithm: 'RoundRobin',
+      ssl: 'TLSv1.3 (Let\'s Encrypt Valid)',
+      targetPool: [
+        { target: '10.10.10.20:30080', status: 'Healthy', latencyMs: 2.1 },
+        { target: '10.10.10.12:30080', status: 'Healthy', latencyMs: 1.8 }
+      ]
+    },
+    ingress: {
+      domain: 'ktci5.kr',
+      rules: [
+        { host: 'app.ktci5.kr', path: '/', service: 'web-service:80', ssl: true },
+        { host: 'api.ktci5.kr', path: '/api', service: 'api-service:8080', ssl: true }
+      ]
+    },
+    tunnel: {
+      name: 'kt-hybrid-argo-tunnel',
+      provider: 'Cloudflare Tunnel (argo) / WireGuard Mesh',
+      status: 'CONNECTED', // 'CONNECTED' | 'DISCONNECTED' | 'DEGRADED'
+      endpoint: 'tunnel.ktci5.kr ➔ 10.10.10.12 (KT Cloud DBO)',
+      throughputMbps: 480,
+      latencyMs: 3.5,
+      encryption: 'ChaCha20-Poly1305'
+    }
+  };
+}
 
 // 기본 제공 시드 랩
 export const DEFAULT_LABS = [
   {
     id: 'default',
-    title: '기본 2노드 클러스터 & 웹 서비스',
-    description: '마스터(10.10.10.12)와 워커(10.10.20), Nginx NodePort(30080) 서비스가 배포된 기본 실습 환경',
+    title: '상용 2노드 클러스터 & 웹 인프라 환경',
+    description: '마스터(10.10.10.12) & 워커(10.10.20), KT Cloud L7 로드밸런서(VIP 211.252.85.10), 도메인(app.ktci5.kr) 및 터널이 연결된 상용 환경',
     creator: '운영진',
     creatorId: 'system',
     createdAt: '2026-09-22',
     updatedAt: new Date().toISOString(),
     editable: true,
-    trafficRps: 150,
+    trafficRps: 180,
+    network: createDefaultNetwork(),
     nodes: [
       {
         name: 'master1',
@@ -29,8 +65,11 @@ export const DEFAULT_LABS = [
         unschedulable: false,
         cpuTotalM: 2000,
         ramTotalMi: 4096,
-        taints: [], // Taint 해제 상태
-        labels: { 'kubernetes.io/hostname': 'master1', 'node-role.kubernetes.io/control-plane': '' }
+        taints: [],
+        labels: { 'kubernetes.io/hostname': 'master1', 'node-role.kubernetes.io/control-plane': '' },
+        disks: [
+          { name: 'vda (OS)', sizeGb: 50, usedGb: 19, type: 'SSD', mount: '/' }
+        ]
       },
       {
         name: 'w1',
@@ -41,7 +80,11 @@ export const DEFAULT_LABS = [
         cpuTotalM: 2000,
         ramTotalMi: 4096,
         taints: [],
-        labels: { 'kubernetes.io/hostname': 'w1', 'disktype': 'hdd' }
+        labels: { 'kubernetes.io/hostname': 'w1', 'disktype': 'hdd' },
+        disks: [
+          { name: 'vda (OS)', sizeGb: 50, usedGb: 22, type: 'SSD', mount: '/' },
+          { name: 'vdb (Storage)', sizeGb: 100, usedGb: 15, type: 'HDD', mount: '/mnt/data' }
+        ]
       }
     ],
     pods: [
@@ -105,8 +148,8 @@ export const DEFAULT_LABS = [
       }
     ],
     activityLogs: [
-      { time: '02:00:00', user: '운영진', action: '기본 2노드 클러스터 초기화 완료' },
-      { time: '02:01:15', user: '운영진', action: 'web-deploy 디플로이먼트 및 NodePort(30080) 서비스 생성' }
+      { time: '02:00:00', user: '운영진', action: 'KT Cloud L7 ALB (VIP: 211.252.85.10) 및 도메인(app.ktci5.kr) 연동 완료' },
+      { time: '02:01:15', user: '운영진', action: 'Cloudflare 하이브리드 터널(암호화 전송) 활성화' }
     ]
   },
   {
@@ -119,6 +162,7 @@ export const DEFAULT_LABS = [
     updatedAt: new Date().toISOString(),
     editable: true,
     trafficRps: 0,
+    network: createDefaultNetwork(),
     nodes: [
       {
         name: 'master1',
@@ -129,7 +173,8 @@ export const DEFAULT_LABS = [
         cpuTotalM: 2000,
         ramTotalMi: 4096,
         taints: [{ key: 'node-role.kubernetes.io/control-plane', effect: 'NoSchedule' }],
-        labels: { 'kubernetes.io/hostname': 'master1' }
+        labels: { 'kubernetes.io/hostname': 'master1' },
+        disks: [{ name: 'vda (OS)', sizeGb: 50, usedGb: 18, type: 'SSD', mount: '/' }]
       },
       {
         name: 'w1',
@@ -140,7 +185,8 @@ export const DEFAULT_LABS = [
         cpuTotalM: 2000,
         ramTotalMi: 4096,
         taints: [],
-        labels: { 'kubernetes.io/hostname': 'w1' } // disktype=hdd 아직 없음
+        labels: { 'kubernetes.io/hostname': 'w1' },
+        disks: [{ name: 'vda (OS)', sizeGb: 50, usedGb: 15, type: 'SSD', mount: '/' }]
       }
     ],
     pods: [
@@ -162,7 +208,7 @@ export const DEFAULT_LABS = [
     deployments: [],
     services: [],
     activityLogs: [
-      { time: '02:05:00', user: '운영진', action: 'hdd-pod (nodeSelector: disktype=hdd) 생성 -> 매칭 노드 없어 Pending 상태 진입' }
+      { time: '02:05:00', user: '운영진', action: 'hdd-pod 생성 -> nodeSelector(disktype=hdd) 일치 노드 없어 Pending 진입' }
     ]
   },
   {
@@ -175,6 +221,7 @@ export const DEFAULT_LABS = [
     updatedAt: new Date().toISOString(),
     editable: true,
     trafficRps: 850,
+    network: createDefaultNetwork(),
     nodes: [
       {
         name: 'master1',
@@ -185,7 +232,8 @@ export const DEFAULT_LABS = [
         cpuTotalM: 2000,
         ramTotalMi: 4096,
         taints: [],
-        labels: { 'kubernetes.io/hostname': 'master1' }
+        labels: { 'kubernetes.io/hostname': 'master1' },
+        disks: [{ name: 'vda (OS)', sizeGb: 50, usedGb: 20, type: 'SSD', mount: '/' }]
       },
       {
         name: 'w1',
@@ -196,7 +244,8 @@ export const DEFAULT_LABS = [
         cpuTotalM: 2000,
         ramTotalMi: 4096,
         taints: [],
-        labels: { 'kubernetes.io/hostname': 'w1' }
+        labels: { 'kubernetes.io/hostname': 'w1' },
+        disks: [{ name: 'vda (OS)', sizeGb: 50, usedGb: 21, type: 'SSD', mount: '/' }]
       }
     ],
     pods: [
@@ -288,6 +337,17 @@ export async function getLabDetail(env, id) {
         await env.ROSTER.put(`sim:lab:${id}`, JSON.stringify(lab));
       }
     }
+    // 네트워크 객체 및 디스크 보완 (기존 랩 호환성)
+    if (lab && !lab.network) {
+      lab.network = createDefaultNetwork();
+    }
+    if (lab && lab.nodes) {
+      for (const n of lab.nodes) {
+        if (!n.disks) {
+          n.disks = [{ name: 'vda (OS)', sizeGb: 50, usedGb: 20, type: 'SSD', mount: '/' }];
+        }
+      }
+    }
     return lab;
   } catch (err) {
     console.error('getLabDetail error:', err);
@@ -331,17 +391,20 @@ function summarizeLab(lab) {
   };
 }
 
-// 스케줄러 알고리즘 시뮬레이션
+// 스케줄러 알고리즘
 export function schedulePod(pod, lab) {
   for (const node of lab.nodes) {
-    // 0. 노드 상태가 Ready가 아니거나 스케줄링 비활성화(cordon)인 경우 제외
     if (node.status !== 'Ready' || node.unschedulable) continue;
 
-    // 1. Taint 검사 (NoSchedule 걸려있으면 제외)
+    // 디스크 고갈 노드 배제 (DiskPressure)
+    const osDisk = node.disks?.[0];
+    if (osDisk && (osDisk.usedGb / osDisk.sizeGb) > 0.90) continue;
+
+    // Taint 검사
     const hasNoSchedule = node.taints && node.taints.some((t) => t.effect === 'NoSchedule');
     if (hasNoSchedule) continue;
 
-    // 2. nodeSelector 검사
+    // nodeSelector 검사
     if (pod.nodeSelector) {
       let match = true;
       for (const [k, v] of Object.entries(pod.nodeSelector)) {
@@ -353,7 +416,6 @@ export function schedulePod(pod, lab) {
       if (!match) continue;
     }
 
-    // 조건 충족 노드 발견 -> 배치
     pod.node = node.name;
     pod.status = 'Running';
     const subnet = node.name === 'master1' ? '172.20.0' : `172.20.${(node.name.charCodeAt(node.name.length - 1) % 9) + 1}`;
@@ -362,23 +424,22 @@ export function schedulePod(pod, lab) {
     return true;
   }
 
-  // 매칭되는 노드가 없음
   pod.node = 'None';
   pod.status = 'Pending';
   pod.ip = 'None';
   return false;
 }
 
-// 클러스터 전체 파드 재스케줄링 (노드 추가/상태변경/Taint/라벨 변경 시 호출)
 export function rescheduleAll(lab) {
   let changed = false;
   if (!lab.pods) return false;
 
   for (const p of lab.pods) {
     const currentNode = lab.nodes.find((n) => n.name === p.node);
-    const nodeUnavailable = !currentNode || currentNode.status !== 'Ready' || currentNode.unschedulable;
+    const osDisk = currentNode?.disks?.[0];
+    const isDiskPressure = osDisk && (osDisk.usedGb / osDisk.sizeGb) > 0.90;
+    const nodeUnavailable = !currentNode || currentNode.status !== 'Ready' || currentNode.unschedulable || isDiskPressure;
     
-    // 현재 노드가 불가능하거나 이미 Pending인 경우
     if (p.status === 'Pending' || nodeUnavailable) {
       const prevStatus = p.status;
       const prevNode = p.node;
@@ -396,15 +457,11 @@ export function evalK8sCommand(cmdLine, lab, user) {
   const line = cmdLine.trim();
   if (!line) return { output: '', labChanged: false };
 
-  // alias k=kubectl 처리
   let tokens = line.split(/\s+/);
-  if (tokens[0] === 'k') {
-    tokens[0] = 'kubectl';
-  }
+  if (tokens[0] === 'k') tokens[0] = 'kubectl';
 
   const isMutating = ['run', 'create', 'scale', 'delete', 'taint', 'label', 'apply', 'cordon', 'uncordon', 'drain', 'reset'].includes(tokens[1]);
 
-  // 수정 권한 OFF 체크
   if (isMutating && !lab.editable) {
     return {
       output: `\x1b[31;1m❌ [수정 권한 거부 - Read-Only 모드]\x1b[0m\n` +
@@ -420,67 +477,157 @@ export function evalK8sCommand(cmdLine, lab, user) {
   // 1. HELP
   if (tokens[0] === 'help' || line === '?') {
     return {
-      output: `\x1b[36;1m☸️ 사용 가능한 쿠버네티스 명령어 목록:\x1b[0m
+      output: `\x1b[36;1m☸️ 사용 가능한 쿠버네티스 & 인프라 명령어 목록:\x1b[0m
   • \x1b[33mk get nodes [-o wide]\x1b[0m        : 노드 목록 및 IP 조회
   • \x1b[33mk get pods [-o wide]\x1b[0m         : 파드 상태 및 할당 노드 조회
-  • \x1b[33mk get deploy\x1b[0m                  : 디플로이먼트 목록 조회
-  • \x1b[33mk get svc\x1b[0m                     : 서비스(ClusterIP, NodePort) 조회
-  • \x1b[33mk top nodes / k top pods\x1b[0m      : 가상 CPU/메모리 사용률 실시간 조회
+  • \x1b[33mk get svc / k get ingress\x1b[0m    : 서비스 및 Ingress 도메인 라우팅 조회
+  • \x1b[33mk top nodes / k top pods\x1b[0m      : 가상 CPU/메모리 실시간 사용률 조회
+  • \x1b[33mdf -h\x1b[0m                         : 가상 노드 스토리지/디스크 용량 점검
+  • \x1b[33mtunnel status\x1b[0m                 : 하이브리드 클라우드 터널 상태 및 지연시간 조회
   • \x1b[33mk run <이름> --image=<이미지>\x1b[0m  : 단일 파드 생성
   • \x1b[33mk create deploy <이름> --image=<이미지> --replicas=<N>\x1b[0m : 디플로이먼트 생성
   • \x1b[33mk scale deploy <이름> --replicas=<N>\x1b[0m                   : 레플리카 수 조정
   • \x1b[33mk expose deploy <이름> --port=80 --type=NodePort\x1b[0m       : NodePort 서비스 노출
   • \x1b[33mk taint nodes <노드> <키>:<효과>[-]\x1b[0m                  : 노드 Taint 설정/해제
   • \x1b[33mk label nodes <노드> <키>=<값>[-]\x1b[0m                   : 노드 라벨 부여/삭제
-  • \x1b[33mk cordon <노드> / k uncordon <노드>\x1b[0m                 : 노드 스케줄링 중단/재개
+  • \x1b[33mk cordon <노드> / k uncordon <노드>\x1b[0m                 : 노드 스케줄링 제어
   • \x1b[33mk drain <노드> --ignore-daemonsets\x1b[0m                 : 노드 파드 비우기(Drain)
   • \x1b[33mk delete pod/deploy/svc <이름>\x1b[0m                         : 리소스 삭제
-  • \x1b[33mcurl <IP>:<포트>\x1b[0m                                     : NodePort HTTP 웹서버 호출 테스트
+  • \x1b[33mcurl [-H "Host: ..."] <IP/도메인>\x1b[0m                    : L7 로드밸런서 및 도메인 호출 테스트
   • \x1b[33mclear\x1b[0m                                                 : 화면 지우기`,
       labChanged: false
     };
   }
 
-  // 2. CURL 테스트
-  if (tokens[0] === 'curl') {
-    const target = tokens[tokens.length - 1];
-    const match = target.match(/(?:http:\/\/)?([^:/]+)(?::(\d+))?/);
-    if (!match) {
-      return { output: `curl: try 'curl --help' or check target IP:PORT`, labChanged: false };
+  // 2. DF -H (가상 디스크 용량 점검)
+  if (line === 'df -h' || line === 'df') {
+    let out = 'Filesystem      Size  Used Avail Use% Mounted on\n';
+    out += 'udev            1.9G     0  1.9G   0% /dev\n';
+    out += 'tmpfs           392M  1.1M  391M   1% /run\n';
+    for (const node of lab.nodes) {
+      for (const d of (node.disks || [])) {
+        const avail = Math.max(0, d.sizeGb - d.usedGb);
+        const pct = Math.round((d.usedGb / d.sizeGb) * 100);
+        const namePadded = `/dev/${d.name.split(' ')[0]}`.padEnd(16);
+        out += `${namePadded}${String(d.sizeGb + 'G').padEnd(6)}${String(d.usedGb + 'G').padEnd(6)}${String(avail + 'G').padEnd(6)}${String(pct + '%').padEnd(5)}[${node.name}] ${d.mount}\n`;
+      }
     }
-    const ip = match[1];
-    const port = parseInt(match[2] || '80', 10);
+    return { output: out.trimEnd(), labChanged: false };
+  }
 
-    const svc = lab.services?.find((s) => (s.nodePort === port) || (s.clusterIp === ip && s.port === port));
-    const isNodeIp = lab.nodes?.some((n) => n.ip === ip || ip === 'localhost' || ip === '127.0.0.1');
+  // 3. TUNNEL STATUS
+  if (line === 'tunnel status' || line === 'cloudflared tunnel info') {
+    const t = lab.network?.tunnel || createDefaultNetwork().tunnel;
+    const isOk = t.status === 'CONNECTED';
+    return {
+      output: `\x1b[36;1m🚇 KT Cloud Hybrid Tunnel Status:\x1b[0m
+  • Name:        ${t.name}
+  • Provider:    ${t.provider}
+  • Status:      ${isOk ? '\x1b[32;1m● CONNECTED\x1b[0m' : '\x1b[31;1m● DISCONNECTED\x1b[0m'}
+  • Route:       ${t.endpoint}
+  • Latency:     ${isOk ? t.latencyMs + ' ms' : 'N/A (Timeout)'}
+  • Bandwidth:   ${isOk ? t.throughputMbps + ' Mbps' : '0 Mbps'}
+  • Encryption:  ${t.encryption}`,
+      labChanged: false
+    };
+  }
 
-    if (svc && (isNodeIp || svc.clusterIp === ip)) {
-      const targetPods = lab.pods?.filter((p) => p.status === 'Running');
+  // 4. CURL 테스트 (L7 로드밸런서, Ingress 도메인, NodePort 지원)
+  if (tokens[0] === 'curl') {
+    const net = lab.network || createDefaultNetwork();
+    const isTunnelDown = net.tunnel?.status === 'DISCONNECTED';
+    
+    // 도메인 헤더 추출
+    let targetHost = '';
+    const hostIdx = tokens.indexOf('-H');
+    if (hostIdx !== -1 && tokens[hostIdx + 1]) {
+      const matchH = tokens[hostIdx + 1].match(/Host:\s*([^\s"']+)/i);
+      if (matchH) targetHost = matchH[1];
+    }
+
+    const targetUrl = tokens[tokens.length - 1];
+    let hostOrIp = targetUrl.replace(/^https?:\/\//, '').split('/')[0];
+    let port = 80;
+    if (hostOrIp.includes(':')) {
+      const p = hostOrIp.split(':');
+      hostOrIp = p[0];
+      port = parseInt(p[1], 10);
+    }
+    if (!targetHost && hostOrIp.includes('.')) {
+      targetHost = hostOrIp;
+    }
+
+    // 터널 단절 상태 체크
+    if (isTunnelDown && (targetHost.includes('ktci5.kr') || hostOrIp === net.loadBalancer?.vip)) {
+      return {
+        output: `curl: (52) Empty reply from server\nHTTP/1.1 502 Bad Gateway (Cloudflare Tunnel: Origin Unreachable)`,
+        labChanged: false
+      };
+    }
+
+    // L7 로드밸런서 VIP 또는 도메인 매칭
+    const isLbVip = hostOrIp === net.loadBalancer?.vip;
+    const isDomainMatch = targetHost && net.ingress?.rules?.some((r) => r.host === targetHost);
+
+    if (isLbVip || isDomainMatch) {
+      const matchedRule = net.ingress?.rules?.find((r) => r.host === targetHost) || net.ingress?.rules?.[0];
+      const targetService = matchedRule?.service?.split(':')[0] || 'web-service';
+      
+      const targetPods = lab.pods?.filter((p) => p.status === 'Running' && (p.name.includes('web') || p.name.includes('api')));
+      
       if (targetPods && targetPods.length > 0) {
+        // Round Robin 라운드로빈 파드 선택
+        const chosenPod = targetPods[Math.floor(Math.random() * targetPods.length)];
         return {
           output: `\x1b[32mHTTP/1.1 200 OK\x1b[0m
-Server: nginx/1.25.3
 Date: ${new Date().toUTCString()}
-Content-Type: text/html
-Content-Length: 615
+Server: KT-Cloud-ALB/2.4 (L7 Reverse Proxy)
+X-Forwarded-Host: ${targetHost || 'app.ktci5.kr'}
+X-Forwarded-Proto: https
+X-Backend-Server: ${chosenPod.ip}:80 (${chosenPod.node})
+Content-Type: text/html; charset=UTF-8
 
 <!DOCTYPE html>
 <html>
-<head><title>Welcome to KT Cloud 5기 K8s Service!</title></head>
-<body style="font-family:sans-serif;text-align:center;padding:40px;">
-<h1>👋 Welcome to KT Cloud Kubernetes Cluster!</h1>
-<p>Served by Pod: <b>${targetPods[0].name}</b> (Node: <b>${targetPods[0].node}</b>)</p>
-<p>ClusterIP: ${svc.clusterIp}:${svc.port} | NodePort: ${svc.nodePort || 'N/A'}</p>
+<head><title>KT Cloud 5기 상용 인프라 서비스</title></head>
+<body style="font-family:sans-serif;padding:30px;text-align:center;">
+<h1>🚀 Production Service via KT Cloud L7 ALB</h1>
+<p>Domain: <b>${targetHost || 'app.ktci5.kr'}</b> ➔ Ingress VIP: <b>${net.loadBalancer?.vip}</b></p>
+<p>Routed Pod: <span style="color:#10b981;font-weight:bold;">${chosenPod.name}</span> (Node: <b>${chosenPod.node}</b>)</p>
+<p>SSL Status: <b>${net.loadBalancer?.ssl}</b> | Tunnel: <b>${net.tunnel?.status}</b></p>
 </body>
 </html>`,
           labChanged: false
         };
       } else {
-        return { output: `curl: (52) Empty reply from server (No running pods available behind service)`, labChanged: false };
+        return {
+          output: `HTTP/1.1 503 Service Unavailable (No healthy upstream pods in target pool)`,
+          labChanged: false
+        };
       }
-    } else {
-      return { output: `curl: (7) Failed to connect to ${ip} port ${port}: Connection refused`, labChanged: false };
     }
+
+    // NodePort 직접 호출 검사
+    const svc = lab.services?.find((s) => (s.nodePort === port) || (s.clusterIp === hostOrIp && s.port === port));
+    const isNodeIp = lab.nodes?.some((n) => n.ip === hostOrIp || hostOrIp === 'localhost' || hostOrIp === '127.0.0.1');
+
+    if (svc && (isNodeIp || svc.clusterIp === hostOrIp)) {
+      const targetPods = lab.pods?.filter((p) => p.status === 'Running');
+      if (targetPods && targetPods.length > 0) {
+        return {
+          output: `\x1b[32mHTTP/1.1 200 OK\x1b[0m
+Server: nginx/1.25.3
+Content-Type: text/html
+Content-Length: 512
+
+<!DOCTYPE html>
+<html><body><h1>Welcome to NodePort ${port}!</h1><p>Served by ${targetPods[0].name} on ${targetPods[0].node}</p></body></html>`,
+          labChanged: false
+        };
+      }
+    }
+
+    return { output: `curl: (7) Failed to connect to ${hostOrIp} port ${port}: Connection refused`, labChanged: false };
   }
 
   if (tokens[0] !== 'kubectl') {
@@ -489,7 +636,15 @@ Content-Length: 615
 
   const sub = tokens[1];
 
-  // 3. GET NODES
+  // 5. GET INGRESS
+  if (sub === 'get' && tokens[2] && (tokens[2].startsWith('ing') || tokens[2] === 'ingress')) {
+    const net = lab.network || createDefaultNetwork();
+    let out = 'NAME              CLASS   HOSTS                      ADDRESS         PORTS     AGE\n';
+    out += `kt-ingress-alb    nginx   app.ktci5.kr,api.ktci5.kr  ${net.loadBalancer?.vip.padEnd(16)}80, 443   5d\n`;
+    return { output: out.trimEnd(), labChanged: false };
+  }
+
+  // 6. GET NODES
   if (sub === 'get' && tokens[2] && tokens[2].startsWith('node')) {
     const isWide = line.includes('-o wide');
     let out = isWide
@@ -498,6 +653,10 @@ Content-Length: 615
 
     for (const n of lab.nodes) {
       let statusStr = n.status;
+      const osDisk = n.disks?.[0];
+      if (osDisk && (osDisk.usedGb / osDisk.sizeGb) > 0.90) {
+        statusStr = 'Ready,DiskPressure';
+      }
       if (n.unschedulable) {
         statusStr = `${n.status},SchedulingDisabled`;
       }
@@ -511,7 +670,7 @@ Content-Length: 615
     return { output: out.trimEnd(), labChanged: false };
   }
 
-  // 4. GET PODS
+  // 7. GET PODS
   if (sub === 'get' && tokens[2] && tokens[2].startsWith('pod')) {
     const isWide = line.includes('-o wide');
     let out = isWide
@@ -534,36 +693,7 @@ Content-Length: 615
     return { output: out.trimEnd(), labChanged: false };
   }
 
-  // 5. GET DEPLOY
-  if (sub === 'get' && tokens[2] && (tokens[2].startsWith('deploy') || tokens[2] === 'all')) {
-    let out = 'NAME         READY   UP-TO-DATE   AVAILABLE   AGE\n';
-    if (lab.deployments && lab.deployments.length > 0) {
-      for (const d of lab.deployments) {
-        const readyCount = lab.pods?.filter((p) => p.name.startsWith(d.name) && p.status === 'Running').length || 0;
-        out += `${d.name.padEnd(13)}${readyCount}/${d.replicas}     ${d.replicas}            ${readyCount}           2d\n`;
-      }
-    } else {
-      out = 'No deployments found in default namespace.\n';
-    }
-    if (tokens[2] !== 'all') {
-      return { output: out.trimEnd(), labChanged: false };
-    }
-  }
-
-  // 6. GET SVC
-  if (sub === 'get' && tokens[2] && (tokens[2].startsWith('svc') || tokens[2].startsWith('service'))) {
-    let out = 'NAME          TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)        AGE\n';
-    out += 'kubernetes    ClusterIP   10.96.0.1       <none>        443/TCP        5d\n';
-    if (lab.services && lab.services.length > 0) {
-      for (const s of lab.services) {
-        const portStr = s.type === 'NodePort' ? `${s.port}:${s.nodePort}/TCP` : `${s.port}/TCP`;
-        out += `${s.name.padEnd(14)}${s.type.padEnd(12)}${s.clusterIp.padEnd(16)}<none>        ${portStr.padEnd(15)}2d\n`;
-      }
-    }
-    return { output: out.trimEnd(), labChanged: false };
-  }
-
-  // 7. TOP NODES / PODS (가상 자원 메트릭)
+  // 8. TOP NODES / PODS
   if (sub === 'top') {
     const target = tokens[2];
     const rps = lab.trafficRps || 0;
@@ -607,7 +737,7 @@ Content-Length: 615
     }
   }
 
-  // 8. CORDON / UNCORDON / DRAIN
+  // 9. CORDON / UNCORDON / DRAIN
   if (sub === 'cordon' && tokens[2]) {
     const nodeName = tokens[2];
     const node = lab.nodes?.find((n) => n.name === nodeName);
@@ -633,7 +763,6 @@ Content-Length: 615
     if (!node) return { output: `Error from server (NotFound): nodes "${nodeName}" not found`, labChanged: false };
     node.unschedulable = true;
 
-    // 해당 노드의 파드들을 다른 노드로 퇴출 및 재스케줄링
     let evicted = 0;
     for (const p of lab.pods) {
       if (p.node === nodeName) {
@@ -643,11 +772,11 @@ Content-Length: 615
         evicted++;
       }
     }
-    lab.activityLogs.unshift({ time: timeStr, user: userName, action: `노드 '${nodeName}' 드레인 완료 (${evicted}개 파드 퇴출 및 재배치)` });
+    lab.activityLogs.unshift({ time: timeStr, user: userName, action: `노드 '${nodeName}' 드레인 완료 (${evicted}개 파드 퇴출)` });
     return { output: `node/${nodeName} cordoned\nevicting pod on ${nodeName}...\nnode/${nodeName} drained`, labChanged: true };
   }
 
-  // 9. RUN (파드 생성)
+  // 10. RUN (파드 생성)
   if (sub === 'run') {
     const podName = tokens[2];
     if (!podName) return { output: 'error: NAME is required for kubectl run', labChanged: false };
@@ -683,64 +812,14 @@ Content-Length: 615
     return { output: `pod/${podName} created`, labChanged: true };
   }
 
-  // 10. CREATE DEPLOYMENT
-  if (sub === 'create' && (tokens[2] === 'deployment' || tokens[2] === 'deploy')) {
-    const depName = tokens[3];
-    if (!depName) return { output: 'error: NAME is required for kubectl create deployment', labChanged: false };
-
-    let image = 'nginx:latest';
-    const imgArg = tokens.find((t) => t.startsWith('--image='));
-    if (imgArg) image = imgArg.split('=')[1];
-
-    let replicas = 1;
-    const repArg = tokens.find((t) => t.startsWith('--replicas='));
-    if (repArg) replicas = parseInt(repArg.split('=')[1], 10) || 1;
-
-    const newDep = { name: depName, replicas, image, labels: { app: depName } };
-    if (!lab.deployments) lab.deployments = [];
-    lab.deployments.push(newDep);
-
-    if (!lab.pods) lab.pods = [];
-    for (let i = 0; i < replicas; i++) {
-      const randHash = Math.random().toString(36).substring(2, 7);
-      const pod = {
-        name: `${depName}-${randHash}`,
-        namespace: 'default',
-        node: 'None',
-        status: 'Pending',
-        ip: 'None',
-        image,
-        cpuReqM: 100,
-        ramReqMi: 128,
-        labels: { app: depName },
-        restarts: 0,
-        age: '5s'
-      };
-      schedulePod(pod, lab);
-      lab.pods.push(pod);
-    }
-
-    lab.activityLogs.unshift({
-      time: timeStr,
-      user: userName,
-      action: `디플로이먼트 '${depName}' (레플리카: ${replicas}개) 생성`
-    });
-
-    return { output: `deployment.apps/${depName} created`, labChanged: true };
-  }
-
   // 11. SCALE DEPLOYMENT
   if (sub === 'scale' && (tokens[2] === 'deployment' || tokens[2] === 'deploy')) {
     const depName = tokens[3];
     const repArg = tokens.find((t) => t.startsWith('--replicas='));
-    if (!depName || !repArg) {
-      return { output: 'error: required flag(s) --replicas not set, or deployment name missing', labChanged: false };
-    }
+    if (!depName || !repArg) return { output: 'error: required flag --replicas missing', labChanged: false };
     const count = parseInt(repArg.split('=')[1], 10);
     const dep = lab.deployments?.find((d) => d.name === depName);
-    if (!dep) {
-      return { output: `Error from server (NotFound): deployments.apps "${depName}" not found`, labChanged: false };
-    }
+    if (!dep) return { output: `deployments.apps "${depName}" not found`, labChanged: false };
 
     const currentPods = lab.pods.filter((p) => p.name.startsWith(depName));
     if (count > currentPods.length) {
@@ -775,53 +854,18 @@ Content-Length: 615
     }
 
     dep.replicas = count;
-    lab.activityLogs.unshift({
-      time: timeStr,
-      user: userName,
-      action: `디플로이먼트 '${depName}' 스케일 -> ${count}개`
-    });
-
+    lab.activityLogs.unshift({ time: timeStr, user: userName, action: `디플로이먼트 '${depName}' 스케일 -> ${count}개` });
     return { output: `deployment.apps/${depName} scaled`, labChanged: true };
   }
 
-  // 12. EXPOSE DEPLOYMENT
-  if (sub === 'expose' && (tokens[2] === 'deployment' || tokens[2] === 'deploy')) {
-    const depName = tokens[3];
-    const typeArg = tokens.find((t) => t.startsWith('--type='));
-    const isNodePort = typeArg && typeArg.includes('NodePort');
-
-    const svcName = `${depName}-service`;
-    const randPort = Math.floor(Math.random() * 500) + 30000;
-    const newSvc = {
-      name: svcName,
-      type: isNodePort ? 'NodePort' : 'ClusterIP',
-      clusterIp: `10.96.${Math.floor(Math.random()*200)+10}.${Math.floor(Math.random()*200)+10}`,
-      nodePort: isNodePort ? randPort : undefined,
-      port: 80,
-      targetPort: 80,
-      selector: { app: depName }
-    };
-
-    if (!lab.services) lab.services = [];
-    lab.services.push(newSvc);
-
-    lab.activityLogs.unshift({
-      time: timeStr,
-      user: userName,
-      action: `서비스 '${svcName}' (${isNodePort ? `NodePort: ${randPort}` : 'ClusterIP'}) 생성`
-    });
-
-    return { output: `service/${svcName} exposed`, labChanged: true };
-  }
-
-  // 13. TAINT NODES
+  // 12. TAINT NODES
   if (sub === 'taint' && tokens[2] === 'nodes') {
     const nodeName = tokens[3];
     const taintExpr = tokens[4];
     if (!nodeName || !taintExpr) return { output: 'error: node name and taint expression required', labChanged: false };
 
     const node = lab.nodes?.find((n) => n.name === nodeName);
-    if (!node) return { output: `Error from server (NotFound): nodes "${nodeName}" not found`, labChanged: false };
+    if (!node) return { output: `nodes "${nodeName}" not found`, labChanged: false };
 
     if (!node.taints) node.taints = [];
 
@@ -829,61 +873,42 @@ Content-Length: 615
       const key = taintExpr.slice(0, -1).split(':')[0];
       node.taints = node.taints.filter((t) => !t.key.startsWith(key));
       rescheduleAll(lab);
-
-      lab.activityLogs.unshift({
-        time: timeStr,
-        user: userName,
-        action: `노드 '${nodeName}' Taint 해제 (${taintExpr})`
-      });
+      lab.activityLogs.unshift({ time: timeStr, user: userName, action: `노드 '${nodeName}' Taint 해제 (${taintExpr})` });
       return { output: `node/${nodeName} untainted`, labChanged: true };
     } else {
       const [key, effect] = taintExpr.split(':');
       node.taints.push({ key, effect: effect || 'NoSchedule' });
-
-      lab.activityLogs.unshift({
-        time: timeStr,
-        user: userName,
-        action: `노드 '${nodeName}' Taint 설정 (${key}:${effect})`
-      });
+      lab.activityLogs.unshift({ time: timeStr, user: userName, action: `노드 '${nodeName}' Taint 설정 (${key}:${effect})` });
       return { output: `node/${nodeName} tainted`, labChanged: true };
     }
   }
 
-  // 14. LABEL NODES
+  // 13. LABEL NODES
   if (sub === 'label' && tokens[2] === 'nodes') {
     const nodeName = tokens[3];
     const labelExpr = tokens[4];
     if (!nodeName || !labelExpr) return { output: 'error: node name and label expression required', labChanged: false };
 
     const node = lab.nodes?.find((n) => n.name === nodeName);
-    if (!node) return { output: `Error from server (NotFound): nodes "${nodeName}" not found`, labChanged: false };
+    if (!node) return { output: `nodes "${nodeName}" not found`, labChanged: false };
 
     if (!node.labels) node.labels = {};
 
     if (labelExpr.endsWith('-')) {
       const key = labelExpr.slice(0, -1);
       delete node.labels[key];
-      lab.activityLogs.unshift({
-        time: timeStr,
-        user: userName,
-        action: `노드 '${nodeName}' 라벨 제거 (${key})`
-      });
+      lab.activityLogs.unshift({ time: timeStr, user: userName, action: `노드 '${nodeName}' 라벨 제거 (${key})` });
       return { output: `node/${nodeName} unlabeled`, labChanged: true };
     } else {
       const [k, v] = labelExpr.split('=');
       node.labels[k] = v || '';
       rescheduleAll(lab);
-
-      lab.activityLogs.unshift({
-        time: timeStr,
-        user: userName,
-        action: `노드 '${nodeName}' 라벨 부여 (${k}=${v})`
-      });
+      lab.activityLogs.unshift({ time: timeStr, user: userName, action: `노드 '${nodeName}' 라벨 부여 (${k}=${v})` });
       return { output: `node/${nodeName} labeled`, labChanged: true };
     }
   }
 
-  // 15. DELETE RESOURCE
+  // 14. DELETE RESOURCE
   if (sub === 'delete') {
     const type = tokens[2];
     const name = tokens[3];
@@ -891,7 +916,7 @@ Content-Length: 615
 
     if (type.startsWith('pod')) {
       const idx = lab.pods.findIndex((p) => p.name === name);
-      if (idx === -1) return { output: `Error from server (NotFound): pods "${name}" not found`, labChanged: false };
+      if (idx === -1) return { output: `pods "${name}" not found`, labChanged: false };
       lab.pods.splice(idx, 1);
       lab.activityLogs.unshift({ time: timeStr, user: userName, action: `파드 '${name}' 삭제` });
       return { output: `pod "${name}" deleted`, labChanged: true };
@@ -899,24 +924,16 @@ Content-Length: 615
 
     if (type.startsWith('deploy')) {
       const idx = lab.deployments.findIndex((d) => d.name === name);
-      if (idx === -1) return { output: `Error from server (NotFound): deployments.apps "${name}" not found`, labChanged: false };
+      if (idx === -1) return { output: `deployments.apps "${name}" not found`, labChanged: false };
       lab.deployments.splice(idx, 1);
       lab.pods = lab.pods.filter((p) => !p.name.startsWith(name));
       lab.activityLogs.unshift({ time: timeStr, user: userName, action: `디플로이먼트 '${name}' 삭제` });
       return { output: `deployment.apps "${name}" deleted`, labChanged: true };
     }
-
-    if (type.startsWith('svc') || type.startsWith('service')) {
-      const idx = lab.services.findIndex((s) => s.name === name);
-      if (idx === -1) return { output: `Error from server (NotFound): services "${name}" not found`, labChanged: false };
-      lab.services.splice(idx, 1);
-      lab.activityLogs.unshift({ time: timeStr, user: userName, action: `서비스 '${name}' 삭제` });
-      return { output: `service "${name}" deleted`, labChanged: true };
-    }
   }
 
   return {
-    output: `error: unknown command or syntax: "${line}". Type 'help' for examples.`,
+    output: `error: unknown command: "${line}". Type 'help' for examples.`,
     labChanged: false
   };
 }
@@ -959,7 +976,8 @@ export async function handleSimulatorApi(request, path, env, user) {
         cpuTotalM: cpuPerNode,
         ramTotalMi: ramPerNode,
         taints: [],
-        labels: { 'kubernetes.io/hostname': 'master1' }
+        labels: { 'kubernetes.io/hostname': 'master1' },
+        disks: [{ name: 'vda (OS)', sizeGb: 50, usedGb: 19, type: 'SSD', mount: '/' }]
       }
     ];
 
@@ -973,7 +991,8 @@ export async function handleSimulatorApi(request, path, env, user) {
         cpuTotalM: cpuPerNode,
         ramTotalMi: ramPerNode,
         taints: [],
-        labels: { 'kubernetes.io/hostname': `w${i}`, 'disktype': i === 1 ? 'hdd' : 'ssd' }
+        labels: { 'kubernetes.io/hostname': `w${i}`, 'disktype': i === 1 ? 'hdd' : 'ssd' },
+        disks: [{ name: 'vda (OS)', sizeGb: 50, usedGb: 18, type: 'SSD', mount: '/' }]
       });
     }
 
@@ -986,7 +1005,8 @@ export async function handleSimulatorApi(request, path, env, user) {
       createdAt: new Date().toISOString().slice(0, 10),
       updatedAt: new Date().toISOString(),
       editable,
-      trafficRps: 100,
+      trafficRps: 120,
+      network: createDefaultNetwork(),
       nodes,
       pods: [
         {
@@ -1066,11 +1086,9 @@ export async function handleSimulatorApi(request, path, env, user) {
       return new Response(JSON.stringify({ ok: true, editable: lab.editable, lab }), { headers: jsonHeaders });
     }
 
-    // 5. POST /api/simulator/labs/:id/nodes : VM 노드 신규 프로비저닝 (인프라 구축)
+    // 5. POST /api/simulator/labs/:id/nodes : VM 노드 신규 프로비저닝
     if (action === 'nodes' && method === 'POST') {
-      if (!lab.editable) {
-        return new Response(JSON.stringify({ ok: false, error: '수정 권한이 OFF 상태입니다.' }), { headers: jsonHeaders, status: 403 });
-      }
+      if (!lab.editable) return new Response(JSON.stringify({ ok: false, error: '수정 권한이 OFF 상태입니다.' }), { headers: jsonHeaders, status: 403 });
       let body = {};
       try { body = await request.json(); } catch {}
       const name = (body.name || `w${(lab.nodes?.length || 1)}`).trim();
@@ -1092,7 +1110,11 @@ export async function handleSimulatorApi(request, path, env, user) {
         cpuTotalM: cpu,
         ramTotalMi: ram,
         taints: body.taint ? [{ key: 'dedicated', effect: body.taint }] : [],
-        labels: { 'kubernetes.io/hostname': name, 'disktype': disktype }
+        labels: { 'kubernetes.io/hostname': name, 'disktype': disktype },
+        disks: [
+          { name: 'vda (OS)', sizeGb: 50, usedGb: 18, type: disktype.toUpperCase(), mount: '/' },
+          { name: 'vdb (Storage)', sizeGb: 100, usedGb: 5, type: disktype.toUpperCase(), mount: '/mnt/storage' }
+        ]
       };
 
       lab.nodes.push(newNode);
@@ -1101,154 +1123,148 @@ export async function handleSimulatorApi(request, path, env, user) {
       lab.activityLogs.unshift({
         time: timeStr,
         user: userName,
-        action: `🖥️ 새 워커 노드 VM '${name}' (${ip}, ${cpu}m CPU, ${ram}Mi RAM) 추가 프로비저닝 완료`
+        action: `🖥️ 새 워커 노드 VM '${name}' (${ip}, ${cpu}m CPU, ${ram}Mi RAM) 프로비저닝 완료`
       });
 
       await saveLabDetail(env, lab);
       return new Response(JSON.stringify({ ok: true, node: newNode, lab }), { headers: jsonHeaders, status: 201 });
     }
 
-    // 6. DELETE /api/simulator/labs/:id/nodes/:nodeName : VM 노드 삭제/반납
-    if (action && action.startsWith('nodes/') && method === 'DELETE') {
-      if (!lab.editable) {
-        return new Response(JSON.stringify({ ok: false, error: '수정 권한이 OFF 상태입니다.' }), { headers: jsonHeaders, status: 403 });
-      }
-      const nodeName = action.split('/')[1];
-      if (nodeName === 'master1') {
-        return new Response(JSON.stringify({ ok: false, error: '마스터 노드(master1)는 제거할 수 없습니다.' }), { headers: jsonHeaders, status: 400 });
-      }
-      const idx = lab.nodes.findIndex((n) => n.name === nodeName);
-      if (idx === -1) {
-        return new Response(JSON.stringify({ ok: false, error: `노드 '${nodeName}'을 찾을 수 없습니다.` }), { headers: jsonHeaders, status: 404 });
-      }
+    // 6. PATCH /api/simulator/labs/:id/nodes/:nodeName/hardware : 하드웨어 스펙 동적 확장 (CPU, RAM, Disk)
+    if (action && action.startsWith('nodes/') && action.endsWith('/hardware') && method === 'PATCH') {
+      if (!lab.editable) return new Response(JSON.stringify({ ok: false, error: '수정 권한이 OFF 상태입니다.' }), { headers: jsonHeaders, status: 403 });
+      const parts = action.split('/');
+      const nodeName = parts[1];
+      const node = lab.nodes?.find((n) => n.name === nodeName);
+      if (!node) return new Response(JSON.stringify({ ok: false, error: 'Node not found' }), { headers: jsonHeaders, status: 404 });
 
-      lab.nodes.splice(idx, 1);
-      // 해당 노드에 있던 파드 퇴출 및 재스케줄링
-      for (const p of lab.pods) {
-        if (p.node === nodeName) {
-          p.node = 'None';
-          p.status = 'Pending';
-        }
-      }
-      rescheduleAll(lab);
-
-      lab.activityLogs.unshift({
-        time: timeStr,
-        user: userName,
-        action: `🗑️ 워커 노드 VM '${nodeName}' 제거 및 반납 완료 (파드 재배치)`
-      });
-
-      await saveLabDetail(env, lab);
-      return new Response(JSON.stringify({ ok: true, lab }), { headers: jsonHeaders });
-    }
-
-    // 7. POST /api/simulator/labs/:id/workloads : 파드/디플로이먼트 GUI 빠른 배포
-    if (action === 'workloads' && method === 'POST') {
-      if (!lab.editable) {
-        return new Response(JSON.stringify({ ok: false, error: '수정 권한이 OFF 상태입니다.' }), { headers: jsonHeaders, status: 403 });
-      }
       let body = {};
       try { body = await request.json(); } catch {}
-      const name = (body.name || 'custom-app').trim();
-      const image = (body.image || 'nginx:alpine').trim();
-      const replicas = Math.min(Math.max(1, parseInt(body.replicas || '1', 10)), 10);
-      const cpuReqM = parseInt(body.cpuReqM || '100', 10);
-      const ramReqMi = parseInt(body.ramReqMi || '128', 10);
-      const nodeSelector = body.disktype ? { disktype: body.disktype } : undefined;
 
-      const newDep = { name, replicas, image, labels: { app: name }, nodeSelector };
-      if (!lab.deployments) lab.deployments = [];
-      lab.deployments.push(newDep);
+      let logMsg = `⚙️ [하드웨어 확장] 노드 '${nodeName}': `;
 
-      if (!lab.pods) lab.pods = [];
-      for (let i = 0; i < replicas; i++) {
-        const randHash = Math.random().toString(36).substring(2, 7);
-        const pod = {
-          name: `${name}-${randHash}`,
-          namespace: 'default',
-          node: 'None',
-          status: 'Pending',
-          ip: 'None',
-          image,
-          cpuReqM,
-          ramReqMi,
-          labels: { app: name },
-          nodeSelector,
-          restarts: 0,
-          age: '1s'
-        };
-        schedulePod(pod, lab);
-        lab.pods.push(pod);
+      if (body.cpu) {
+        node.cpuTotalM = parseInt(body.cpu, 10);
+        logMsg += `vCPU ➔ ${node.cpuTotalM}m (${node.cpuTotalM / 1000} Core) `;
+      }
+      if (body.ram) {
+        node.ramTotalMi = parseInt(body.ram, 10);
+        logMsg += `RAM ➔ ${node.ramTotalMi}Mi (${node.ramTotalMi / 1024} GiB) `;
+      }
+      if (body.addDisk) {
+        if (!node.disks) node.disks = [];
+        const nextDiskName = `vd${String.fromCharCode(97 + node.disks.length)}`;
+        node.disks.push({
+          name: `${nextDiskName} (${body.addDisk.type || 'SSD'})`,
+          sizeGb: parseInt(body.addDisk.sizeGb || '100', 10),
+          usedGb: 2,
+          type: body.addDisk.type || 'SSD',
+          mount: body.addDisk.mount || `/mnt/vol${node.disks.length}`
+        });
+        logMsg += `가상 디스크 ${nextDiskName} (${body.addDisk.sizeGb}GB) Hot-Add 완료 `;
+        
+        // 디스크 압박 해제
+        if (node.disks[0] && (node.disks[0].usedGb / node.disks[0].sizeGb) > 0.90) {
+          node.disks[0].usedGb = 25; // 디스크 정리/마이그레이션 효과
+          logMsg += `(DiskPressure 해제)`;
+        }
       }
 
-      if (body.exposeNodePort) {
-        const randPort = Math.floor(Math.random() * 500) + 30000;
-        if (!lab.services) lab.services = [];
-        lab.services.push({
-          name: `${name}-svc`,
-          type: 'NodePort',
-          clusterIp: `10.96.${Math.floor(Math.random()*200)+10}.${Math.floor(Math.random()*200)+10}`,
-          nodePort: randPort,
-          port: 80,
-          targetPort: 80,
-          selector: { app: name }
+      rescheduleAll(lab);
+      lab.activityLogs.unshift({ time: timeStr, user: userName, action: logMsg });
+      await saveLabDetail(env, lab);
+      return new Response(JSON.stringify({ ok: true, node, lab }), { headers: jsonHeaders });
+    }
+
+    // 7. PATCH /api/simulator/labs/:id/network : 네트워크 설정 (LB 알고리즘, 터널 토글, 도메인 연결)
+    if (action === 'network' && (method === 'PATCH' || method === 'POST')) {
+      if (!lab.editable) return new Response(JSON.stringify({ ok: false, error: '수정 권한이 OFF 상태입니다.' }), { headers: jsonHeaders, status: 403 });
+      let body = {};
+      try { body = await request.json(); } catch {}
+
+      if (!lab.network) lab.network = createDefaultNetwork();
+
+      if (body.toggleTunnel !== undefined) {
+        lab.network.tunnel.status = lab.network.tunnel.status === 'CONNECTED' ? 'DISCONNECTED' : 'CONNECTED';
+        lab.activityLogs.unshift({
+          time: timeStr,
+          user: userName,
+          action: `🚇 [하이브리드 터널] 상태 변경 ➔ ${lab.network.tunnel.status}`
         });
       }
 
-      lab.activityLogs.unshift({
-        time: timeStr,
-        user: userName,
-        action: `📦 워크로드 '${name}' (${replicas}개 파드, 이미지: ${image}) 배포 완료`
-      });
+      if (body.addDomain) {
+        lab.network.ingress.rules.push({
+          host: body.addDomain.host,
+          path: body.addDomain.path || '/',
+          service: body.addDomain.service || 'web-service:80',
+          ssl: true
+        });
+        lab.activityLogs.unshift({
+          time: timeStr,
+          user: userName,
+          action: `🌐 [도메인 바인딩] '${body.addDomain.host}' ➔ '${body.addDomain.service}' Ingress 매핑 & SSL 발급 완료`
+        });
+      }
 
       await saveLabDetail(env, lab);
-      return new Response(JSON.stringify({ ok: true, lab }), { headers: jsonHeaders, status: 201 });
+      return new Response(JSON.stringify({ ok: true, network: lab.network, lab }), { headers: jsonHeaders });
     }
 
-    // 8. POST /api/simulator/labs/:id/chaos : 관리자 장애/카오스 주입
-    if (action === 'chaos' && method === 'POST') {
-      if (!lab.editable) {
-        return new Response(JSON.stringify({ ok: false, error: '수정 권한이 OFF 상태입니다.' }), { headers: jsonHeaders, status: 403 });
-      }
+    // 8. POST /api/simulator/labs/:id/scenario : 상용 운영 장애 & 해결 시나리오 주입
+    if (action === 'scenario' && method === 'POST') {
+      if (!lab.editable) return new Response(JSON.stringify({ ok: false, error: '수정 권한이 OFF 상태입니다.' }), { headers: jsonHeaders, status: 403 });
       let body = {};
       try { body = await request.json(); } catch {}
       const type = body.type;
 
-      if (type === 'node_failure') {
-        const worker = lab.nodes.find((n) => n.role === 'worker');
-        if (worker) {
-          worker.status = worker.status === 'Ready' ? 'NotReady' : 'Ready';
+      if (!lab.network) lab.network = createDefaultNetwork();
+
+      if (type === 'disk_pressure') {
+        const target = lab.nodes.find((n) => n.role === 'worker') || lab.nodes[0];
+        if (target && target.disks?.[0]) {
+          target.disks[0].usedGb = Math.round(target.disks[0].sizeGb * 0.96); // 96% 고갈
           rescheduleAll(lab);
           lab.activityLogs.unshift({
             time: timeStr,
             user: userName,
-            action: `⚡ [카오스 시뮬레이션] 노드 '${worker.name}' 상태 변경 -> ${worker.status}`
+            action: `🚨 [상용 장애 경보] 노드 '${target.name}' 디스크 96% 고갈 ➔ DiskPressure 조건 발생, 파드 스케줄링 중단`
           });
         }
-      } else if (type === 'traffic_spike') {
-        lab.trafficRps = 2800;
-        lab.activityLogs.unshift({
-          time: timeStr,
-          user: userName,
-          action: `🔥 [부하 테스트] 순간 트래픽 폭주 주입 (2,800 req/s)`
-        });
-      } else if (type === 'rolling_update') {
-        const dep = lab.deployments?.[0];
-        if (dep) {
-          dep.image = dep.image.includes('1.25') ? 'nginx:1.26-alpine' : 'nginx:1.25';
-          for (const p of lab.pods) {
-            if (p.name.startsWith(dep.name)) {
-              p.image = dep.image;
-              p.restarts++;
-              p.age = '5s';
-            }
-          }
+      } else if (type === 'lb_failover') {
+        const pool = lab.network.loadBalancer.targetPool;
+        if (pool && pool[0]) {
+          pool[0].status = pool[0].status === 'Healthy' ? 'Unhealthy (503 Error)' : 'Healthy';
           lab.activityLogs.unshift({
             time: timeStr,
             user: userName,
-            action: `🔄 [롤링 업데이트] '${dep.name}' 이미지 변경 -> ${dep.image}`
+            action: `⚡ [로드밸런서 페일오버] 타겟 ${pool[0].target} 상태 ➔ ${pool[0].status}, 트래픽 자동 우회`
           });
         }
+      } else if (type === 'tunnel_cut') {
+        lab.network.tunnel.status = 'DISCONNECTED';
+        lab.activityLogs.unshift({
+          time: timeStr,
+          user: userName,
+          action: `🚇 [터널 장애] Cloudflare 하이브리드 터널 단절 발생 (외부 트래픽 502 유발)`
+        });
+      } else if (type === 'resolve_all') {
+        // 모든 장애 복구
+        lab.network.tunnel.status = 'CONNECTED';
+        if (lab.network.loadBalancer.targetPool) {
+          lab.network.loadBalancer.targetPool.forEach((p) => p.status = 'Healthy');
+        }
+        for (const n of lab.nodes) {
+          n.status = 'Ready';
+          n.unschedulable = false;
+          if (n.disks?.[0]) n.disks[0].usedGb = 20; // 디스크 정상화
+        }
+        rescheduleAll(lab);
+        lab.activityLogs.unshift({
+          time: timeStr,
+          user: userName,
+          action: `✅ [정상 복구] 모든 네트워크 터널, L7 로드밸런서 헬스체크 및 노드 디스크 정상 복원 완료`
+        });
       }
 
       await saveLabDetail(env, lab);
@@ -1290,7 +1306,7 @@ export async function handleSimulatorApi(request, path, env, user) {
         fresh.activityLogs.unshift({
           time: timeStr,
           user: userName,
-          action: '클러스터를 기본 상태로 초기화했습니다.'
+          action: '클러스터 및 인프라를 기본 상태로 초기화했습니다.'
         });
         await saveLabDetail(env, fresh);
         return new Response(JSON.stringify({ ok: true, lab: fresh }), { headers: jsonHeaders });
@@ -1336,44 +1352,36 @@ export function renderSimulatorPage(user) {
       background: #090d16;
       color: #e2e8f0;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      overflow: hidden; /* 페이지 전체 스크롤 방지 -> 내부 스크롤로 화면 짤림 방지 */
+      overflow: hidden;
     }
     
-    /* 최상단 네비게이션 */
+    /* 최상단 헤더 */
     .top-bar {
-      height: 54px;
-      background: #111827;
-      border-bottom: 1px solid #1f293d;
-      padding: 0 16px;
-      display: flex; align-items: center; justify-content: space-between; gap: 12px;
-      flex-shrink: 0;
+      height: 52px; background: #111827; border-bottom: 1px solid #1f293d; padding: 0 16px;
+      display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-shrink: 0;
     }
     .top-brand { display: flex; align-items: center; gap: 8px; text-decoration: none; color: #f8fafc; font-weight: 700; font-size: 15px; }
     .top-brand:hover { color: #818cf8; }
     .nav-actions { display: flex; align-items: center; gap: 8px; }
+    
     .btn {
-      display: inline-flex; align-items: center; gap: 6px;
-      padding: 6px 12px; font-size: 12.5px; font-weight: 600; color: #cbd5e1;
-      background: #1e293b; border: 1px solid #334155; border-radius: 6px; text-decoration: none; cursor: pointer; transition: all 0.15s;
+      display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; font-size: 12px; font-weight: 600;
+      color: #cbd5e1; background: #1e293b; border: 1px solid #334155; border-radius: 6px; text-decoration: none; cursor: pointer; transition: all 0.15s;
     }
     .btn:hover { background: #334155; color: #fff; border-color: #6366f1; }
     .btn.primary { background: #4f46e5; border-color: #6366f1; color: #fff; }
     .btn.primary:hover { background: #4338ca; }
     .btn.warning { background: #d97706; border-color: #f59e0b; color: #fff; }
     .btn.danger { background: #dc2626; border-color: #ef4444; color: #fff; }
-    .btn.sm { padding: 4px 8px; font-size: 11.5px; }
+    .btn.sm { padding: 4px 8px; font-size: 11px; }
 
-    /* 메인 뷰포트 영역 */
+    /* 메인 뷰포트 */
     .viewport-container {
-      height: calc(100vh - 54px);
-      display: flex; flex-direction: column;
-      overflow: hidden;
+      height: calc(100vh - 52px); display: flex; flex-direction: column; overflow: hidden;
     }
 
     /* 1. 목록 뷰 */
-    #view-list {
-      flex: 1; padding: 20px; overflow-y: auto; max-width: 1400px; width: 100%; margin: 0 auto;
-    }
+    #view-list { flex: 1; padding: 20px; overflow-y: auto; max-width: 1400px; width: 100%; margin: 0 auto; }
     .hero-banner {
       background: linear-gradient(135deg, rgba(79, 70, 229, 0.15) 0%, rgba(30, 41, 59, 0.8) 100%);
       border: 1px solid #334155; border-radius: 12px; padding: 20px 24px; margin-bottom: 20px;
@@ -1394,124 +1402,114 @@ export function renderSimulatorPage(user) {
     .perm-badge.off { background: rgba(245, 158, 11, 0.2); color: #fbbf24; border: 1px solid #d97706; }
     .lab-desc { font-size: 12.5px; color: #94a3b8; line-height: 1.5; margin-bottom: 14px; flex-grow: 1; }
     .lab-meta { display: flex; align-items: center; gap: 10px; font-size: 11.5px; color: #64748b; margin-bottom: 14px; flex-wrap: wrap; }
-    .lab-meta span { display: inline-flex; align-items: center; gap: 4px; }
 
     /* 2. 상세 시뮬레이터 뷰 */
-    #view-detail {
-      flex: 1; display: none; flex-direction: column; height: 100%; overflow: hidden;
-    }
+    #view-detail { flex: 1; display: none; flex-direction: column; height: 100%; overflow: hidden; }
     
-    /* 서브 제어 툴바 (운영자 헤더) */
+    /* 운영자 툴바 */
     .op-toolbar {
-      height: 48px; background: #111827; border-bottom: 1px solid #1f293d;
-      padding: 0 16px; display: flex; align-items: center; justify-content: space-between; gap: 12px;
-      flex-shrink: 0;
+      height: 46px; background: #111827; border-bottom: 1px solid #1f293d; padding: 0 14px;
+      display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-shrink: 0;
     }
-    .op-left { display: flex; align-items: center; gap: 10px; }
-    .op-title { font-size: 14px; font-weight: 700; color: #f8fafc; white-space: nowrap; }
+    .op-left { display: flex; align-items: center; gap: 8px; }
+    .op-title { font-size: 13.5px; font-weight: 700; color: #f8fafc; white-space: nowrap; }
     
-    /* 뷰 모드 스위처 (인터페이스 조정 기능) */
-    .view-switcher {
-      display: flex; align-items: center; background: #0b0f19; border: 1px solid #1f293d; border-radius: 6px; padding: 2px;
-    }
+    /* 뷰 모드 스위처 */
+    .view-switcher { display: flex; align-items: center; background: #0b0f19; border: 1px solid #1f293d; border-radius: 6px; padding: 2px; }
     .view-btn {
-      background: transparent; border: none; color: #94a3b8; font-size: 11.5px; font-weight: 600;
-      padding: 4px 8px; border-radius: 4px; cursor: pointer; transition: all 0.15s; display: flex; align-items: center; gap: 4px;
+      background: transparent; border: none; color: #94a3b8; font-size: 11px; font-weight: 600;
+      padding: 3px 7px; border-radius: 4px; cursor: pointer; transition: all 0.15s;
     }
     .view-btn.active { background: #312e81; color: #e0e7ff; }
 
-    /* 수정 권한 토글 */
+    /* 권한 토글 */
     .perm-toggle-wrap { display: flex; align-items: center; gap: 6px; background: #0b0f19; padding: 3px 8px; border-radius: 6px; border: 1px solid #1f293d; }
-    .perm-label { font-size: 11.5px; font-weight: 700; }
-    .switch-btn {
-      cursor: pointer; border: none; border-radius: 4px; padding: 3px 8px; font-size: 11px; font-weight: 700;
-    }
+    .perm-label { font-size: 11px; font-weight: 700; }
+    .switch-btn { cursor: pointer; border: none; border-radius: 4px; padding: 2px 7px; font-size: 10.5px; font-weight: 700; }
     .switch-btn.active-on { background: #10b981; color: #fff; }
     .switch-btn.active-off { background: #ef4444; color: #fff; }
 
-    /* 작업 캔버스 (스플릿 뷰) */
+    /* 스플릿 캔버스 */
     .split-canvas {
-      flex: 1; display: grid; overflow: hidden; height: calc(100% - 48px);
-      grid-template-columns: 50% 50%; /* 기본값 50:50 */
+      flex: 1; display: grid; overflow: hidden; height: calc(100% - 46px);
+      grid-template-columns: 50% 50%;
     }
     .split-canvas.mode-70-30 { grid-template-columns: 70% 30%; }
     .split-canvas.mode-30-70 { grid-template-columns: 30% 70%; }
     .split-canvas.mode-100-0 { grid-template-columns: 100% 0%; }
     .split-canvas.mode-0-100 { grid-template-columns: 0% 100%; }
 
-    /* 좌측 터미널 패널 */
+    /* 좌측 터미널 */
     .pane-terminal {
-      background: #090d16; border-right: 1px solid #1f293d; display: flex; flex-direction: column;
-      overflow: hidden; height: 100%;
+      background: #090d16; border-right: 1px solid #1f293d; display: flex; flex-direction: column; overflow: hidden; height: 100%;
     }
     .term-hd {
-      height: 36px; background: #0f1523; border-bottom: 1px solid #1f293d; padding: 0 12px;
+      height: 34px; background: #0f1523; border-bottom: 1px solid #1f293d; padding: 0 10px;
       display: flex; align-items: center; justify-content: space-between; flex-shrink: 0;
     }
     .term-dots { display: flex; gap: 5px; }
-    .dot { width: 9px; height: 9px; border-radius: 50%; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; }
     .dot.r { background: #ef4444; } .dot.y { background: #f59e0b; } .dot.g { background: #10b981; }
-    .term-hd-title { font-size: 11.5px; font-family: monospace; color: #94a3b8; }
+    .term-hd-title { font-size: 11px; font-family: monospace; color: #94a3b8; }
     .term-body {
-      flex: 1; padding: 12px; overflow-y: auto; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      flex: 1; padding: 10px 12px; overflow-y: auto; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
       font-size: 12.5px; line-height: 1.5; color: #cbd5e1; white-space: pre-wrap; word-break: break-all;
     }
-    .term-chips {
-      display: flex; gap: 5px; padding: 6px 10px; background: #0f1523; border-top: 1px solid #1f293d; overflow-x: auto; flex-shrink: 0;
-    }
+    .term-chips { display: flex; gap: 5px; padding: 6px 10px; background: #0f1523; border-top: 1px solid #1f293d; overflow-x: auto; flex-shrink: 0; }
     .chip-btn {
-      background: #1e293b; border: 1px solid #334155; border-radius: 4px; padding: 2px 7px;
-      font-size: 11px; font-family: monospace; color: #94a3b8; cursor: pointer; white-space: nowrap;
+      background: #1e293b; border: 1px solid #334155; border-radius: 4px; padding: 2px 6px;
+      font-size: 10.5px; font-family: monospace; color: #94a3b8; cursor: pointer; white-space: nowrap;
     }
     .chip-btn:hover { background: #334155; color: #fff; border-color: #6366f1; }
     .term-input-row {
-      height: 42px; background: #0b0f19; border-top: 1px solid #1f293d; padding: 0 12px; display: flex; align-items: center; gap: 8px; flex-shrink: 0;
+      height: 40px; background: #0b0f19; border-top: 1px solid #1f293d; padding: 0 10px; display: flex; align-items: center; gap: 8px; flex-shrink: 0;
     }
-    .term-prompt { color: #10b981; font-weight: 700; font-family: monospace; font-size: 12.5px; white-space: nowrap; }
-    .term-input {
-      flex: 1; background: transparent; border: none; outline: none; color: #fff; font-family: monospace; font-size: 13px;
-    }
+    .term-prompt { color: #10b981; font-weight: 700; font-family: monospace; font-size: 12px; white-space: nowrap; }
+    .term-input { flex: 1; background: transparent; border: none; outline: none; color: #fff; font-family: monospace; font-size: 12.5px; }
 
-    /* 우측 토폴로지 & 인프라 관리 패널 */
+    /* 우측 토폴로지 & 콘솔 패널 */
     .pane-topology {
-      background: #0d121f; display: flex; flex-direction: column; overflow-y: auto; height: 100%; padding: 14px; gap: 12px;
+      background: #0d121f; display: flex; flex-direction: column; overflow: hidden; height: 100%;
     }
-    .panel-card {
-      background: #141b2d; border: 1px solid #1f293d; border-radius: 8px; padding: 12px 14px;
+    
+    /* 우측 서브탭 바 */
+    .topo-tabs-bar {
+      height: 38px; background: #0f1523; border-bottom: 1px solid #1f293d; padding: 0 10px;
+      display: flex; align-items: center; gap: 6px; flex-shrink: 0;
     }
-    .panel-header {
-      display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;
+    .tab-btn {
+      background: transparent; border: none; color: #94a3b8; font-size: 11.5px; font-weight: 600;
+      padding: 6px 10px; border-bottom: 2px solid transparent; cursor: pointer; transition: all 0.15s;
     }
-    .panel-title { font-size: 13px; font-weight: 700; color: #f8fafc; display: flex; align-items: center; gap: 6px; }
-    .op-action-group { display: flex; gap: 6px; }
+    .tab-btn.active { color: #818cf8; border-bottom-color: #6366f1; }
+    
+    .topo-tab-content { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 12px; }
+
+    .panel-card { background: #141b2d; border: 1px solid #1f293d; border-radius: 8px; padding: 12px; }
+    .panel-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+    .panel-title { font-size: 12.5px; font-weight: 700; color: #f8fafc; display: flex; align-items: center; gap: 6px; }
 
     /* 노드 그리드 */
-    .node-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; }
-    .node-card { background: #0f1523; border: 1px solid #1f293d; border-radius: 8px; padding: 10px 12px; }
+    .node-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; }
+    .node-card { background: #0f1523; border: 1px solid #1f293d; border-radius: 8px; padding: 10px; }
     .node-card.not-ready { border-color: #ef4444; background: rgba(239, 68, 68, 0.05); }
-    .node-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
-    .node-name { font-size: 13px; font-weight: 700; color: #f8fafc; font-family: monospace; }
-    .node-ip { font-size: 11px; color: #64748b; font-family: monospace; }
-    .node-status-pill { font-size: 10px; font-weight: 700; padding: 1px 5px; border-radius: 4px; }
-    .node-status-pill.ready { background: rgba(16, 185, 129, 0.2); color: #34d399; }
-    .node-status-pill.notready { background: rgba(239, 68, 68, 0.2); color: #f87171; }
-    .meter-row { margin-bottom: 5px; }
-    .meter-label { display: flex; justify-content: space-between; font-size: 10.5px; color: #94a3b8; margin-bottom: 2px; }
+    .node-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+    .node-name { font-size: 12.5px; font-weight: 700; color: #f8fafc; font-family: monospace; }
+    .node-ip { font-size: 10.5px; color: #64748b; font-family: monospace; }
+    .meter-row { margin-bottom: 4px; }
+    .meter-label { display: flex; justify-content: space-between; font-size: 10px; color: #94a3b8; margin-bottom: 2px; }
     .meter-bar-bg { height: 5px; background: #0b0f19; border-radius: 3px; overflow: hidden; }
     .meter-bar-fill { height: 100%; border-radius: 3px; transition: width 0.3s ease; }
     .fill-green { background: #10b981; } .fill-yellow { background: #f59e0b; } .fill-red { background: #ef4444; }
-    .tag-list { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
-    .node-tag { font-size: 10px; font-family: monospace; padding: 1px 5px; border-radius: 4px; background: #1a2234; color: #cbd5e1; }
+    .tag-list { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 6px; }
+    .node-tag { font-size: 9.5px; font-family: monospace; padding: 1px 4px; border-radius: 3px; background: #1a2234; color: #cbd5e1; }
     .node-tag.taint { background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.4); }
-    .node-actions { display: flex; gap: 4px; margin-top: 8px; border-top: 1px solid #1f293d; padding-top: 6px; }
+    .node-tag.disk { background: rgba(59, 130, 246, 0.15); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.3); }
 
-    /* 파드 테이블 */
-    .pod-table { width: 100%; border-collapse: collapse; font-size: 11.5px; }
-    .pod-table th { text-align: left; color: #64748b; font-weight: 600; padding: 5px 6px; border-bottom: 1px solid #1f293d; }
-    .pod-table td { padding: 5px 6px; border-bottom: 1px solid #141b2d; font-family: monospace; color: #cbd5e1; }
-    .status-pill { padding: 1px 5px; border-radius: 4px; font-size: 10px; font-weight: 700; display: inline-block; }
-    .status-running { background: rgba(16, 185, 129, 0.2); color: #34d399; }
-    .status-pending { background: rgba(245, 158, 11, 0.2); color: #fbbf24; }
+    /* 테이블 */
+    .sim-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+    .sim-table th { text-align: left; color: #64748b; font-weight: 600; padding: 4px 6px; border-bottom: 1px solid #1f293d; }
+    .sim-table td { padding: 4px 6px; border-bottom: 1px solid #141b2d; font-family: monospace; color: #cbd5e1; }
 
     /* 모달 */
     .modal-overlay {
@@ -1521,108 +1519,88 @@ export function renderSimulatorPage(user) {
     .modal-overlay.active { display: flex; }
     .modal {
       background: #141b2d; border: 1px solid #2a3143; border-radius: 10px;
-      max-width: 520px; width: 100%; max-height: 90vh; overflow-y: auto; padding: 20px; box-shadow: 0 20px 40px rgba(0,0,0,0.6);
+      max-width: 500px; width: 100%; max-height: 90vh; overflow-y: auto; padding: 20px; box-shadow: 0 20px 40px rgba(0,0,0,0.6);
     }
-    .modal h2 { font-size: 16px; margin-bottom: 4px; color: #f8fafc; }
+    .modal h2 { font-size: 15px; margin-bottom: 4px; color: #f8fafc; }
     .modal p.desc { font-size: 12px; color: #94a3b8; margin-bottom: 14px; }
-    .form-group { margin-bottom: 12px; }
-    .form-group label { display: block; font-size: 12px; font-weight: 600; color: #cbd5e1; margin-bottom: 4px; }
+    .form-group { margin-bottom: 10px; }
+    .form-group label { display: block; font-size: 11.5px; font-weight: 600; color: #cbd5e1; margin-bottom: 3px; }
     .form-control {
       width: 100%; background: #0b0f19; border: 1px solid #232d42; border-radius: 6px;
-      padding: 7px 10px; color: #f8fafc; font-size: 13px; font-family: inherit;
+      padding: 6px 9px; color: #f8fafc; font-size: 12px; font-family: inherit;
     }
     .form-control:focus { outline: none; border-color: #6366f1; }
-    .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-    .checkbox-label { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #cbd5e1; cursor: pointer; }
-    .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+    .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
 
-    /* 스크롤바 커스텀 */
-    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
     ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-thumb { background: #232d42; border-radius: 3px; }
-    ::-webkit-scrollbar-thumb:hover { background: #334155; }
   </style>
 </head>
 <body>
 
-  <!-- 최상단 헤더 -->
   <header class="top-bar">
     <a href="/study" class="top-brand">
       <span>📖</span> KT-CI5 스터디 Hub
     </a>
     <div class="nav-actions">
-      <button class="btn primary sm" onclick="openCreateModal()">+ 신규 실습 랩</button>
-      <a href="/study" class="btn sm">메인 포털</a>
-      <a href="/study/course/k8s" class="btn sm">☸️ K8s 정리</a>
+      <button class="btn primary sm" onclick="openModal('create-modal')">+ 신규 랩</button>
+      <a href="/study" class="btn sm">메인</a>
+      <a href="/study/course/k8s" class="btn sm">☸️ K8s</a>
       <a href="/study/cheatsheet" class="btn sm">⚡ 치트시트</a>
     </div>
   </header>
 
   <div class="viewport-container">
 
-    <!-- 1. 랩 목록 뷰 -->
+    <!-- 1. 목록 뷰 -->
     <div id="view-list">
       <div class="hero-banner">
         <div>
-          <h1>☸️ 쿠버네티스 협업 가상 랩 & 인프라 콘솔</h1>
-          <p>수강생들과 함께 클러스터 노드(VM)를 증설하고 파드를 배포하며, 수정 권한(ON/OFF)과 화면 분할 뷰를 제어하는 실습 플랫폼입니다.</p>
+          <h1>☸️ 쿠버네티스 상용 인프라 협업 가상 랩 콘솔</h1>
+          <p>L7 로드밸런서, 도메인 연결, 하이브리드 터널, VM vCPU/RAM/디스크 Hot-Add 및 실제 상용 장애 시나리오를 시뮬레이션하고 제어합니다.</p>
         </div>
-        <button class="btn primary" onclick="openCreateModal()">+ 새 클러스터 랩 생성</button>
+        <button class="btn primary" onclick="openModal('create-modal')">+ 새 클러스터 랩 생성</button>
       </div>
       <div class="lab-grid" id="lab-list-container"></div>
     </div>
 
     <!-- 2. 상세 시뮬레이터 뷰 -->
     <div id="view-detail">
-      <!-- 운영자 헤더 툴바 -->
       <div class="op-toolbar">
         <div class="op-left">
           <button class="btn sm" onclick="showListView()">← 목록</button>
           <span class="op-title" id="active-lab-title">기본 클러스터</span>
-          
-          <!-- 인프라 구축 버튼 -->
           <button class="btn sm primary" onclick="openAddNodeModal()">➕ VM 노드 추가</button>
-          <button class="btn sm" onclick="openDeployModal()">📦 파드 배포</button>
-          
-          <!-- 카오스/운영 장애 주입 드롭다운 -->
-          <select class="form-control" style="width:130px; height:28px; padding:2px 6px; font-size:11.5px;" onchange="triggerChaos(this.value); this.value='';">
-            <option value="">⚡ 운영 장애 주입</option>
-            <option value="node_failure">노드 장애 (NotReady 토글)</option>
-            <option value="traffic_spike">순간 트래픽 폭주 (2800 req/s)</option>
-            <option value="rolling_update">롤링 업데이트 (이미지 변경)</option>
-          </select>
+          <button class="btn sm" onclick="openModal('deploy-modal')">📦 파드 배포</button>
         </div>
 
         <div style="display:flex; align-items:center; gap:8px;">
-          <!-- 뷰 모드 스위처 (인터페이스 조정 기능) -->
           <div class="view-switcher">
-            <button class="view-btn active" id="btn-view-50" onclick="setViewMode('mode-50-50')" title="50:50 균등 분할">⬛ 50:50</button>
-            <button class="view-btn" id="btn-view-70" onclick="setViewMode('mode-70-30')" title="터미널 70% 집중">💻 터미널 70%</button>
-            <button class="view-btn" id="btn-view-30" onclick="setViewMode('mode-30-70')" title="토폴로지 70% 집중">📊 맵 70%</button>
-            <button class="view-btn" id="btn-view-100t" onclick="setViewMode('mode-100-0')" title="터미널 전체화면">🖥️ 터미널 전체</button>
-            <button class="view-btn" id="btn-view-100m" onclick="setViewMode('mode-0-100')" title="토폴로지 전체화면">📈 맵 전체</button>
+            <button class="view-btn active" id="btn-view-50" onclick="setViewMode('mode-50-50')">⬛ 50:50</button>
+            <button class="view-btn" id="btn-view-70" onclick="setViewMode('mode-70-30')">💻 터미널 70%</button>
+            <button class="view-btn" id="btn-view-30" onclick="setViewMode('mode-30-70')">📊 맵 70%</button>
+            <button class="view-btn" id="btn-view-100t" onclick="setViewMode('mode-100-0')">🖥️ 터미널 전체</button>
+            <button class="view-btn" id="btn-view-100m" onclick="setViewMode('mode-0-100')">📈 맵 전체</button>
           </div>
 
-          <!-- 수정 권한 토글 -->
           <div class="perm-toggle-wrap">
-            <span class="perm-label" id="perm-label-text">수정 권한: ON</span>
-            <button class="switch-btn active-on" id="perm-toggle-btn" onclick="togglePermission()">🔓 수정 허용</button>
+            <span class="perm-label" id="perm-label-text">수정: ON</span>
+            <button class="switch-btn active-on" id="perm-toggle-btn" onclick="togglePermission()">🔓 ON</button>
           </div>
 
           <button class="btn sm warning" onclick="resetActiveLab()">🔄 리셋</button>
         </div>
       </div>
 
-      <!-- 작업 스플릿 캔버스 -->
       <div class="split-canvas" id="split-canvas">
         
         <!-- 좌측: 터미널 -->
         <div class="pane-terminal" id="pane-terminal">
           <div class="term-hd">
             <div class="term-dots">
-              <span class="dot r"></span>
-              <span class="dot y"></span>
-              <span class="dot g"></span>
+              <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
             </div>
             <span class="term-hd-title" id="term-status-title">master1 (10.10.10.12) - bash</span>
             <button class="chip-btn" onclick="clearTerm()">Clear</button>
@@ -1631,81 +1609,166 @@ export function renderSimulatorPage(user) {
           <div class="term-chips">
             <button class="chip-btn" onclick="runChip('k get nodes -o wide')">k get nodes</button>
             <button class="chip-btn" onclick="runChip('k get pods -o wide')">k get pods</button>
-            <button class="chip-btn" onclick="runChip('k get svc')">k get svc</button>
-            <button class="chip-btn" onclick="runChip('k top nodes')">k top nodes</button>
-            <button class="chip-btn" onclick="runChip('k top pods')">k top pods</button>
-            <button class="chip-btn" onclick="runChip('curl 10.10.10.20:30080')">curl 10.10.10.20:30080</button>
+            <button class="chip-btn" onclick="runChip('k get ing')">k get ing</button>
+            <button class="chip-btn" onclick="runChip('df -h')">df -h (스토리지)</button>
+            <button class="chip-btn" onclick="runChip('tunnel status')">tunnel status</button>
+            <button class="chip-btn" onclick="runChip('curl -H &quot;Host: app.ktci5.kr&quot; http://211.252.85.10')">curl app.ktci5.kr</button>
             <button class="chip-btn" onclick="runChip('help')">help</button>
           </div>
           <div class="term-input-row">
             <span class="term-prompt" id="term-prompt">root@master1:~#</span>
-            <input type="text" class="term-input" id="term-input" placeholder="명령어를 입력하세요 (예: k get pods, k top nodes, help)" autocomplete="off" spellcheck="false" />
+            <input type="text" class="term-input" id="term-input" placeholder="명령어 입력 (예: k get nodes, df -h, tunnel status)" autocomplete="off" spellcheck="false" />
           </div>
         </div>
 
-        <!-- 우측: 토폴로지 & 자원 관리 -->
+        <!-- 우측: 토폴로지 & 인프라 탭 콘솔 -->
         <div class="pane-topology" id="pane-topology">
           
-          <!-- 트래픽 부하 주입기 -->
-          <div class="panel-card">
-            <div class="panel-header">
-              <span class="panel-title">🎛️ 가상 트래픽 발생기 (RPS Simulator)</span>
-              <span style="font-size:11.5px; font-family:monospace; color:#818cf8; font-weight:700;" id="traffic-val">100 req/s</span>
+          <div class="topo-tabs-bar">
+            <button class="tab-btn active" id="tab-btn-topo" onclick="switchRightTab('topo')">📊 클러스터 & 파드</button>
+            <button class="tab-btn" id="tab-btn-network" onclick="switchRightTab('network')">🌐 네트워크 & LB / 터널</button>
+            <button class="tab-btn" id="tab-btn-hardware" onclick="switchRightTab('hardware')">⚙️ 하드웨어 증설 (CPU/RAM/디스크)</button>
+            <button class="tab-btn" id="tab-btn-scenario" onclick="switchRightTab('scenario')">🚨 상용 시나리오 & 트러블슈팅</button>
+          </div>
+
+          <!-- 서브탭 1: 토폴로지 & 파드 -->
+          <div class="topo-tab-content" id="tab-content-topo">
+            <div class="panel-card">
+              <div class="panel-header">
+                <span class="panel-title">🎛️ 가상 트래픽 발생기 (RPS)</span>
+                <span style="font-size:11px; font-family:monospace; color:#818cf8; font-weight:700;" id="traffic-val">180 req/s</span>
+              </div>
+              <input type="range" class="form-control" style="padding:0; height:18px; accent-color:#6366f1; cursor:pointer;" id="traffic-slider" min="0" max="3000" step="50" value="180" onchange="updateTraffic(this.value)" />
             </div>
-            <div style="display:flex; align-items:center; gap:10px;">
-              <span style="font-size:11px; color:#64748b;">0</span>
-              <input type="range" class="form-control" style="padding:0; height:20px; accent-color:#6366f1; cursor:pointer;" id="traffic-slider" min="0" max="3000" step="50" value="100" onchange="updateTraffic(this.value)" />
-              <span style="font-size:11px; color:#64748b;">3000</span>
+
+            <div class="panel-card">
+              <div class="panel-header">
+                <span class="panel-title">🖥️ 인프라 VM 노드 상태</span>
+                <button class="btn sm primary" onclick="openAddNodeModal()">+ 노드 추가</button>
+              </div>
+              <div class="node-grid" id="node-grid-container"></div>
+            </div>
+
+            <div class="panel-card">
+              <div class="panel-header">
+                <span class="panel-title">📦 워크로드 파드 (Pods)</span>
+                <button class="btn sm" onclick="openModal('deploy-modal')">+ 파드 배포</button>
+              </div>
+              <div style="overflow-x:auto;">
+                <table class="sim-table">
+                  <thead>
+                    <tr><th>NAME</th><th>NODE</th><th>STATUS</th><th>IP</th><th>IMAGE</th><th>ACTION</th></tr>
+                  </thead>
+                  <tbody id="pod-table-body"></tbody>
+                </table>
+              </div>
+            </div>
+
+            <div class="panel-card">
+              <div class="panel-header"><span class="panel-title">📝 실시간 협업 감사 로그</span></div>
+              <div id="activity-log-container" style="display:flex; flex-direction:column; gap:4px; max-height:100px; overflow-y:auto; font-size:10.5px; color:#94a3b8;"></div>
             </div>
           </div>
 
-          <!-- 노드 VM 목록 -->
-          <div class="panel-card">
-            <div class="panel-header">
-              <span class="panel-title">🖥️ 인프라 VM 노드 목록</span>
-              <button class="btn sm primary" onclick="openAddNodeModal()">+ 노드 추가</button>
+          <!-- 서브탭 2: 네트워크 & 로드밸런서 & 터널 -->
+          <div class="topo-tab-content" id="tab-content-network" style="display:none;">
+            <!-- L7 ALB 카드 -->
+            <div class="panel-card">
+              <div class="panel-header">
+                <span class="panel-title">🌐 KT Cloud L7 로드밸런서 (Application Load Balancer)</span>
+                <span class="status-pill status-running" id="lb-status-pill">● 헬스체크 정상</span>
+              </div>
+              <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; font-size:11.5px; margin-bottom:8px;">
+                <div>공인 VIP: <b style="color:#818cf8;" id="lb-vip">211.252.85.10</b></div>
+                <div>분산 알고리즘: <b>Round Robin</b></div>
+                <div>SSL 종료: <b style="color:#10b981;">TLSv1.3 (유효함)</b></div>
+                <div>헬스체크: <code>HTTP /healthz 200 OK</code></div>
+              </div>
+              <div style="background:#0b0f19; border:1px solid #1f293d; border-radius:6px; padding:8px;">
+                <div style="font-size:11px; color:#94a3b8; margin-bottom:4px;">🎯 타겟 풀 헬스체크 (Target Pool)</div>
+                <div id="lb-target-pool-list" style="display:flex; flex-direction:column; gap:4px;"></div>
+              </div>
             </div>
-            <div class="node-grid" id="node-grid-container"></div>
+
+            <!-- Ingress & 도메인 바인딩 카드 -->
+            <div class="panel-card">
+              <div class="panel-header">
+                <span class="panel-title">🏷️ Ingress 도메인 라우팅 (Host-based Routing)</span>
+                <button class="btn sm" onclick="openModal('domain-modal')">+ 도메인 추가</button>
+              </div>
+              <div style="overflow-x:auto;">
+                <table class="sim-table">
+                  <thead><tr><th>도메인 (HOST)</th><th>경로 (PATH)</th><th>타겟 서비스</th><th>SSL</th><th>테스트</th></tr></thead>
+                  <tbody id="domain-table-body"></tbody>
+                </table>
+              </div>
+            </div>
+
+            <!-- 하이브리드 터널링 카드 -->
+            <div class="panel-card">
+              <div class="panel-header">
+                <span class="panel-title">🚇 Cloudflare 하이브리드 터널 (WireGuard/Argo Mesh)</span>
+                <button class="btn sm" onclick="toggleTunnelStatus()" id="tunnel-toggle-btn">터널 토글</button>
+              </div>
+              <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; font-size:11.5px;">
+                <div>터널 상태: <b id="tunnel-status-text" style="color:#10b981;">● CONNECTED</b></div>
+                <div>왕복 지연시간: <b id="tunnel-latency">3.5 ms</b></div>
+                <div>대역폭: <b id="tunnel-throughput">480 Mbps</b></div>
+                <div>암호화: <b>ChaCha20-Poly1305</b></div>
+              </div>
+            </div>
           </div>
 
-          <!-- 파드 워크로드 -->
-          <div class="panel-card">
-            <div class="panel-header">
-              <span class="panel-title">📦 워크로드 파드 (Pods)</span>
-              <button class="btn sm" onclick="openDeployModal()">+ 파드 배포</button>
-            </div>
-            <div style="overflow-x:auto;">
-              <table class="pod-table">
-                <thead>
-                  <tr>
-                    <th>NAME</th>
-                    <th>NODE</th>
-                    <th>STATUS</th>
-                    <th>IP</th>
-                    <th>IMAGE</th>
-                    <th>ACTION</th>
-                  </tr>
-                </thead>
-                <tbody id="pod-table-body"></tbody>
-              </table>
+          <!-- 서브탭 3: 하드웨어 증설 (CPU/RAM/디스크) -->
+          <div class="topo-tab-content" id="tab-content-hardware" style="display:none;">
+            <div class="panel-card">
+              <div class="panel-header">
+                <span class="panel-title">⚙️ 가상머신(VM) 사양 동적 증설 (Hot-Add vCPU / RAM / Disk)</span>
+              </div>
+              <p style="font-size:11.5px; color:#94a3b8; margin-bottom:12px;">재부팅 없이 실시간으로 노드의 vCPU 코어, RAM 용량을 확장하거나 가상 블록 스토리지 디스크(PV)를 Hot-Add 마운트합니다.</p>
+              <div id="hardware-nodes-list" style="display:flex; flex-direction:column; gap:10px;"></div>
             </div>
           </div>
 
-          <!-- 서비스 & 네트워크 -->
-          <div class="panel-card">
-            <div class="panel-header">
-              <span class="panel-title">🌐 서비스 & 네트워크 노출</span>
-            </div>
-            <div id="service-list-container" style="display:flex; flex-direction:column; gap:6px;"></div>
-          </div>
+          <!-- 서브탭 4: 상용 시나리오 & 트러블슈팅 -->
+          <div class="topo-tab-content" id="tab-content-scenario" style="display:none;">
+            <div class="panel-card">
+              <div class="panel-header">
+                <span class="panel-title">🚨 실제 상용 환경 장애 & 트러블슈팅 시뮬레이터</span>
+                <button class="btn sm primary" onclick="triggerScenario('resolve_all')">✅ 모든 장애 복구</button>
+              </div>
+              <p style="font-size:11.5px; color:#94a3b8; margin-bottom:12px;">상용 서비스 현업에서 빈번하게 발생하는 장애 상황을 원클릭으로 주입하고 클러스터의 반응과 해결 절차를 체득합니다.</p>
 
-          <!-- 실시간 협업 피드 -->
-          <div class="panel-card">
-            <div class="panel-header">
-              <span class="panel-title">📝 실시간 협업 & 감사 로그</span>
-              <span style="font-size:10.5px; color:#64748b;">2.5초 주기 동기화</span>
+              <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+                <!-- 시나리오 1 -->
+                <div style="background:#0f1523; border:1px solid #1f293d; border-radius:6px; padding:10px;">
+                  <div style="font-size:12px; font-weight:700; color:#f87171; margin-bottom:4px;">🔥 1. 노드 디스크 고갈 (DiskPressure)</div>
+                  <p style="font-size:11px; color:#94a3b8; margin-bottom:8px;">워커 노드 디스크가 96% 고갈되어 K8s가 파드 축출 및 스케줄링 중단 상태에 빠집니다.</p>
+                  <button class="btn sm danger" onclick="triggerScenario('disk_pressure')">디스크 고갈 장애 유발</button>
+                </div>
+
+                <!-- 시나리오 2 -->
+                <div style="background:#0f1523; border:1px solid #1f293d; border-radius:6px; padding:10px;">
+                  <div style="font-size:12px; font-weight:700; color:#fbbf24; margin-bottom:4px;">⚡ 2. L7 로드밸런서 페일오버</div>
+                  <p style="font-size:11px; color:#94a3b8; margin-bottom:8px;">타겟 파드 하나가 503 에러를 뿜을 때 LB가 헬스체크로 감지하고 정상 파드로 즉시 트래픽을 우회합니다.</p>
+                  <button class="btn sm warning" onclick="triggerScenario('lb_failover')">LB 페일오버 테스트</button>
+                </div>
+
+                <!-- 시나리오 3 -->
+                <div style="background:#0f1523; border:1px solid #1f293d; border-radius:6px; padding:10px;">
+                  <div style="font-size:12px; font-weight:700; color:#f87171; margin-bottom:4px;">🚇 3. 하이브리드 터널 단절</div>
+                  <p style="font-size:11px; color:#94a3b8; margin-bottom:8px;">온프레미스와 KT Cloud 간 연결 터널이 끊겨 외부 도메인 접속이 502 타임아웃에 빠집니다.</p>
+                  <button class="btn sm danger" onclick="triggerScenario('tunnel_cut')">터널 단절 유발</button>
+                </div>
+
+                <!-- 시나리오 4 -->
+                <div style="background:#0f1523; border:1px solid #1f293d; border-radius:6px; padding:10px;">
+                  <div style="font-size:12px; font-weight:700; color:#10b981; margin-bottom:4px;">🔄 4. 무중단 롤링 업데이트</div>
+                  <p style="font-size:11px; color:#94a3b8; margin-bottom:8px;">서비스 무중단으로 신규 컨테이너 이미지를 단계적으로 교체하며 파드 롤아웃을 관찰합니다.</p>
+                  <button class="btn sm primary" onclick="triggerScenario('rolling_update')">롤링 업데이트 시작</button>
+                </div>
+              </div>
             </div>
-            <div id="activity-log-container" style="display:flex; flex-direction:column; gap:4px; max-height:120px; overflow-y:auto; font-size:11px; color:#94a3b8;"></div>
           </div>
 
         </div>
@@ -1715,23 +1778,23 @@ export function renderSimulatorPage(user) {
 
   </div>
 
-  <!-- 1. 신규 실습 랩 생성 모달 -->
+  <!-- 모달 1: 신규 랩 생성 -->
   <div class="modal-overlay" id="create-modal">
     <div class="modal">
       <h2>➕ 신규 실습 랩 클러스터 생성</h2>
-      <p class="desc">가상 노드 수와 자원 할당량을 지정하여 새로운 실습 환경을 생성하고 저장합니다.</p>
+      <p class="desc">가상 노드 수와 자원 할당량을 지정하여 새로운 실습 환경을 생성합니다.</p>
       <form onsubmit="handleCreateLab(event)">
         <div class="form-group">
           <label>실습 랩 제목</label>
-          <input type="text" class="form-control" id="form-title" placeholder="예: 3조 롤링배포 및 HPA 실습 환경" required />
+          <input type="text" class="form-control" id="form-title" placeholder="예: 3조 상용 인프라 및 LB 페일오버 실습" required />
         </div>
         <div class="form-group">
           <label>실습 설명</label>
-          <input type="text" class="form-control" id="form-desc" placeholder="실습 목적이나 주의사항을 입력하세요" />
+          <input type="text" class="form-control" id="form-desc" placeholder="실습 목적 및 아키텍처 메모" />
         </div>
         <div class="form-row">
           <div class="form-group">
-            <label>워커 노드 수 (Worker)</label>
+            <label>워커 노드 수</label>
             <select class="form-control" id="form-workers">
               <option value="1">1 Worker (Master1 + W1)</option>
               <option value="2">2 Workers (Master1 + W1 + W2)</option>
@@ -1747,114 +1810,74 @@ export function renderSimulatorPage(user) {
           </div>
         </div>
         <div class="form-group">
-          <label class="checkbox-label">
-            <input type="checkbox" id="form-editable" checked />
-            <span>다른 수강생과 수정 권한 공유 허용 (ON으로 생성)</span>
-          </label>
+          <label class="checkbox-label"><input type="checkbox" id="form-editable" checked /> 다른 수강생과 수정 권한 공유 허용 (ON)</label>
         </div>
         <div class="modal-actions">
           <button type="button" class="btn sm" onclick="closeModal('create-modal')">취소</button>
-          <button type="submit" class="btn sm primary">저장하고 바로 입장</button>
+          <button type="submit" class="btn sm primary">저장하고 입장</button>
         </div>
       </form>
     </div>
   </div>
 
-  <!-- 2. VM 노드 추가 모달 (인프라 구축) -->
+  <!-- 모달 2: VM 노드 추가 -->
   <div class="modal-overlay" id="add-node-modal">
     <div class="modal">
       <h2>🖥️ 새 워커 노드(VM) 프로비저닝</h2>
       <p class="desc">클러스터에 새 가상머신 워커 노드를 즉시 추가하고 자원을 확장합니다.</p>
       <form onsubmit="handleAddNode(event)">
         <div class="form-row">
-          <div class="form-group">
-            <label>노드 호스트명</label>
-            <input type="text" class="form-control" id="node-form-name" placeholder="예: w2, w3, gpu-node1" required />
-          </div>
-          <div class="form-group">
-            <label>사설 IP 주소</label>
-            <input type="text" class="form-control" id="node-form-ip" placeholder="예: 10.10.10.30" required />
-          </div>
+          <div class="form-group"><label>호스트명</label><input type="text" class="form-control" id="node-form-name" required /></div>
+          <div class="form-group"><label>사설 IP</label><input type="text" class="form-control" id="node-form-ip" required /></div>
         </div>
         <div class="form-row">
-          <div class="form-group">
-            <label>CPU 용량</label>
-            <select class="form-control" id="node-form-cpu">
-              <option value="2000">2 Core (2000m)</option>
-              <option value="4000">4 Core (4000m)</option>
-              <option value="8000">8 Core (8000m)</option>
-            </select>
-          </div>
-          <div class="form-group">
-            <label>RAM 용량</label>
-            <select class="form-control" id="node-form-ram">
-              <option value="4096">4 GiB (4096Mi)</option>
-              <option value="8192">8 GiB (8192Mi)</option>
-            </select>
-          </div>
+          <div class="form-group"><label>vCPU 용량</label><select class="form-control" id="node-form-cpu"><option value="2000">2 Core</option><option value="4000">4 Core</option><option value="8000">8 Core</option></select></div>
+          <div class="form-group"><label>RAM 용량</label><select class="form-control" id="node-form-ram"><option value="4096">4 GiB</option><option value="8192">8 GiB</option></select></div>
         </div>
-        <div class="form-group">
-          <label>스토리지 라벨 (disktype)</label>
-          <select class="form-control" id="node-form-disk">
-            <option value="ssd">disktype=ssd (고속 NVMe)</option>
-            <option value="hdd">disktype=hdd (일반 HDD)</option>
-          </select>
-        </div>
+        <div class="form-group"><label>스토리지 타입</label><select class="form-control" id="node-form-disk"><option value="ssd">NVMe SSD (초고속)</option><option value="hdd">Standard HDD</option></select></div>
         <div class="modal-actions">
           <button type="button" class="btn sm" onclick="closeModal('add-node-modal')">취소</button>
-          <button type="submit" class="btn sm primary">노드 프로비저닝 시작</button>
+          <button type="submit" class="btn sm primary">노드 프로비저닝</button>
         </div>
       </form>
     </div>
   </div>
 
-  <!-- 3. 파드/디플로이먼트 배포 모달 (워크로드 추가) -->
+  <!-- 모달 3: 파드 배포 -->
   <div class="modal-overlay" id="deploy-modal">
     <div class="modal">
       <h2>📦 새 파드 / 디플로이먼트 배포</h2>
-      <p class="desc">GUI 폼으로 간편하게 파드를 정의하고 클러스터에 스케줄링 배포합니다.</p>
+      <p class="desc">GUI 폼으로 워크로드를 정의하고 스케줄링 배포합니다.</p>
       <form onsubmit="handleDeployWorkload(event)">
-        <div class="form-group">
-          <label>워크로드 명칭</label>
-          <input type="text" class="form-control" id="deploy-form-name" placeholder="예: api-server, payment-worker" required />
+        <div class="form-group"><label>워크로드 명칭</label><input type="text" class="form-control" id="deploy-form-name" placeholder="예: order-service" required /></div>
+        <div class="form-row">
+          <div class="form-group"><label>이미지</label><input type="text" class="form-control" id="deploy-form-image" value="nginx:1.25" required /></div>
+          <div class="form-group"><label>레플리카(Pod 수)</label><input type="number" class="form-control" id="deploy-form-replicas" min="1" max="10" value="2" required /></div>
         </div>
         <div class="form-row">
-          <div class="form-group">
-            <label>컨테이너 이미지</label>
-            <input type="text" class="form-control" id="deploy-form-image" value="nginx:1.25" required />
-          </div>
-          <div class="form-group">
-            <label>레플리카(Pod 수)</label>
-            <input type="number" class="form-control" id="deploy-form-replicas" min="1" max="10" value="2" required />
-          </div>
+          <div class="form-group"><label>CPU Request</label><select class="form-control" id="deploy-form-cpu"><option value="100">100m</option><option value="200">200m</option><option value="500">500m</option></select></div>
+          <div class="form-group"><label>노드 타겟 (nodeSelector)</label><select class="form-control" id="deploy-form-disk"><option value="">조건 없음</option><option value="ssd">disktype=ssd</option><option value="hdd">disktype=hdd</option></select></div>
         </div>
-        <div class="form-row">
-          <div class="form-group">
-            <label>CPU Request</label>
-            <select class="form-control" id="deploy-form-cpu">
-              <option value="100">100m (0.1 Core)</option>
-              <option value="200">200m (0.2 Core)</option>
-              <option value="500">500m (0.5 Core)</option>
-            </select>
-          </div>
-          <div class="form-group">
-            <label>노드 타겟 조건 (nodeSelector)</label>
-            <select class="form-control" id="deploy-form-disk">
-              <option value="">조건 없음 (모든 노드 허용)</option>
-              <option value="hdd">disktype=hdd 노드만</option>
-              <option value="ssd">disktype=ssd 노드만</option>
-            </select>
-          </div>
-        </div>
-        <div class="form-group">
-          <label class="checkbox-label">
-            <input type="checkbox" id="deploy-form-nodeport" checked />
-            <span>외부 노출을 위한 NodePort 서비스 동시 생성 (포트 자동할당)</span>
-          </label>
-        </div>
+        <div class="form-group"><label class="checkbox-label"><input type="checkbox" id="deploy-form-nodeport" checked /> NodePort 서비스 동시 생성</label></div>
         <div class="modal-actions">
           <button type="button" class="btn sm" onclick="closeModal('deploy-modal')">취소</button>
-          <button type="submit" class="btn sm primary">배포하기 (Deploy)</button>
+          <button type="submit" class="btn sm primary">배포하기</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- 모달 4: 도메인 추가 -->
+  <div class="modal-overlay" id="domain-modal">
+    <div class="modal">
+      <h2>🌐 Ingress 도메인 연결 바인딩</h2>
+      <p class="desc">L7 로드밸런서에 새 서브도메인을 연결하고 타겟 서비스로 라우팅합니다.</p>
+      <form onsubmit="handleAddDomain(event)">
+        <div class="form-group"><label>도메인 (FQDN)</label><input type="text" class="form-control" id="domain-form-host" placeholder="예: shop.ktci5.kr, admin.ktci5.kr" required /></div>
+        <div class="form-group"><label>타겟 서비스</label><input type="text" class="form-control" id="domain-form-svc" value="web-service:80" required /></div>
+        <div class="modal-actions">
+          <button type="button" class="btn sm" onclick="closeModal('domain-modal')">취소</button>
+          <button type="submit" class="btn sm primary">도메인 매핑</button>
         </div>
       </form>
     </div>
@@ -1868,29 +1891,30 @@ export function renderSimulatorPage(user) {
     let pollInterval = null;
     const currentUser = "${escapeHtml(userName)}";
 
-    // 1. 뷰 모드 스위처 (인터페이스 조정 기능)
+    // 1. 뷰 모드
     function setViewMode(modeClass) {
-      const canvas = document.getElementById('split-canvas');
-      canvas.className = 'split-canvas ' + modeClass;
-
-      document.querySelectorAll('.view-btn').forEach(btn => btn.classList.remove('active'));
+      document.getElementById('split-canvas').className = 'split-canvas ' + modeClass;
+      document.querySelectorAll('.view-btn').forEach(b => b.classList.remove('active'));
       if (modeClass === 'mode-50-50') document.getElementById('btn-view-50').classList.add('active');
       if (modeClass === 'mode-70-30') document.getElementById('btn-view-70').classList.add('active');
       if (modeClass === 'mode-30-70') document.getElementById('btn-view-30').classList.add('active');
       if (modeClass === 'mode-100-0') document.getElementById('btn-view-100t').classList.add('active');
       if (modeClass === 'mode-0-100') document.getElementById('btn-view-100m').classList.add('active');
-
       localStorage.setItem('k8s_view_mode', modeClass);
     }
-
-    // 저장된 뷰 모드 복원
     const savedMode = localStorage.getItem('k8s_view_mode');
     if (savedMode) setViewMode(savedMode);
 
-    // 2. 모달 열기/닫기
+    // 2. 우측 서브탭 전환
+    function switchRightTab(tabId) {
+      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.topo-tab-content').forEach(c => c.style.display = 'none');
+      document.getElementById('tab-btn-' + tabId).classList.add('active');
+      document.getElementById('tab-content-' + tabId).style.display = 'flex';
+    }
+
     function openModal(id) { document.getElementById(id).classList.add('active'); }
     function closeModal(id) { document.getElementById(id).classList.remove('active'); }
-    function openCreateModal() { openModal('create-modal'); }
     function openAddNodeModal() {
       if (!currentLab) return;
       const nextNum = (currentLab.nodes?.length || 1);
@@ -1898,9 +1922,8 @@ export function renderSimulatorPage(user) {
       document.getElementById('node-form-ip').value = '10.10.10.' + (20 + (nextNum - 1) * 10);
       openModal('add-node-modal');
     }
-    function openDeployModal() { openModal('deploy-modal'); }
 
-    // 3. 랩 목록 로드
+    // 3. 랩 목록
     async function loadLabs() {
       try {
         const res = await fetch('/api/simulator/labs');
@@ -1909,15 +1932,13 @@ export function renderSimulatorPage(user) {
           labList = data.labs;
           renderLabList(labList);
         }
-      } catch (err) {
-        console.error('loadLabs error:', err);
-      }
+      } catch (err) { console.error('loadLabs error:', err); }
     }
 
     function renderLabList(labs) {
       const container = document.getElementById('lab-list-container');
       if (!labs || labs.length === 0) {
-        container.innerHTML = '<p style="color:#64748b;">등록된 실습 랩이 없습니다. 상단에서 새로 생성해보세요!</p>';
+        container.innerHTML = '<p style="color:#64748b;">등록된 실습 랩이 없습니다.</p>';
         return;
       }
       container.innerHTML = labs.map(lab => \`
@@ -1942,7 +1963,7 @@ export function renderSimulatorPage(user) {
       \`).join('');
     }
 
-    // 4. 랩 입장 & 상세 대시보드
+    // 4. 랩 입장 & 렌더링
     async function openLab(labId) {
       try {
         const res = await fetch(\`/api/simulator/labs/\${labId}\`);
@@ -1951,13 +1972,10 @@ export function renderSimulatorPage(user) {
           currentLab = data.lab;
           document.getElementById('view-list').style.display = 'none';
           document.getElementById('view-detail').style.display = 'flex';
-
           initDetailView(currentLab);
           startPolling(labId);
         }
-      } catch (err) {
-        alert('실습 랩을 불러오는데 실패했습니다: ' + err.message);
-      }
+      } catch (err) { alert('실습 랩 로드 실패: ' + err.message); }
     }
 
     function showListView() {
@@ -1971,61 +1989,300 @@ export function renderSimulatorPage(user) {
     function initDetailView(lab) {
       document.getElementById('active-lab-title').innerText = lab.title;
       updatePermissionUI(lab.editable);
-      renderTopology(lab);
+      renderAll(lab);
 
       const termBody = document.getElementById('term-body');
       termBody.innerHTML = \`<span style="color:#6366f1;">========================================================================</span>\\n\` +
-        \`<span style="color:#10b981;font-weight:700;">☸️ KT Cloud 5기 쿠버네티스 협업 랩에 오신 것을 환영합니다!</span>\\n\` +
-        \`현재 실습 랩: <b>\${escapeHtml(lab.title)}</b> (접속자: <b>\${currentUser}</b>)\\n\` +
-        \`명령어: <b>alias k=kubectl</b> 지원 (예: <b>k get nodes</b>, <b>help</b>)\\n\` +
-        \`상단 툴바에서 <b>VM 노드 추가</b>, <b>파드 배포</b>, <b>화면 분할(50:50, 70%, 100%)</b> 조정이 가능합니다.\\n\` +
+        \`<span style="color:#10b981;font-weight:700;">☸️ KT Cloud 상용 인프라 & 가상 쿠버네티스 콘솔</span>\\n\` +
+        \`클러스터: <b>\${escapeHtml(lab.title)}</b> (접속자: <b>\${currentUser}</b>)\\n\` +
+        \`L7 로드밸런서 VIP: <b>\${lab.network?.loadBalancer?.vip || '211.252.85.10'}</b> | 도메인: <b>app.ktci5.kr</b>\\n\` +
+        \`우측 상단 탭에서 <b>네트워크 & LB</b>, <b>vCPU/RAM/디스크 증설</b>, <b>상용 장애 시나리오</b> 제어가 가능합니다.\\n\` +
         \`<span style="color:#6366f1;">========================================================================</span>\\n\\n\`;
-    }
-
-    // 5. 권한 토글
-    async function togglePermission() {
-      if (!currentLab) return;
-      const nextState = !currentLab.editable;
-      try {
-        const res = await fetch(\`/api/simulator/labs/\${currentLab.id}/permission\`, {
-          method: 'PATCH',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ editable: nextState })
-        });
-        const data = await res.json();
-        if (data.ok) {
-          currentLab.editable = data.editable;
-          updatePermissionUI(currentLab.editable);
-          appendTermLog(\`\\n\${data.editable ? '\\x1b[32;1m🔓 [수정 권한 활성화]\\x1b[0m 이제 클러스터 조작 및 파드 생성이 가능합니다.' : '\\x1b[33;1m🔒 [수정 권한 비활성화]\\x1b[0m 조회 전용(Read-Only) 모드로 전환되었습니다.'}\\n\`);
-        }
-      } catch (err) {
-        alert('권한 변경 실패: ' + err.message);
-      }
     }
 
     function updatePermissionUI(editable) {
       const btn = document.getElementById('perm-toggle-btn');
       const label = document.getElementById('perm-label-text');
       const prompt = document.getElementById('term-prompt');
-
       if (editable) {
         btn.className = 'switch-btn active-on';
-        btn.innerText = '🔓 수정 허용 (ON)';
-        label.innerText = '수정 권한: ON';
+        btn.innerText = '🔓 ON';
+        label.innerText = '수정: ON';
         label.style.color = '#34d399';
         prompt.innerText = 'root@master1:~#';
         prompt.style.color = '#10b981';
       } else {
         btn.className = 'switch-btn active-off';
-        btn.innerText = '🔒 조회 전용 (OFF)';
-        label.innerText = '수정 권한: OFF';
+        btn.innerText = '🔒 OFF';
+        label.innerText = '수정: OFF';
         label.style.color = '#f87171';
         prompt.innerText = 'root@master1:~# (read-only)';
         prompt.style.color = '#f59e0b';
       }
     }
 
-    // 6. 터미널 명령 실행
+    async function togglePermission() {
+      if (!currentLab) return;
+      try {
+        const res = await fetch(\`/api/simulator/labs/\${currentLab.id}/permission\`, {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ editable: !currentLab.editable })
+        });
+        const data = await res.json();
+        if (data.ok) {
+          currentLab.editable = data.editable;
+          updatePermissionUI(currentLab.editable);
+        }
+      } catch (err) { alert('권한 토글 실패: ' + err.message); }
+    }
+
+    // 5. 전체 렌더링
+    function renderAll(lab) {
+      if (!lab) return;
+      document.getElementById('traffic-slider').value = lab.trafficRps || 0;
+      document.getElementById('traffic-val').innerText = (lab.trafficRps || 0) + ' req/s';
+
+      // 1) 노드 카드
+      document.getElementById('node-grid-container').innerHTML = (lab.nodes || []).map(node => {
+        const hosted = (lab.pods || []).filter(p => p.node === node.name && p.status === 'Running');
+        const baseCpu = 180 + hosted.length * 80;
+        const trafficCpu = Math.round(((lab.trafficRps || 0) / 3000) * 800);
+        const cpuM = Math.min(node.cpuTotalM, baseCpu + trafficCpu);
+        const cpuPct = Math.round((cpuM / node.cpuTotalM) * 100);
+
+        const ramMi = 1400 + hosted.length * 150;
+        const ramPct = Math.round((ramMi / node.ramTotalMi) * 100);
+
+        const cpuColor = cpuPct > 80 ? 'fill-red' : cpuPct > 60 ? 'fill-yellow' : 'fill-green';
+        const ramColor = ramPct > 80 ? 'fill-red' : ramPct > 60 ? 'fill-yellow' : 'fill-green';
+
+        const osDisk = node.disks?.[0];
+        const isDiskPressure = osDisk && (osDisk.usedGb / osDisk.sizeGb) > 0.90;
+
+        const taintsHtml = (node.taints || []).map(t => \`<span class="node-tag taint">\${t.key.split('/').pop()}:\${t.effect}</span>\`).join('');
+        const labelsHtml = Object.entries(node.labels || {}).filter(([k]) => !k.includes('kubernetes.io')).map(([k, v]) => \`<span class="node-tag">\${k}=\${v}</span>\`).join('');
+        const disksHtml = (node.disks || []).map(d => \`<span class="node-tag disk">💽 \${d.name}: \${d.usedGb}/\${d.sizeGb}G</span>\`).join('');
+
+        const isMaster = node.role === 'control-plane';
+        const hasTaint = node.taints && node.taints.length > 0;
+
+        return \`
+          <div class="node-card \${(node.status !== 'Ready' || isDiskPressure) ? 'not-ready' : ''}">
+            <div class="node-top">
+              <span class="node-name">🖥️ \${node.name}</span>
+              <span class="status-pill \${(node.status === 'Ready' && !isDiskPressure) ? 'status-running' : 'status-pending'}">
+                \${isDiskPressure ? 'DiskPressure' : node.status}\${node.unschedulable ? ',NoSched' : ''}
+              </span>
+            </div>
+            <div style="font-size:10.5px; color:#64748b; font-family:monospace; margin-bottom:5px;">IP: \${node.ip}</div>
+            
+            <div class="meter-row">
+              <div class="meter-label"><span>CPU</span><span>\${cpuM}m / \${node.cpuTotalM}m (\${cpuPct}%)</span></div>
+              <div class="meter-bar-bg"><div class="meter-bar-fill \${cpuColor}" style="width:\${cpuPct}%;"></div></div>
+            </div>
+            <div class="meter-row">
+              <div class="meter-label"><span>RAM</span><span>\${ramMi}Mi / \${node.ramTotalMi}Mi (\${ramPct}%)</span></div>
+              <div class="meter-bar-bg"><div class="meter-bar-fill \${ramColor}" style="width:\${ramPct}%;"></div></div>
+            </div>
+
+            <div class="tag-list">
+              \${taintsHtml}
+              \${labelsHtml}
+              \${disksHtml}
+            </div>
+
+            <div style="display:flex; gap:4px; margin-top:8px; border-top:1px solid #1f293d; padding-top:6px;">
+              \${isMaster ? \`
+                <button class="chip-btn" onclick="executeCommand('k taint nodes master1 node-role.kubernetes.io/control-plane:NoSchedule\${hasTaint ? '-' : ''}')">\${hasTaint ? 'Taint 해제' : 'Taint 설정'}</button>
+              \` : \`
+                <button class="chip-btn" onclick="executeCommand('k \${node.unschedulable ? 'uncordon' : 'cordon'} \${node.name}')">\${node.unschedulable ? 'Uncordon' : 'Cordon'}</button>
+                <button class="chip-btn" onclick="executeCommand('k drain \${node.name} --ignore-daemonsets')">Drain</button>
+                <button class="chip-btn" onclick="deleteNode('\${node.name}')" style="color:#f87171;">VM 반납</button>
+              \`}
+            </div>
+          </div>
+        \`;
+      }).join('');
+
+      // 2) 파드 테이블
+      document.getElementById('pod-table-body').innerHTML = (lab.pods || []).map(pod => \`
+        <tr>
+          <td style="color:#f8fafc; font-weight:600;">\${escapeHtml(pod.name)}</td>
+          <td>\${pod.node}</td>
+          <td><span class="status-pill \${pod.status === 'Running' ? 'status-running' : 'status-pending'}">\${pod.status}</span></td>
+          <td>\${pod.ip}</td>
+          <td>\${pod.image}</td>
+          <td><button class="chip-btn" onclick="executeCommand('k delete pod \${pod.name}')" style="color:#f87171;">삭제</button></td>
+        </tr>
+      \`).join('');
+
+      // 3) 감사 피드
+      document.getElementById('activity-log-container').innerHTML = (lab.activityLogs || []).slice(0, 15).map(l => \`
+        <div><span style="color:#64748b;">\${l.time}</span> <span style="color:#818cf8; font-weight:600;">[\${escapeHtml(l.user)}]</span> \${escapeHtml(l.action)}</div>
+      \`).join('');
+
+      // 4) 네트워크 탭 렌더링
+      const net = lab.network || createDefaultNetwork();
+      document.getElementById('lb-vip').innerText = net.loadBalancer?.vip || '211.252.85.10';
+      const poolList = document.getElementById('lb-target-pool-list');
+      poolList.innerHTML = (net.loadBalancer?.targetPool || []).map(p => {
+        const isH = p.status.includes('Healthy');
+        return \`<div style="display:flex; justify-content:space-between; font-size:11px;">
+          <span>• \${p.target}</span>
+          <span style="color:\${isH ? '#10b981' : '#f87171'}; font-weight:bold;">\${p.status} (\${p.latencyMs}ms)</span>
+        </div>\`;
+      }).join('');
+
+      document.getElementById('domain-table-body').innerHTML = (net.ingress?.rules || []).map(r => \`
+        <tr>
+          <td style="color:#818cf8; font-weight:700;">\${r.host}</td>
+          <td>\${r.path}</td>
+          <td>\${r.service}</td>
+          <td><span style="color:#10b981;">TLS Valid</span></td>
+          <td><button class="chip-btn" onclick="runChip('curl -H &quot;Host: \${r.host}&quot; http://\${net.loadBalancer?.vip}')">호출 테스트</button></td>
+        </tr>
+      \`).join('');
+
+      const isTunnelOk = net.tunnel?.status === 'CONNECTED';
+      const tText = document.getElementById('tunnel-status-text');
+      tText.innerText = isTunnelOk ? '● CONNECTED' : '● DISCONNECTED';
+      tText.style.color = isTunnelOk ? '#10b981' : '#ef4444';
+      document.getElementById('tunnel-latency').innerText = isTunnelOk ? (net.tunnel?.latencyMs + ' ms') : 'Timeout';
+      document.getElementById('tunnel-throughput').innerText = isTunnelOk ? (net.tunnel?.throughputMbps + ' Mbps') : '0 Mbps';
+      document.getElementById('tunnel-toggle-btn').innerText = isTunnelOk ? '터널 단절 시뮬레이션' : '터널 재연결';
+
+      // 5) 하드웨어 탭 렌더링
+      document.getElementById('hardware-nodes-list').innerHTML = (lab.nodes || []).map(node => \`
+        <div style="background:#0f1523; border:1px solid #1f293d; border-radius:6px; padding:10px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+            <span style="font-weight:700; color:#f8fafc; font-family:monospace;">🖥️ \${node.name} (\${node.ip})</span>
+            <span style="font-size:11px; color:#94a3b8;">현재: \${node.cpuTotalM / 1000} Core / \${node.ramTotalMi / 1024} GiB</span>
+          </div>
+
+          <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px;">
+            <!-- vCPU Hot-Add -->
+            <div style="display:flex; align-items:center; gap:4px; font-size:11.5px;">
+              <span>vCPU:</span>
+              <button class="chip-btn \${node.cpuTotalM === 2000 ? 'primary' : ''}" onclick="scaleHardware('\${node.name}', 2000, null)">2C</button>
+              <button class="chip-btn \${node.cpuTotalM === 4000 ? 'primary' : ''}" onclick="scaleHardware('\${node.name}', 4000, null)">4C</button>
+              <button class="chip-btn \${node.cpuTotalM === 8000 ? 'primary' : ''}" onclick="scaleHardware('\${node.name}', 8000, null)">8C</button>
+            </div>
+
+            <!-- RAM Hot-Add -->
+            <div style="display:flex; align-items:center; gap:4px; font-size:11.5px;">
+              <span>RAM:</span>
+              <button class="chip-btn \${node.ramTotalMi === 4096 ? 'primary' : ''}" onclick="scaleHardware('\${node.name}', null, 4096)">4G</button>
+              <button class="chip-btn \${node.ramTotalMi === 8192 ? 'primary' : ''}" onclick="scaleHardware('\${node.name}', null, 8192)">8G</button>
+              <button class="chip-btn \${node.ramTotalMi === 16384 ? 'primary' : ''}" onclick="scaleHardware('\${node.name}', null, 16384)">16G</button>
+            </div>
+
+            <!-- 디스크 추가 -->
+            <button class="chip-btn" style="background:#312e81; color:#c7d2fe;" onclick="addDiskToNode('\${node.name}')">💽 + 100GB SSD 디스크 Hot-Add</button>
+          </div>
+
+          <!-- 디스크 목록 -->
+          <div style="font-size:10.5px; color:#64748b; font-family:monospace;">
+            마운트 디스크: \${(node.disks || []).map(d => \`\${d.name}: \${d.sizeGb}GB (\${d.mount})\`).join(', ')}
+          </div>
+        </div>
+      \`).join('');
+    }
+
+    // 6. 하드웨어 스펙 조정 API
+    async function scaleHardware(nodeName, cpu, ram) {
+      if (!currentLab) return;
+      try {
+        const body = {};
+        if (cpu) body.cpu = cpu;
+        if (ram) body.ram = ram;
+        const res = await fetch(\`/api/simulator/labs/\${currentLab.id}/nodes/\${nodeName}/hardware\`, {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        const data = await res.json();
+        if (data.ok) {
+          currentLab = data.lab;
+          renderAll(currentLab);
+        }
+      } catch (err) { alert('하드웨어 조정 실패: ' + err.message); }
+    }
+
+    async function addDiskToNode(nodeName) {
+      if (!currentLab) return;
+      try {
+        const res = await fetch(\`/api/simulator/labs/\${currentLab.id}/nodes/\${nodeName}/hardware\`, {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ addDisk: { sizeGb: 100, type: 'NVMe SSD', mount: '/mnt/storage' } })
+        });
+        const data = await res.json();
+        if (data.ok) {
+          currentLab = data.lab;
+          renderAll(currentLab);
+          appendTermLog(\`\\n<span style="color:#10b981;font-weight:700;">💽 [Storage Hot-Add] 노드 '\${nodeName}'에 100GB NVMe SSD 디스크가 마운트되었습니다.</span>\\n\`);
+        }
+      } catch (err) { alert('디스크 추가 실패: ' + err.message); }
+    }
+
+    // 7. 네트워크 및 터널 API
+    async function toggleTunnelStatus() {
+      if (!currentLab) return;
+      try {
+        const res = await fetch(\`/api/simulator/labs/\${currentLab.id}/network\`, {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ toggleTunnel: true })
+        });
+        const data = await res.json();
+        if (data.ok) {
+          currentLab = data.lab;
+          renderAll(currentLab);
+        }
+      } catch (err) { alert('터널 변경 실패: ' + err.message); }
+    }
+
+    async function handleAddDomain(e) {
+      e.preventDefault();
+      if (!currentLab) return;
+      const host = document.getElementById('domain-form-host').value.trim();
+      const svc = document.getElementById('domain-form-svc').value.trim();
+      try {
+        const res = await fetch(\`/api/simulator/labs/\${currentLab.id}/network\`, {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ addDomain: { host, service: svc } })
+        });
+        const data = await res.json();
+        if (data.ok) {
+          closeModal('domain-modal');
+          currentLab = data.lab;
+          renderAll(currentLab);
+          appendTermLog(\`\\n<span style="color:#10b981;font-weight:700;">🌐 [Ingress Binding] 도메인 '\${host}'이(가) 서비스 '\${svc}'에 매핑되었습니다.</span>\\n\`);
+        }
+      } catch (err) { alert('도메인 추가 실패: ' + err.message); }
+    }
+
+    // 8. 상용 시나리오 주입
+    async function triggerScenario(type) {
+      if (!currentLab) return;
+      try {
+        const res = await fetch(\`/api/simulator/labs/\${currentLab.id}/scenario\`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ type })
+        });
+        const data = await res.json();
+        if (data.ok) {
+          currentLab = data.lab;
+          renderAll(currentLab);
+          appendTermLog(\`\\n<span style="color:#f59e0b;font-weight:700;">⚡ [상용 시나리오 이벤트 적용: \${type}]</span>\\n\`);
+        }
+      } catch (err) { alert('시나리오 실행 실패: ' + err.message); }
+    }
+
+    // 9. 터미널 명령 실행
     const termInput = document.getElementById('term-input');
     termInput.addEventListener('keydown', async function(e) {
       if (e.key === 'Enter') {
@@ -2035,26 +2292,15 @@ export function renderSimulatorPage(user) {
         historyIdx = commandHistory.length;
         termInput.value = '';
 
-        if (cmd === 'clear') {
-          clearTerm();
-          return;
-        }
+        if (cmd === 'clear') { clearTerm(); return; }
 
         appendTermLog(\`\\n<span style="color:#10b981;font-weight:700;">\${document.getElementById('term-prompt').innerText}</span> \${escapeHtml(cmd)}\\n\`);
         await executeCommand(cmd);
       } else if (e.key === 'ArrowUp') {
-        if (historyIdx > 0) {
-          historyIdx--;
-          termInput.value = commandHistory[historyIdx] || '';
-        }
+        if (historyIdx > 0) { historyIdx--; termInput.value = commandHistory[historyIdx] || ''; }
       } else if (e.key === 'ArrowDown') {
-        if (historyIdx < commandHistory.length - 1) {
-          historyIdx++;
-          termInput.value = commandHistory[historyIdx] || '';
-        } else {
-          historyIdx = commandHistory.length;
-          termInput.value = '';
-        }
+        if (historyIdx < commandHistory.length - 1) { historyIdx++; termInput.value = commandHistory[historyIdx] || ''; }
+        else { historyIdx = commandHistory.length; termInput.value = ''; }
       }
     });
 
@@ -2068,12 +2314,10 @@ export function renderSimulatorPage(user) {
         });
         const data = await res.json();
         if (data.ok) {
-          if (data.output) {
-            appendTermLog(formatAnsi(data.output) + '\\n');
-          }
+          if (data.output) appendTermLog(formatAnsi(data.output) + '\\n');
           if (data.labChanged && data.lab) {
             currentLab = data.lab;
-            renderTopology(currentLab);
+            renderAll(currentLab);
           }
         }
       } catch (err) {
@@ -2094,107 +2338,7 @@ export function renderSimulatorPage(user) {
       b.scrollTop = b.scrollHeight;
     }
 
-    // 7. 토폴로지 & 인프라 렌더링
-    function renderTopology(lab) {
-      if (!lab) return;
-
-      document.getElementById('traffic-slider').value = lab.trafficRps || 0;
-      document.getElementById('traffic-val').innerText = (lab.trafficRps || 0) + ' req/s';
-
-      // 노드 카드
-      const nodeGrid = document.getElementById('node-grid-container');
-      nodeGrid.innerHTML = (lab.nodes || []).map(node => {
-        const hosted = (lab.pods || []).filter(p => p.node === node.name && p.status === 'Running');
-        const baseCpu = 180 + hosted.length * 80;
-        const trafficCpu = Math.round(((lab.trafficRps || 0) / 3000) * 800);
-        const cpuM = Math.min(node.cpuTotalM, baseCpu + trafficCpu);
-        const cpuPct = Math.round((cpuM / node.cpuTotalM) * 100);
-
-        const ramMi = 1400 + hosted.length * 150;
-        const ramPct = Math.round((ramMi / node.ramTotalMi) * 100);
-
-        const cpuColor = cpuPct > 80 ? 'fill-red' : cpuPct > 60 ? 'fill-yellow' : 'fill-green';
-        const ramColor = ramPct > 80 ? 'fill-red' : ramPct > 60 ? 'fill-yellow' : 'fill-green';
-
-        const taintsHtml = (node.taints || []).map(t => \`<span class="node-tag taint">\${t.key.split('/').pop()}:\${t.effect}</span>\`).join('');
-        const labelsHtml = Object.entries(node.labels || {}).filter(([k]) => !k.includes('kubernetes.io')).map(([k, v]) => \`<span class="node-tag">\${k}=\${v}</span>\`).join('');
-
-        const isMaster = node.role === 'control-plane';
-        const hasTaint = node.taints && node.taints.length > 0;
-
-        return \`
-          <div class="node-card \${node.status !== 'Ready' ? 'not-ready' : ''}">
-            <div class="node-top">
-              <span class="node-name">🖥️ \${node.name}</span>
-              <span class="node-status-pill \${node.status === 'Ready' ? 'ready' : 'notready'}">\${node.status}\${node.unschedulable ? ',NoSchedule' : ''}</span>
-            </div>
-            <div style="font-size:11px; color:#64748b; font-family:monospace; margin-bottom:6px;">IP: \${node.ip}</div>
-            
-            <div class="meter-row">
-              <div class="meter-label"><span>CPU</span><span>\${cpuM}m / \${node.cpuTotalM}m (\${cpuPct}%)</span></div>
-              <div class="meter-bar-bg"><div class="meter-bar-fill \${cpuColor}" style="width:\${cpuPct}%;"></div></div>
-            </div>
-            <div class="meter-row">
-              <div class="meter-label"><span>RAM</span><span>\${ramMi}Mi / \${node.ramTotalMi}Mi (\${ramPct}%)</span></div>
-              <div class="meter-bar-bg"><div class="meter-bar-fill \${ramColor}" style="width:\${ramPct}%;"></div></div>
-            </div>
-
-            <div class="tag-list">
-              \${taintsHtml}
-              \${labelsHtml}
-            </div>
-
-            <!-- 노드 운영 액션 버튼 -->
-            <div class="node-actions">
-              \${isMaster ? \`
-                <button class="chip-btn" onclick="executeCommand('k taint nodes master1 node-role.kubernetes.io/control-plane:NoSchedule\${hasTaint ? '-' : ''}')">\${hasTaint ? 'Taint 해제' : 'Taint 설정'}</button>
-              \` : \`
-                <button class="chip-btn" onclick="executeCommand('k \${node.unschedulable ? 'uncordon' : 'cordon'} \${node.name}')">\${node.unschedulable ? 'Uncordon' : 'Cordon'}</button>
-                <button class="chip-btn" onclick="executeCommand('k drain \${node.name} --ignore-daemonsets')">Drain</button>
-                <button class="chip-btn" onclick="deleteNode('\${node.name}')" style="color:#f87171;">VM 반납</button>
-              \`}
-            </div>
-          </div>
-        \`;
-      }).join('');
-
-      // 파드 테이블
-      const podTbody = document.getElementById('pod-table-body');
-      podTbody.innerHTML = (lab.pods || []).map(pod => \`
-        <tr>
-          <td style="color:#f8fafc; font-weight:600;">\${escapeHtml(pod.name)}</td>
-          <td>\${pod.node}</td>
-          <td><span class="status-pill \${pod.status === 'Running' ? 'status-running' : 'status-pending'}">\${pod.status}</span></td>
-          <td>\${pod.ip}</td>
-          <td>\${pod.image}</td>
-          <td><button class="chip-btn" onclick="executeCommand('k delete pod \${pod.name}')" style="color:#f87171;">삭제</button></td>
-        </tr>
-      \`).join('');
-
-      // 서비스
-      const svcC = document.getElementById('service-list-container');
-      svcC.innerHTML = (lab.services || []).map(svc => \`
-        <div style="background:#0f1523; border:1px solid #1f293d; border-radius:6px; padding:6px 10px; display:flex; align-items:center; justify-content:space-between;">
-          <div>
-            <span style="font-weight:700; font-size:12px; color:#f8fafc; font-family:monospace;">\${svc.name} (\${svc.type})</span>
-            <span style="font-size:11px; color:#94a3b8; font-family:monospace; margin-left:8px;">\${svc.clusterIp}:\${svc.port} \${svc.nodePort ? '| NodePort: ' + svc.nodePort : ''}</span>
-          </div>
-          \${svc.nodePort ? \`<button class="chip-btn" onclick="runChip('curl 10.10.10.20:\${svc.nodePort}')" style="background:#312e81; color:#c7d2fe;">🌐 curl 테스트</button>\` : ''}
-        </div>
-      \`).join('');
-
-      // 감사 피드
-      const logC = document.getElementById('activity-log-container');
-      logC.innerHTML = (lab.activityLogs || []).slice(0, 15).map(l => \`
-        <div>
-          <span style="color:#64748b; font-family:monospace;">\${l.time}</span>
-          <span style="color:#818cf8; font-weight:600;">[\${escapeHtml(l.user)}]</span>
-          <span style="color:#cbd5e1;">\${escapeHtml(l.action)}</span>
-        </div>
-      \`).join('');
-    }
-
-    // 8. 노드 추가 및 삭제 액션
+    // 10. 노드 추가 및 삭제
     async function handleAddNode(e) {
       e.preventDefault();
       if (!currentLab) return;
@@ -2214,34 +2358,25 @@ export function renderSimulatorPage(user) {
         if (data.ok) {
           closeModal('add-node-modal');
           currentLab = data.lab;
-          renderTopology(currentLab);
-          appendTermLog(\`\\n<span style="color:#10b981;font-weight:700;">🖥️ 새 워커 노드 VM '\${name}'이 클러스터에 성공적으로 프로비저닝되었습니다!</span>\\n\`);
-        } else {
-          alert('노드 추가 실패: ' + (data.error || '오류'));
-        }
-      } catch (err) {
-        alert('노드 추가 오류: ' + err.message);
-      }
+          renderAll(currentLab);
+          appendTermLog(\`\\n<span style="color:#10b981;font-weight:700;">🖥️ 새 워커 노드 VM '\${name}'이 클러스터에 프로비저닝되었습니다.</span>\\n\`);
+        } else { alert('추가 실패: ' + data.error); }
+      } catch (err) { alert('노드 추가 오류: ' + err.message); }
     }
 
     async function deleteNode(nodeName) {
-      if (!currentLab || !confirm(\`워커 노드 VM '\${nodeName}'을(를) 삭제 및 반납하시겠습니까?\\n(해당 노드의 파드는 다른 노드로 자동 퇴출됩니다.)\`)) return;
+      if (!currentLab || !confirm(\`노드 '\${nodeName}'을(를) 삭제 및 반납하시겠습니까?\`)) return;
       try {
         const res = await fetch(\`/api/simulator/labs/\${currentLab.id}/nodes/\${nodeName}\`, { method: 'DELETE' });
         const data = await res.json();
         if (data.ok) {
           currentLab = data.lab;
-          renderTopology(currentLab);
-          appendTermLog(\`\\n<span style="color:#f87171;font-weight:700;">🗑️ 노드 '\${nodeName}'이(가) 클러스터에서 제거되었습니다.</span>\\n\`);
-        } else {
-          alert(data.error || '노드 삭제 실패');
-        }
-      } catch (err) {
-        alert('삭제 요청 오류: ' + err.message);
-      }
+          renderAll(currentLab);
+        } else { alert(data.error); }
+      } catch (err) { alert('삭제 오류: ' + err.message); }
     }
 
-    // 9. 파드/디플로이먼트 배포 액션
+    // 11. 파드 배포
     async function handleDeployWorkload(e) {
       e.preventDefault();
       if (!currentLab) return;
@@ -2262,39 +2397,12 @@ export function renderSimulatorPage(user) {
         if (data.ok) {
           closeModal('deploy-modal');
           currentLab = data.lab;
-          renderTopology(currentLab);
-          appendTermLog(\`\\n<span style="color:#10b981;font-weight:700;">📦 워크로드 '\${name}'이(가) 배포되었습니다. (\${replicas}개 파드)</span>\\n\`);
-        } else {
-          alert('배포 실패: ' + (data.error || '오류'));
-        }
-      } catch (err) {
-        alert('배포 요청 오류: ' + err.message);
-      }
+          renderAll(currentLab);
+          appendTermLog(\`\\n<span style="color:#10b981;font-weight:700;">📦 워크로드 '\${name}' 배포 완료</span>\\n\`);
+        } else { alert(data.error); }
+      } catch (err) { alert('배포 오류: ' + err.message); }
     }
 
-    // 10. 카오스 장애 주입
-    async function triggerChaos(type) {
-      if (!currentLab || !type) return;
-      try {
-        const res = await fetch(\`/api/simulator/labs/\${currentLab.id}/chaos\`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ type })
-        });
-        const data = await res.json();
-        if (data.ok) {
-          currentLab = data.lab;
-          renderTopology(currentLab);
-          appendTermLog(\`\\n<span style="color:#f59e0b;font-weight:700;">⚡ [카오스 시뮬레이션 적용 완료: \${type}]</span>\\n\`);
-        } else {
-          alert(data.error || '장애 주입 실패');
-        }
-      } catch (err) {
-        alert('장애 주입 오류: ' + err.message);
-      }
-    }
-
-    // 11. 트래픽 슬라이더
     async function updateTraffic(val) {
       if (!currentLab) return;
       document.getElementById('traffic-val').innerText = val + ' req/s';
@@ -2307,7 +2415,6 @@ export function renderSimulatorPage(user) {
       } catch (e) {}
     }
 
-    // 12. 리셋
     async function resetActiveLab() {
       if (!currentLab || !confirm('클러스터를 초기 상태로 리셋하시겠습니까?')) return;
       try {
@@ -2315,17 +2422,12 @@ export function renderSimulatorPage(user) {
         const data = await res.json();
         if (data.ok) {
           currentLab = data.lab;
-          renderTopology(currentLab);
+          renderAll(currentLab);
           appendTermLog('\\n<span style="color:#f59e0b;font-weight:700;">🔄 클러스터가 성공적으로 초기화되었습니다.</span>\\n');
-        } else {
-          alert(data.error || '리셋 실패');
         }
-      } catch (err) {
-        alert('리셋 오류: ' + err.message);
-      }
+      } catch (err) { alert('리셋 오류: ' + err.message); }
     }
 
-    // 13. 새 랩 생성
     async function handleCreateLab(e) {
       e.preventDefault();
       const title = document.getElementById('form-title').value.trim();
@@ -2344,15 +2446,10 @@ export function renderSimulatorPage(user) {
         if (data.ok && data.lab) {
           closeModal('create-modal');
           openLab(data.lab.id);
-        } else {
-          alert('생성 실패: ' + (data.error || '알 수 없는 오류'));
         }
-      } catch (err) {
-        alert('생성 요청 오류: ' + err.message);
-      }
+      } catch (err) { alert('생성 오류: ' + err.message); }
     }
 
-    // 14. 실시간 폴링 동기화
     function startPolling(labId) {
       stopPolling();
       pollInterval = setInterval(async () => {
@@ -2364,7 +2461,7 @@ export function renderSimulatorPage(user) {
             if (data.lab.updatedAt !== currentLab.updatedAt) {
               currentLab = data.lab;
               updatePermissionUI(currentLab.editable);
-              renderTopology(currentLab);
+              renderAll(currentLab);
             }
           }
         } catch (e) {}
@@ -2372,10 +2469,7 @@ export function renderSimulatorPage(user) {
     }
 
     function stopPolling() {
-      if (pollInterval) {
-        clearInterval(pollInterval);
-        pollInterval = null;
-      }
+      if (pollInterval) { clearInterval(pollInterval); pollInterval = null; }
     }
 
     function formatAnsi(text) {
