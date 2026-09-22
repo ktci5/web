@@ -1136,6 +1136,9 @@ Content-Length: 512
     const targets = targetRaw.split(',');
 
     const getNodesOutput = () => {
+      if (!lab.nodes || lab.nodes.length === 0) {
+        return 'No resources found in cluster (0 nodes).';
+      }
       let out = isWide
         ? 'NAME      STATUS                     ROLES           AGE   VERSION   INTERNAL-IP   OS-IMAGE             KERNEL-VERSION\n'
         : 'NAME      STATUS                     ROLES           AGE   VERSION\n';
@@ -2694,11 +2697,28 @@ export async function handleSimulatorApi(request, path, env, user) {
     try { body = await request.json(); } catch {}
     const startMode = body.startMode || 'blank'; // 'blank' (처음부터 생성) | 'template' (템플릿부터 시작)
     const templateType = body.templateType || 'standard'; // 'standard' | 'scheduling' | 'hpa' | 'multinode'
-    const title = (body.title || '').trim() || (startMode === 'blank' ? '새 백지 클러스터' : '신규 템플릿 클러스터');
+    const title = (body.title || '').trim() || (startMode === 'blank' ? '새 백지 실습 클러스터' : '신규 템플릿 클러스터');
     const desc = (body.description || '').trim() || (startMode === 'blank' ? '처음부터 직접 구축하는 순수 가상 클러스터' : '템플릿 기반 실습 클러스터');
+
+    // 마스터(Control-Plane) 노드 인프라 스펙
+    const masterCount = body.masterCount !== undefined ? Math.min(Math.max(0, parseInt(body.masterCount, 10)), 3) : 1;
+    const masterCpu = parseInt(body.masterCpu || body.cpuPerNode || '2000', 10);
+    const masterRam = parseInt(body.masterRam || body.ramPerNode || '4096', 10);
+    const masterDisk = parseInt(body.masterDisk || '50', 10);
+
+    // 워커(Worker) 노드 인프라 스펙
     const workerCount = Math.min(Math.max(0, parseInt(body.workerCount !== undefined ? body.workerCount : '1', 10)), 5);
-    const cpuPerNode = parseInt(body.cpuPerNode || '2000', 10);
-    const ramPerNode = parseInt(body.ramPerNode || '4096', 10);
+    const workerCpu = parseInt(body.workerCpu || body.cpuPerNode || '2000', 10);
+    const workerRam = parseInt(body.workerRam || body.ramPerNode || '4096', 10);
+    const workerDisk = parseInt(body.workerDisk || '50', 10);
+    const workerDataDisk = parseInt(body.workerDataDisk || '0', 10);
+
+    // 가상 네트워크 및 CIDR 할당 리소스
+    const nodeSubnet = (body.nodeSubnet || '10.10.10.0/24').trim();
+    const podCidr = (body.podCidr || '10.244.0.0/16').trim();
+    const serviceCidr = (body.serviceCidr || '10.96.0.0/12').trim();
+    const enableAlb = body.enableAlb !== false;
+
     const editable = body.editable !== false;
 
     const id = 'lab-' + Date.now().toString(36) + '-' + Math.random().toString(36).substring(2, 6);
@@ -2708,40 +2728,68 @@ export async function handleSimulatorApi(request, path, env, user) {
     let newLab;
 
     if (startMode === 'blank') {
-      // [처음부터 생성 / Clean Slate]: 워크로드, 서비스, 라우팅이 전혀 없는 백지 상태
-      const nodes = [
-        {
-          name: 'master1',
-          ip: '10.10.10.12',
+      // [처음부터 생성 / Clean Slate]: 사용자가 지정한 마스터/워커/리소스 스펙으로 프로비저닝 (0개 노드도 가능)
+      const nodes = [];
+
+      // 1) 마스터 노드 프로비저닝 (0대, 1대, 3대)
+      for (let m = 1; m <= masterCount; m++) {
+        const mName = masterCount === 1 ? 'master1' : `master${m}`;
+        const mIp = `10.10.10.${10 + m}`;
+        nodes.push({
+          name: mName,
+          ip: mIp,
           role: 'control-plane',
           status: 'Ready',
           unschedulable: false,
-          cpuTotalM: cpuPerNode,
-          ramTotalMi: ramPerNode,
+          cpuTotalM: masterCpu,
+          ramTotalMi: masterRam,
           taints: [],
-          labels: { 'kubernetes.io/hostname': 'master1', 'node-role.kubernetes.io/control-plane': '' },
-          disks: [{ name: 'vda (OS)', sizeGb: 50, usedGb: 19, type: 'SSD', mount: '/' }]
-        }
-      ];
+          labels: { 'kubernetes.io/hostname': mName, 'node-role.kubernetes.io/control-plane': '' },
+          disks: [{ name: 'vda (OS)', sizeGb: masterDisk, usedGb: 19, type: 'SSD', mount: '/' }]
+        });
+      }
 
+      // 2) 워커 노드 프로비저닝 (0 ~ 5대)
       for (let i = 1; i <= workerCount; i++) {
+        const wDisks = [
+          { name: 'vda (OS)', sizeGb: workerDisk, usedGb: 18, type: 'SSD', mount: '/' }
+        ];
+        if (workerDataDisk > 0) {
+          wDisks.push({
+            name: 'vdb (Storage)',
+            sizeGb: workerDataDisk,
+            usedGb: 5,
+            type: 'HDD',
+            mount: '/mnt/storage'
+          });
+        }
+
         nodes.push({
           name: `w${i}`,
           ip: `10.10.10.${20 + (i - 1) * 10}`,
           role: 'worker',
           status: 'Ready',
           unschedulable: false,
-          cpuTotalM: cpuPerNode,
-          ramTotalMi: ramPerNode,
+          cpuTotalM: workerCpu,
+          ramTotalMi: workerRam,
           taints: [],
           labels: { 'kubernetes.io/hostname': `w${i}`, 'disktype': i === 1 ? 'hdd' : 'ssd' },
-          disks: [{ name: 'vda (OS)', sizeGb: 50, usedGb: 18, type: 'SSD', mount: '/' }]
+          disks: wDisks
         });
       }
 
       const net = createDefaultNetwork();
       net.ingress.rules = []; // 백지 상태: 라우팅 규칙 없음
       net.loadBalancer.targetPool = [];
+      if (!enableAlb) {
+        net.loadBalancer.status = 'Inactive';
+      }
+      if (net.router) net.router.cidr = nodeSubnet;
+      net.podCidr = podCidr;
+      net.serviceCidr = serviceCidr;
+
+      const totalCpuM = nodes.reduce((sum, n) => sum + n.cpuTotalM, 0);
+      const totalRamMi = nodes.reduce((sum, n) => sum + n.ramTotalMi, 0);
 
       newLab = {
         id,
@@ -2763,7 +2811,7 @@ export async function handleSimulatorApi(request, path, env, user) {
           {
             time: timeStr,
             user: creatorName,
-            action: `🌱 [처음부터 생성] 순수 백지 상태의 신규 클러스터('${title}') 생성 완료. 파드 및 서비스를 처음부터 직접 구축하세요.`
+            action: `🌱 [클러스터 직접 구축] 마스터 ${masterCount}대, 워커 ${workerCount}대 (총 ${totalCpuM / 1000} Core / ${Math.round(totalRamMi / 1024)} GiB) 백지 클러스터('${title}') 프로비저닝 완료.`
           }
         ]
       };
@@ -2783,8 +2831,8 @@ export async function handleSimulatorApi(request, path, env, user) {
             role: 'worker',
             status: 'Ready',
             unschedulable: false,
-            cpuTotalM: cpuPerNode,
-            ramTotalMi: ramPerNode,
+            cpuTotalM: workerCpu || 2000,
+            ramTotalMi: workerRam || 4096,
             taints: [],
             labels: { 'kubernetes.io/hostname': 'w2', 'disktype': 'ssd' },
             disks: [{ name: 'vda (OS)', sizeGb: 50, usedGb: 14, type: 'SSD', mount: '/' }]
@@ -2861,16 +2909,31 @@ export async function handleSimulatorApi(request, path, env, user) {
       if (!lab.editable) return new Response(JSON.stringify({ ok: false, error: '수정 권한이 OFF 상태입니다.' }), { headers: jsonHeaders, status: 403 });
       let body = {};
       try { body = await request.json(); } catch {}
+      const role = body.role === 'control-plane' ? 'control-plane' : 'worker';
       const existingNames = new Set((lab.nodes || []).map(n => n.name));
-      let nextWorkerNum = 1;
-      while (existingNames.has('w' + nextWorkerNum)) nextWorkerNum++;
-
       const existingIps = new Set((lab.nodes || []).map(n => n.ip));
-      let nextIpLast = 20;
-      while (existingIps.has(`10.10.10.${nextIpLast}`)) nextIpLast += 10;
 
-      const name = (body.name || `w${nextWorkerNum}`).trim();
-      const ip = (body.ip || `10.10.10.${nextIpLast}`).trim();
+      let defaultName = '';
+      let defaultIp = '';
+
+      if (role === 'control-plane') {
+        let nextMasterNum = 1;
+        while (existingNames.has('master' + nextMasterNum)) nextMasterNum++;
+        let nextMasterIp = 11;
+        while (existingIps.has(`10.10.10.${nextMasterIp}`)) nextMasterIp++;
+        defaultName = `master${nextMasterNum}`;
+        defaultIp = `10.10.10.${nextMasterIp}`;
+      } else {
+        let nextWorkerNum = 1;
+        while (existingNames.has('w' + nextWorkerNum)) nextWorkerNum++;
+        let nextIpLast = 20;
+        while (existingIps.has(`10.10.10.${nextIpLast}`)) nextIpLast += 10;
+        defaultName = `w${nextWorkerNum}`;
+        defaultIp = `10.10.10.${nextIpLast}`;
+      }
+
+      const name = (body.name || defaultName).trim();
+      const ip = (body.ip || defaultIp).trim();
       const cpu = parseInt(body.cpu || '2000', 10);
       const ram = parseInt(body.ram || '4096', 10);
       const disktype = body.disktype || 'ssd';
@@ -2882,22 +2945,28 @@ export async function handleSimulatorApi(request, path, env, user) {
         return new Response(JSON.stringify({ ok: false, error: `노드 IP '${ip}'이(가) 이미 사용 중입니다. 고유한 IP를 사용해주세요.` }), { headers: jsonHeaders, status: 400 });
       }
 
+      const labels = { 'kubernetes.io/hostname': name, 'disktype': disktype };
+      if (role === 'control-plane') {
+        labels['node-role.kubernetes.io/control-plane'] = '';
+      }
+
       const newNode = {
         name,
         ip,
-        role: 'worker',
+        role,
         status: 'Ready',
         unschedulable: false,
         cpuTotalM: cpu,
         ramTotalMi: ram,
         taints: body.taint ? [{ key: 'dedicated', effect: body.taint }] : [],
-        labels: { 'kubernetes.io/hostname': name, 'disktype': disktype },
+        labels,
         disks: [
           { name: 'vda (OS)', sizeGb: 50, usedGb: 18, type: disktype.toUpperCase(), mount: '/' },
           { name: 'vdb (Storage)', sizeGb: 100, usedGb: 5, type: disktype.toUpperCase(), mount: '/mnt/storage' }
         ]
       };
 
+      if (!lab.nodes) lab.nodes = [];
       lab.nodes.push(newNode);
       syncLbTargetPool(lab);
       rescheduleAll(lab);
@@ -2905,7 +2974,7 @@ export async function handleSimulatorApi(request, path, env, user) {
       lab.activityLogs.unshift({
         time: timeStr,
         user: userName,
-        action: `🖥️ 새 워커 노드 VM '${name}' (${ip}, ${cpu}m CPU, ${ram}Mi RAM) 프로비저닝 완료`
+        action: `🖥️ 새 ${role === 'control-plane' ? '마스터(Control-Plane)' : '워커'} 노드 VM '${name}' (${ip}, ${cpu}m CPU, ${ram}Mi RAM) 프로비저닝 완료`
       });
 
       await saveLabDetail(env, lab);
@@ -6361,31 +6430,31 @@ export function renderSimulatorPage(user) {
 
   <!-- 모달 1: 신규 랩 생성 -->
   <div class="modal-overlay" id="create-modal">
-    <div class="modal" style="max-width:540px;">
+    <div class="modal" style="max-width:640px; width:96%;">
       <h2>➕ 신규 실습 랩 클러스터 생성</h2>
-      <p class="desc">처음부터 직접 구축하는 순수 백지 상태 또는 사전 구성된 템플릿 중 선택하여 시작합니다.</p>
+      <p class="desc">마스터/워커 노드 구성과 vCPU, RAM, 디스크, 네트워크 리소스를 직접 설계하여 시작합니다.</p>
       <form onsubmit="handleCreateLab(event)">
-        <!-- 시작 방식 선택 (라디오) -->
-        <div class="form-group" style="background:#0f172a; padding:12px 14px; border-radius:8px; border:1px solid #1e293b; margin-bottom:14px;">
-          <label style="font-weight:700; color:#38bdf8; display:block; margin-bottom:8px;">🚀 클러스터 시작 방식</label>
+        <!-- 1. 시작 방식 선택 (라디오) -->
+        <div class="form-group" style="background:#0f172a; padding:12px 14px; border-radius:8px; border:1px solid #1e293b; margin-bottom:12px;">
+          <label style="font-weight:700; color:#38bdf8; display:block; margin-bottom:8px;">🚀 클러스터 시작 모드</label>
           <div style="display:flex; gap:16px;">
             <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:13px; color:#f1f5f9;">
               <input type="radio" name="startMode" id="mode-blank" value="blank" checked onchange="toggleStartMode('blank')">
-              <span>🌱 <strong>처음부터 생성 (Clean Slate)</strong></span>
+              <span>🌱 <strong>처음부터 생성 (인프라 직접 설계)</strong></span>
             </label>
             <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:13px; color:#f1f5f9;">
               <input type="radio" name="startMode" id="mode-template" value="template" onchange="toggleStartMode('template')">
-              <span>📦 <strong>템플릿부터 시작 (Preset)</strong></span>
+              <span>📦 <strong>템플릿부터 시작 (사전 구성 랩)</strong></span>
             </label>
           </div>
-          <div id="mode-desc-text" style="font-size:11px; color:#94a3b8; margin-top:8px; line-height:1.4;">
-            🌱 노드(VM)만 프로비저닝된 순수 백지 클러스터입니다. 파드, 디플로이먼트, 서비스, Ingress 라우팅을 0부터 직접 구축하고 실습할 수 있습니다.
+          <div id="mode-desc-text" style="font-size:11.5px; color:#94a3b8; margin-top:8px; line-height:1.4;">
+            🌱 마스터/워커 노드 대수와 vCPU, RAM, 디스크 스펙을 직접 지정하고 파드, 서비스, 라우팅을 0부터 직접 구축하는 순수 백지 클러스터입니다.
           </div>
         </div>
 
         <!-- 템플릿 선택 드롭다운 (템플릿 모드일 때만 표시) -->
-        <div class="form-group" id="template-select-group" style="display:none;">
-          <label>실습 템플릿 프리셋 선택</label>
+        <div class="form-group" id="template-select-group" style="display:none; background:#1e1b4b; border:1px solid #4338ca; border-radius:8px; padding:12px; margin-bottom:12px;">
+          <label style="color:#a5b4fc; font-weight:700;">사전 구성 실습 템플릿 선택</label>
           <select class="form-control" id="form-template-type" onchange="applyTemplatePreset(this.value)">
             <option value="standard">🏛️ KT Cloud 3-Tier 상용 웹 인프라 (Nginx + API + Redis + L7 ALB)</option>
             <option value="scheduling">☸️ 파드 스케줄링 & Taint/Toleration 트러블슈팅 실습 랩</option>
@@ -6394,32 +6463,153 @@ export function renderSimulatorPage(user) {
           </select>
         </div>
 
-        <div class="form-group">
-          <label>실습 랩 제목</label>
-          <input type="text" class="form-control" id="form-title" placeholder="예: 새 백지 실습 클러스터" required />
-        </div>
-        <div class="form-group">
-          <label>실습 설명</label>
-          <input type="text" class="form-control" id="form-desc" placeholder="실습 목적 및 아키텍처 메모" />
-        </div>
+        <!-- 2. 기본 정보 -->
         <div class="form-row">
           <div class="form-group">
-            <label>워커 노드 수</label>
-            <select class="form-control" id="form-workers">
-              <option value="0">0 Worker (Master1 단독 단일노드)</option>
-              <option value="1" selected>1 Worker (Master1 + W1)</option>
-              <option value="2">2 Workers (Master1 + W1 + W2)</option>
-              <option value="3">3 Workers (Master1 + W1 + W2 + W3)</option>
-            </select>
+            <label>클러스터 명칭</label>
+            <input type="text" class="form-control" id="form-title" placeholder="예: 새 백지 실습 클러스터" required />
           </div>
           <div class="form-group">
-            <label>노드당 CPU 할당량</label>
-            <select class="form-control" id="form-cpu">
-              <option value="2000">2 Core (2000m)</option>
-              <option value="4000">4 Core (4000m)</option>
+            <label>클러스터 설명</label>
+            <input type="text" class="form-control" id="form-desc" placeholder="실습 목적 및 아키텍처 메모" />
+          </div>
+        </div>
+
+        <!-- 3. 마스터 노드(Control-Plane) 인프라 스펙 -->
+        <div style="background:#0d1527; border:1px solid #1f293d; border-radius:8px; padding:12px 14px; margin-bottom:10px;">
+          <div style="font-weight:700; color:#38bdf8; font-size:12.5px; margin-bottom:8px; display:flex; justify-content:space-between; align-items:center;">
+            <span>🖥️ 1. 마스터 노드 (Control-Plane) 설정</span>
+            <span style="font-size:11px; color:#64748b; font-weight:normal;">API 서버, etcd, 컨트롤러 매니저</span>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>마스터 노드 수</label>
+              <select class="form-control" id="form-master-count" onchange="updateClusterResourceSummary()">
+                <option value="1" selected>1대 (단일 Control-Plane / master1)</option>
+                <option value="3">3대 (HA 고가용성 etcd 클러스터 / master1~3)</option>
+                <option value="0">0대 (노드 없이 생성 후 직접 추가)</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>마스터 vCPU 할당량</label>
+              <select class="form-control" id="form-master-cpu" onchange="updateClusterResourceSummary()">
+                <option value="2000" selected>2 Core (2000m)</option>
+                <option value="4000">4 Core (4000m)</option>
+                <option value="8000">8 Core (8000m)</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>마스터 RAM 용량</label>
+              <select class="form-control" id="form-master-ram" onchange="updateClusterResourceSummary()">
+                <option value="4096" selected>4 GiB (4096Mi)</option>
+                <option value="8192">8 GiB (8192Mi)</option>
+                <option value="16384">16 GiB (16384Mi)</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>마스터 OS SSD 디스크</label>
+              <select class="form-control" id="form-master-disk" onchange="updateClusterResourceSummary()">
+                <option value="50" selected>50 GB NVMe SSD</option>
+                <option value="100">100 GB NVMe SSD</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <!-- 4. 워커 노드(Worker Nodes) 인프라 스펙 -->
+        <div style="background:#0d1527; border:1px solid #1f293d; border-radius:8px; padding:12px 14px; margin-bottom:10px;">
+          <div style="font-weight:700; color:#34d399; font-size:12.5px; margin-bottom:8px; display:flex; justify-content:space-between; align-items:center;">
+            <span>💻 2. 워커 노드 (Worker Nodes) 설정</span>
+            <span style="font-size:11px; color:#64748b; font-weight:normal;">파드 및 애플리케이션 실행 VM</span>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>워커 노드 수</label>
+              <select class="form-control" id="form-worker-count" onchange="updateClusterResourceSummary()">
+                <option value="0">0대 (Master 단독 스케줄링)</option>
+                <option value="1" selected>1대 (w1)</option>
+                <option value="2">2대 (w1, w2)</option>
+                <option value="3">3대 (w1, w2, w3)</option>
+                <option value="4">4대 (w1 ~ w4)</option>
+                <option value="5">5대 (w1 ~ w5)</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>워커당 vCPU 할당량</label>
+              <select class="form-control" id="form-worker-cpu" onchange="updateClusterResourceSummary()">
+                <option value="2000" selected>2 Core (2000m)</option>
+                <option value="4000">4 Core (4000m)</option>
+                <option value="8000">8 Core (8000m)</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>워커당 RAM 용량</label>
+              <select class="form-control" id="form-worker-ram" onchange="updateClusterResourceSummary()">
+                <option value="4096" selected>4 GiB (4096Mi)</option>
+                <option value="8192">8 GiB (8192Mi)</option>
+                <option value="16384">16 GiB (16384Mi)</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>워커 OS SSD 디스크</label>
+              <select class="form-control" id="form-worker-disk" onchange="updateClusterResourceSummary()">
+                <option value="50" selected>50 GB NVMe SSD</option>
+                <option value="100">100 GB NVMe SSD</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-group" style="margin-top:4px;">
+            <label>워커 추가 데이터 디스크 (vdb)</label>
+            <select class="form-control" id="form-worker-datadisk" onchange="updateClusterResourceSummary()">
+              <option value="0" selected>장착 안 함 (기본 OS 디스크만 사용)</option>
+              <option value="100">100 GB HDD 추가 장착 (/mnt/storage)</option>
+              <option value="200">200 GB NVMe SSD 추가 장착 (/mnt/storage)</option>
             </select>
           </div>
         </div>
+
+        <!-- 5. 가상 네트워크 및 CIDR 리소스 할당 -->
+        <details style="background:#0d1527; border:1px solid #1f293d; border-radius:8px; padding:8px 12px; margin-bottom:10px;">
+          <summary style="cursor:pointer; font-weight:700; color:#cbd5e1; font-size:12px;">🌐 3. 가상 네트워크 CIDR & L7 ALB 리소스 명세 (클릭하여 확인/수정)</summary>
+          <div style="margin-top:10px;">
+            <div class="form-row">
+              <div class="form-group">
+                <label>노드 관리 네트워크 CIDR</label>
+                <input type="text" class="form-control" id="form-node-subnet" value="10.10.10.0/24" />
+              </div>
+              <div class="form-group">
+                <label>파드(Pod) 네트워크 CIDR</label>
+                <input type="text" class="form-control" id="form-pod-cidr" value="10.244.0.0/16" />
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label>서비스(Service) 네트워크 CIDR</label>
+                <input type="text" class="form-control" id="form-svc-cidr" value="10.96.0.0/12" />
+              </div>
+              <div class="form-group">
+                <label>L7 ALB 연동</label>
+                <label class="checkbox-label" style="margin-top:6px;"><input type="checkbox" id="form-enable-alb" checked /> L7 ALB 활성화 (VIP: 211.252.85.10)</label>
+              </div>
+            </div>
+          </div>
+        </details>
+
+        <!-- 6. 실시간 총 프로비저닝 리소스 요약 배너 -->
+        <div id="cluster-resource-summary" style="background:#070d1e; border:1px solid #1e3a8a; border-radius:8px; padding:10px 14px; margin-bottom:12px;">
+          <div style="font-weight:700; color:#38bdf8; font-size:12px; margin-bottom:6px;">📊 프로비저닝 예정 총 클러스터 리소스 집계</div>
+          <div style="display:flex; gap:14px; font-size:12px; color:#cbd5e1; flex-wrap:wrap;">
+            <span>🖥️ 노드 합계: <b id="summary-total-nodes" style="color:#10b981;">2대</b> (<span id="summary-nodes-breakdown">Master 1, Worker 1</span>)</span>
+            <span>⚡ 총 vCPU: <b id="summary-total-cpu" style="color:#f59e0b;">4 Core</b></span>
+            <span>🧠 총 RAM: <b id="summary-total-ram" style="color:#a855f7;">8 GiB</b></span>
+            <span>💾 총 스토리지: <b id="summary-total-disk" style="color:#38bdf8;">100 GB</b></span>
+          </div>
+        </div>
+
         <div class="form-group">
           <label class="checkbox-label"><input type="checkbox" id="form-editable" checked /> 다른 수강생과 수정 권한 공유 허용 (ON)</label>
         </div>
@@ -6434,18 +6624,25 @@ export function renderSimulatorPage(user) {
   <!-- 모달 2: VM 노드 추가 -->
   <div class="modal-overlay" id="add-node-modal">
     <div class="modal">
-      <h2>🖥️ 새 워커 노드(VM) 프로비저닝</h2>
-      <p class="desc">클러스터에 새 가상머신 워커 노드를 즉시 추가하고 자원을 확장합니다.</p>
+      <h2>🖥️ 가상 노드(VM) 프로비저닝</h2>
+      <p class="desc">클러스터에 새 마스터(Control-Plane) 또는 워커 노드를 즉시 추가하고 리소스를 확장합니다.</p>
       <form onsubmit="handleAddNode(event)">
+        <div class="form-group">
+          <label>노드 역할 (Role)</label>
+          <select class="form-control" id="node-form-role" onchange="handleNodeRoleChange(this.value)">
+            <option value="worker" selected>Worker (파드 및 애플리케이션 실행용)</option>
+            <option value="control-plane">Control-Plane (K8s API & 스케줄러 마스터)</option>
+          </select>
+        </div>
         <div class="form-row">
           <div class="form-group"><label>호스트명</label><input type="text" class="form-control" id="node-form-name" required /></div>
           <div class="form-group"><label>사설 IP</label><input type="text" class="form-control" id="node-form-ip" required /></div>
         </div>
         <div class="form-row">
           <div class="form-group"><label>vCPU 용량</label><select class="form-control" id="node-form-cpu"><option value="2000">2 Core</option><option value="4000">4 Core</option><option value="8000">8 Core</option></select></div>
-          <div class="form-group"><label>RAM 용량</label><select class="form-control" id="node-form-ram"><option value="4096">4 GiB</option><option value="8192">8 GiB</option></select></div>
+          <div class="form-group"><label>RAM 용량</label><select class="form-control" id="node-form-ram"><option value="4096">4 GiB</option><option value="8192">8 GiB</option><option value="16384">16 GiB</option></select></div>
         </div>
-        <div class="form-group"><label>스토리지 타입</label><select class="form-control" id="node-form-disk"><option value="ssd">NVMe SSD (초고속)</option><option value="hdd">Standard HDD</option></select></div>
+        <div class="form-group"><label>스토리지 타입</label><select class="form-control" id="node-form-disk"><option value="ssd">NVMe SSD (초고속 50GB)</option><option value="hdd">Standard HDD (100GB)</option></select></div>
         <div class="modal-actions">
           <button type="button" class="btn sm" onclick="closeModal('add-node-modal')">취소</button>
           <button type="submit" class="btn sm primary">노드 프로비저닝</button>
@@ -6675,21 +6872,42 @@ export function renderSimulatorPage(user) {
       document.getElementById('tab-content-' + tabId).style.display = 'flex';
     }
 
-    function openModal(id) { document.getElementById(id).classList.add('active'); }
+    function openModal(id) {
+      document.getElementById(id).classList.add('active');
+      if (id === 'create-modal') {
+        updateClusterResourceSummary();
+      }
+    }
     function closeModal(id) { document.getElementById(id).classList.remove('active'); }
-    function openAddNodeModal() {
+
+    function openAddNodeModal(defaultRole = 'worker') {
+      if (!currentLab) return;
+      const roleSelect = document.getElementById('node-form-role');
+      if (roleSelect) roleSelect.value = defaultRole;
+      handleNodeRoleChange(defaultRole);
+      openModal('add-node-modal');
+    }
+
+    function handleNodeRoleChange(role) {
       if (!currentLab) return;
       const existingNames = new Set((currentLab.nodes || []).map(n => n.name));
-      let nextWorkerNum = 1;
-      while (existingNames.has('w' + nextWorkerNum)) nextWorkerNum++;
-
       const existingIps = new Set((currentLab.nodes || []).map(n => n.ip));
-      let nextIpLast = 20;
-      while (existingIps.has('10.10.10.' + nextIpLast)) nextIpLast += 10;
 
-      document.getElementById('node-form-name').value = 'w' + nextWorkerNum;
-      document.getElementById('node-form-ip').value = '10.10.10.' + nextIpLast;
-      openModal('add-node-modal');
+      if (role === 'control-plane') {
+        let nextMasterNum = 1;
+        while (existingNames.has('master' + nextMasterNum)) nextMasterNum++;
+        let nextMasterIp = 11;
+        while (existingIps.has('10.10.10.' + nextMasterIp)) nextMasterIp++;
+        document.getElementById('node-form-name').value = 'master' + nextMasterNum;
+        document.getElementById('node-form-ip').value = '10.10.10.' + nextMasterIp;
+      } else {
+        let nextWorkerNum = 1;
+        while (existingNames.has('w' + nextWorkerNum)) nextWorkerNum++;
+        let nextIpLast = 20;
+        while (existingIps.has('10.10.10.' + nextIpLast)) nextIpLast += 10;
+        document.getElementById('node-form-name').value = 'w' + nextWorkerNum;
+        document.getElementById('node-form-ip').value = '10.10.10.' + nextIpLast;
+      }
     }
 
     function openDeployModal() {
@@ -6786,19 +7004,25 @@ export function renderSimulatorPage(user) {
       const btn = document.getElementById('perm-toggle-btn');
       const label = document.getElementById('perm-label-text');
       const prompt = document.getElementById('term-prompt');
+      const termTitle = document.getElementById('term-status-title');
+      const activeMaster = (currentLab?.nodes || []).find(n => n.role === 'control-plane') || currentLab?.nodes?.[0];
+      const hostName = activeMaster ? activeMaster.name : 'kt-cluster';
+      if (termTitle) {
+        termTitle.innerText = activeMaster ? (activeMaster.name + ' (' + activeMaster.ip + ') - bash') : 'kt-cluster (0 nodes) - bash';
+      }
       if (editable) {
         btn.className = 'switch-btn active-on';
         btn.innerText = '🔓 ON';
         label.innerText = '수정: ON';
         label.style.color = '#34d399';
-        prompt.innerText = 'root@master1:~#';
+        prompt.innerText = 'root@' + hostName + ':~#';
         prompt.style.color = '#10b981';
       } else {
         btn.className = 'switch-btn active-off';
         btn.innerText = '🔒 OFF';
         label.innerText = '수정: OFF';
         label.style.color = '#f87171';
-        prompt.innerText = 'root@master1:~# (read-only)';
+        prompt.innerText = 'root@' + hostName + ':~# (read-only)';
         prompt.style.color = '#f59e0b';
       }
     }
@@ -6806,7 +7030,7 @@ export function renderSimulatorPage(user) {
     async function togglePermission() {
       if (!currentLab) return;
       try {
-        const res = await fetch(\`/api/simulator/labs/\${currentLab.id}/permission\`, {
+        const res = await fetch('/api/simulator/labs/' + currentLab.id + '/permission', {
           method: 'PATCH',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ editable: !currentLab.editable })
@@ -6844,7 +7068,19 @@ export function renderSimulatorPage(user) {
       document.getElementById('stat-total-pps').innerText = totalPps + ' PPS';
 
       // 2) 노드 카드 & 실시간 노드별 처리량
-      document.getElementById('node-grid-container').innerHTML = (lab.nodes || []).map(node => {
+      const nodeContainer = document.getElementById('node-grid-container');
+      if (!lab.nodes || lab.nodes.length === 0) {
+        nodeContainer.innerHTML = \`
+          <div style="grid-column: 1 / -1; padding: 36px 20px; text-align: center; background: #0b1329; border-radius: 12px; border: 2px dashed #334155; color: #94a3b8;">
+            <div style="font-size: 32px; margin-bottom: 8px;">🖥️</div>
+            <div style="font-weight: 700; color: #f8fafc; font-size: 15px; margin-bottom: 6px;">프로비저닝된 가상 노드가 없습니다</div>
+            <div style="font-size: 13px; color: #64748b; margin-bottom: 16px;">클러스터 시작 시 노드를 지정하지 않았거나 모두 삭제되었습니다. 마스터 또는 워커 노드를 프로비저닝하세요.</div>
+            <button class="btn sm primary" onclick="openAddNodeModal('control-plane')">➕ 마스터(Control-Plane) 추가</button>
+            <button class="btn sm" onclick="openAddNodeModal('worker')" style="margin-left: 8px;">➕ 워커(Worker) 추가</button>
+          </div>
+        \`;
+      } else {
+        nodeContainer.innerHTML = (lab.nodes || []).map(node => {
         const hosted = (lab.pods || []).filter(p => p.node === node.name && p.status === 'Running');
         const isMaster = node.role === 'control-plane';
 
@@ -7910,6 +8146,7 @@ export function renderSimulatorPage(user) {
     async function handleAddNode(e) {
       e.preventDefault();
       if (!currentLab) return;
+      const role = document.getElementById('node-form-role')?.value || 'worker';
       const name = document.getElementById('node-form-name').value.trim();
       const ip = document.getElementById('node-form-ip').value.trim();
       const cpu = document.getElementById('node-form-cpu').value;
@@ -7920,14 +8157,15 @@ export function renderSimulatorPage(user) {
         const res = await fetch(\`/api/simulator/labs/\${currentLab.id}/nodes\`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ name, ip, cpu, ram, disktype })
+          body: JSON.stringify({ role, name, ip, cpu, ram, disktype })
         });
         const data = await res.json();
         if (data.ok) {
           closeModal('add-node-modal');
           currentLab = data.lab;
           renderAll(currentLab);
-          appendTermLog(\`\\n<span style="color:#10b981;font-weight:700;">🖥️ 새 워커 노드 VM '\${name}'이 클러스터에 프로비저닝되었습니다.</span>\\n\`);
+          const roleLabel = role === 'control-plane' ? '마스터(Control-Plane)' : '워커';
+          appendTermLog(\`\\n<span style="color:#10b981;font-weight:700;">🖥️ 새 \${roleLabel} 노드 VM '\${name}' (\${ip})이 클러스터에 프로비저닝되었습니다.</span>\\n\`);
         } else { alert('추가 실패: ' + data.error); }
       } catch (err) { alert('노드 추가 오류: ' + err.message); }
     }
@@ -8120,6 +8358,36 @@ export function renderSimulatorPage(user) {
       } catch (err) { alert('복원 통신 오류: ' + err.message); }
     }
 
+    function updateClusterResourceSummary() {
+      const masterCount = parseInt(document.getElementById('form-master-count')?.value || '1', 10);
+      const masterCpu = parseInt(document.getElementById('form-master-cpu')?.value || '2000', 10);
+      const masterRam = parseInt(document.getElementById('form-master-ram')?.value || '4096', 10);
+      const masterDisk = parseInt(document.getElementById('form-master-disk')?.value || '50', 10);
+
+      const workerCount = parseInt(document.getElementById('form-worker-count')?.value || '1', 10);
+      const workerCpu = parseInt(document.getElementById('form-worker-cpu')?.value || '2000', 10);
+      const workerRam = parseInt(document.getElementById('form-worker-ram')?.value || '4096', 10);
+      const workerDisk = parseInt(document.getElementById('form-worker-disk')?.value || '50', 10);
+      const workerDataDisk = parseInt(document.getElementById('form-worker-datadisk')?.value || '0', 10);
+
+      const totalNodes = masterCount + workerCount;
+      const totalCpuCores = ((masterCount * masterCpu) + (workerCount * workerCpu)) / 1000;
+      const totalRamGib = Math.round(((masterCount * masterRam) + (workerCount * workerRam)) / 1024);
+      const totalDiskGb = (masterCount * masterDisk) + (workerCount * (workerDisk + workerDataDisk));
+
+      const totalNodesEl = document.getElementById('summary-total-nodes');
+      const breakdownEl = document.getElementById('summary-nodes-breakdown');
+      const totalCpuEl = document.getElementById('summary-total-cpu');
+      const totalRamEl = document.getElementById('summary-total-ram');
+      const totalDiskEl = document.getElementById('summary-total-disk');
+
+      if (totalNodesEl) totalNodesEl.innerText = totalNodes + '대';
+      if (breakdownEl) breakdownEl.innerText = 'Master ' + masterCount + ', Worker ' + workerCount;
+      if (totalCpuEl) totalCpuEl.innerText = totalCpuCores + ' Core';
+      if (totalRamEl) totalRamEl.innerText = totalRamGib + ' GiB';
+      if (totalDiskEl) totalDiskEl.innerText = totalDiskGb + ' GB';
+    }
+
     function toggleStartMode(mode) {
       const templateGroup = document.getElementById('template-select-group');
       const descText = document.getElementById('mode-desc-text');
@@ -8133,37 +8401,49 @@ export function renderSimulatorPage(user) {
         applyTemplatePreset(tVal);
       } else {
         if (templateGroup) templateGroup.style.display = 'none';
-        if (descText) descText.innerHTML = '🌱 노드(VM)만 프로비저닝된 순수 백지 클러스터입니다. 파드, 디플로이먼트, 서비스, Ingress 라우팅을 0부터 직접 구축하고 실습할 수 있습니다.';
+        if (descText) descText.innerHTML = '🌱 마스터/워커 노드 대수와 vCPU, RAM, 디스크 스펙을 직접 지정하고 파드, 서비스, 라우팅을 0부터 직접 구축하는 순수 백지 클러스터입니다.';
         if (titleInput && (!titleInput.value || titleInput.value.includes('템플릿') || titleInput.value.includes('3조') || titleInput.value.includes('KT Cloud') || titleInput.value.includes('스케줄링') || titleInput.value.includes('HPA'))) {
           titleInput.value = '새 백지 실습 클러스터';
         }
         if (descInput && (!descInput.value || descInput.value.includes('환경') || descInput.value.includes('인프라'))) {
           descInput.value = '처음부터 직접 구축하는 순수 가상 클러스터';
         }
+        updateClusterResourceSummary();
       }
     }
 
     function applyTemplatePreset(type) {
       const titleInput = document.getElementById('form-title');
       const descInput = document.getElementById('form-desc');
-      const workerSelect = document.getElementById('form-workers');
+      const masterCountSel = document.getElementById('form-master-count');
+      const workerCountSel = document.getElementById('form-worker-count');
+      const masterCpuSel = document.getElementById('form-master-cpu');
+      const workerCpuSel = document.getElementById('form-worker-cpu');
+
       if (type === 'scheduling') {
         if (titleInput) titleInput.value = '파드 스케줄링 & Taint 트러블슈팅 실습';
         if (descInput) descInput.value = '노드 레이블, Taint/Toleration 및 Pending 파드 진단 환경';
-        if (workerSelect) workerSelect.value = '2';
+        if (masterCountSel) masterCountSel.value = '1';
+        if (workerCountSel) workerCountSel.value = '2';
+        if (workerCpuSel) workerCpuSel.value = '2000';
       } else if (type === 'hpa') {
         if (titleInput) titleInput.value = 'HPA 오토스케일링 & 트래픽 부하분산 실습';
         if (descInput) descInput.value = '트래픽 급증 및 파드 수평 확장 시뮬레이션 환경';
-        if (workerSelect) workerSelect.value = '2';
+        if (masterCountSel) masterCountSel.value = '1';
+        if (workerCountSel) workerCountSel.value = '2';
+        if (workerCpuSel) workerCpuSel.value = '4000';
       } else if (type === 'multinode') {
         if (titleInput) titleInput.value = '다중 워커 노드 고가용성 클러스터';
         if (descInput) descInput.value = 'Master1 + W1 + W2 3노드 고가용성 인프라 환경';
-        if (workerSelect) workerSelect.value = '2';
+        if (masterCountSel) masterCountSel.value = '1';
+        if (workerCountSel) workerCountSel.value = '2';
       } else {
         if (titleInput) titleInput.value = 'KT Cloud 3-Tier 상용 웹 인프라';
         if (descInput) descInput.value = 'L7 로드밸런서, Ingress, Pod, Hybrid 터널 완비 환경';
-        if (workerSelect) workerSelect.value = '1';
+        if (masterCountSel) masterCountSel.value = '1';
+        if (workerCountSel) workerCountSel.value = '1';
       }
+      updateClusterResourceSummary();
     }
 
     async function handleCreateLab(e) {
@@ -8172,8 +8452,26 @@ export function renderSimulatorPage(user) {
       const templateType = document.getElementById('form-template-type')?.value || 'standard';
       const title = document.getElementById('form-title').value.trim();
       const desc = document.getElementById('form-desc').value.trim();
-      const workerCount = document.getElementById('form-workers').value;
-      const cpu = document.getElementById('form-cpu').value;
+
+      // 마스터 노드 설정
+      const masterCount = document.getElementById('form-master-count')?.value || '1';
+      const masterCpu = document.getElementById('form-master-cpu')?.value || '2000';
+      const masterRam = document.getElementById('form-master-ram')?.value || '4096';
+      const masterDisk = document.getElementById('form-master-disk')?.value || '50';
+
+      // 워커 노드 설정
+      const workerCount = document.getElementById('form-worker-count')?.value || '1';
+      const workerCpu = document.getElementById('form-worker-cpu')?.value || '2000';
+      const workerRam = document.getElementById('form-worker-ram')?.value || '4096';
+      const workerDisk = document.getElementById('form-worker-disk')?.value || '50';
+      const workerDataDisk = document.getElementById('form-worker-datadisk')?.value || '0';
+
+      // 네트워크 설정
+      const nodeSubnet = document.getElementById('form-node-subnet')?.value || '10.10.10.0/24';
+      const podCidr = document.getElementById('form-pod-cidr')?.value || '10.244.0.0/16';
+      const serviceCidr = document.getElementById('form-svc-cidr')?.value || '10.96.0.0/12';
+      const enableAlb = document.getElementById('form-enable-alb')?.checked !== false;
+
       const editable = document.getElementById('form-editable').checked;
 
       try {
@@ -8185,8 +8483,19 @@ export function renderSimulatorPage(user) {
             templateType,
             title,
             description: desc,
+            masterCount,
+            masterCpu,
+            masterRam,
+            masterDisk,
             workerCount,
-            cpuPerNode: cpu,
+            workerCpu,
+            workerRam,
+            workerDisk,
+            workerDataDisk,
+            nodeSubnet,
+            podCidr,
+            serviceCidr,
+            enableAlb,
             editable
           })
         });
