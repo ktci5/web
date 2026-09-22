@@ -455,7 +455,11 @@ export async function getLabsIndex(env) {
   }
   try {
     let list = await env.ROSTER.get('sim:labs:index', 'json');
-    if (!list || !Array.isArray(list) || list.length === 0) {
+    if (typeof list === 'string') {
+      try { list = JSON.parse(list); } catch {}
+    }
+    // 최초 실행 시에만(list가 null일 때) 기본 시드 랩 저장. 사용자가 삭제한 경우 강제 재생성하지 않음.
+    if (list === null || list === undefined) {
       const seedIndex = DEFAULT_LABS.map(summarizeLab);
       await env.ROSTER.put('sim:labs:index', JSON.stringify(seedIndex));
       for (const lab of DEFAULT_LABS) {
@@ -463,19 +467,7 @@ export async function getLabsIndex(env) {
       }
       return seedIndex;
     }
-    // Always ensure the default seed labs (기본 예제 3개) exist in the list!
-    const existingIds = new Set(list.map(l => l.id));
-    let updated = false;
-    for (const seedLab of DEFAULT_LABS) {
-      if (!existingIds.has(seedLab.id)) {
-        list.unshift(summarizeLab(seedLab));
-        await env.ROSTER.put(`sim:lab:${seedLab.id}`, JSON.stringify(seedLab));
-        updated = true;
-      }
-    }
-    if (updated) {
-      await env.ROSTER.put('sim:labs:index', JSON.stringify(list));
-    }
+    if (!Array.isArray(list)) list = [];
     return list;
   } catch (err) {
     console.error('getLabsIndex error:', err);
@@ -513,120 +505,127 @@ export async function getLabDetail(env, id) {
         if (!lab.network.layers) lab.network.layers = def.layers;
         if (!lab.network.ingress) lab.network.ingress = def.ingress;
 
-        // Ingress 도메인 보정: 실등록 3개 도메인(app, api, dev) 보장, 중복 제거 및 와일드카드 제외
+        // Ingress 도메인 보정: 와일드카드 제외
         if (lab.network.ingress?.rules) {
           lab.network.ingress.rules = lab.network.ingress.rules.filter(r => r.host !== '*.ktci5.kr' && !r.host?.startsWith('*.'));
-          const rules = lab.network.ingress.rules;
-          if (!rules.some(r => r.host === 'app.ktci5.kr')) {
-            rules.unshift({
-              host: 'app.ktci5.kr',
-              path: '/',
-              port: 80,
-              targetPort: 80,
-              service: 'web-service:80',
-              ssl: true,
-              protocol: 'HTTP/1.1 & HTTP/2'
-            });
-          }
-          if (!rules.some(r => r.host === 'api.ktci5.kr')) {
-            rules.splice(1, 0, {
-              host: 'api.ktci5.kr',
-              path: '/api',
-              port: 80,
-              targetPort: 8080,
-              service: 'api-service:8080',
-              ssl: true,
-              protocol: 'HTTP/1.1 & HTTP/2'
-            });
-          }
-          if (!rules.some(r => r.host === 'dev.ktci5.kr')) {
-            rules.push({
-              host: 'dev.ktci5.kr',
-              path: '/',
-              port: 443,
-              targetPort: 8081,
-              service: 'dev-service:8081',
-              ssl: true,
-              protocol: 'HTTPS (TLS1.3)'
-            });
-          }
-          // 기존 8080으로 등록된 dev.ktci5.kr 규칙을 포트 충돌 방지를 위해 8081로 자동 보정
-          const devRule = rules.find(r => r.host === 'dev.ktci5.kr');
-          if (devRule && devRule.targetPort === 8080) {
-            devRule.targetPort = 8081;
-            devRule.service = 'dev-service:8081';
-          }
-          // 중복 방지 (host + port + path 기준)
-          const seenRules = new Set();
-          lab.network.ingress.rules = rules.filter(r => {
-            const key = `${r.host}:${r.port || 80}:${r.path || '/'}`;
-            if (seenRules.has(key)) return false;
-            seenRules.add(key);
-            return true;
-          });
         }
-        // 서비스 보정: api-service, dev-service 보장 및 포트 충돌 방지 보정
+
+        // 기본 시드 default 랩(템플릿 유지 상태)에서만 3개 기본 도메인 & 서비스 보장
+        if (id === 'default' && lab.template !== 'blank') {
+          if (lab.network.ingress?.rules) {
+            const rules = lab.network.ingress.rules;
+            if (!rules.some(r => r.host === 'app.ktci5.kr')) {
+              rules.unshift({
+                host: 'app.ktci5.kr',
+                path: '/',
+                port: 80,
+                targetPort: 80,
+                service: 'web-service:80',
+                ssl: true,
+                protocol: 'HTTP/1.1 & HTTP/2'
+              });
+            }
+            if (!rules.some(r => r.host === 'api.ktci5.kr')) {
+              rules.splice(1, 0, {
+                host: 'api.ktci5.kr',
+                path: '/api',
+                port: 80,
+                targetPort: 8080,
+                service: 'api-service:8080',
+                ssl: true,
+                protocol: 'HTTP/1.1 & HTTP/2'
+              });
+            }
+            if (!rules.some(r => r.host === 'dev.ktci5.kr')) {
+              rules.push({
+                host: 'dev.ktci5.kr',
+                path: '/',
+                port: 443,
+                targetPort: 8081,
+                service: 'dev-service:8081',
+                ssl: true,
+                protocol: 'HTTPS (TLS1.3)'
+              });
+            }
+            const seenRules = new Set();
+            lab.network.ingress.rules = rules.filter(r => {
+              const key = `${r.host}:${r.port || 80}:${r.path || '/'}`;
+              if (seenRules.has(key)) return false;
+              seenRules.add(key);
+              return true;
+            });
+          }
+          if (lab.services) {
+            if (!lab.services.some(s => s.name === 'api-service')) {
+              lab.services.push({
+                name: 'api-service',
+                type: 'NodePort',
+                clusterIp: '10.96.100.70',
+                nodePort: 30082,
+                port: 8080,
+                targetPort: 8080,
+                selector: { app: 'api' }
+              });
+            }
+            if (!lab.services.some(s => s.name === 'dev-service')) {
+              lab.services.push({
+                name: 'dev-service',
+                type: 'NodePort',
+                clusterIp: '10.96.100.60',
+                nodePort: 30081,
+                port: 8081,
+                targetPort: 8081,
+                selector: { app: 'dev' }
+              });
+            }
+          }
+          if (lab.pods) {
+            if (!lab.pods.some(p => p.labels?.app === 'api')) {
+              lab.pods.push({
+                name: 'api-deploy-77d9c8d55-p2w9k',
+                namespace: 'default',
+                node: 'w1',
+                status: 'Running',
+                ip: '172.20.1.9',
+                image: 'python:3.11-alpine',
+                cpuReqM: 100,
+                ramReqMi: 128,
+                labels: { app: 'api' },
+                restarts: 0,
+                age: '1d'
+              });
+            }
+            if (!lab.pods.some(p => p.labels?.app === 'dev')) {
+              lab.pods.push({
+                name: 'dev-deploy-69f84b77-m8q2z',
+                namespace: 'default',
+                node: 'w1',
+                status: 'Running',
+                ip: '172.20.1.10',
+                image: 'node:20-alpine',
+                cpuReqM: 100,
+                ramReqMi: 128,
+                labels: { app: 'dev' },
+                restarts: 0,
+                age: '1d'
+              });
+            }
+          }
+        }
+
+        // 기존 8080 dev-service 및 Ingress 규칙 자동 8081 보정 (포트 충돌 방지)
         if (lab.services) {
-          if (!lab.services.some(s => s.name === 'api-service')) {
-            lab.services.push({
-              name: 'api-service',
-              type: 'NodePort',
-              clusterIp: '10.96.100.70',
-              nodePort: 30082,
-              port: 8080,
-              targetPort: 8080,
-              selector: { app: 'api' }
-            });
-          }
-          if (!lab.services.some(s => s.name === 'dev-service')) {
-            lab.services.push({
-              name: 'dev-service',
-              type: 'NodePort',
-              clusterIp: '10.96.100.60',
-              nodePort: 30081,
-              port: 8081,
-              targetPort: 8081,
-              selector: { app: 'dev' }
-            });
-          }
-          // 기존 8080으로 등록된 dev-service를 포트 충돌 방지를 위해 8081로 자동 보정
           const devSvc = lab.services.find(s => s.name === 'dev-service');
           if (devSvc && devSvc.port === 8080) {
             devSvc.port = 8081;
             devSvc.targetPort = 8081;
           }
         }
-        // 파드 보정: api-deploy, dev-deploy 파드가 없으면 추가
-        if (lab.pods) {
-          if (!lab.pods.some(p => p.labels?.app === 'api')) {
-            lab.pods.push({
-              name: 'api-deploy-77d9c8d55-p2w9k',
-              namespace: 'default',
-              node: 'w1',
-              status: 'Running',
-              ip: '172.20.1.9',
-              image: 'python:3.11-alpine',
-              cpuReqM: 100,
-              ramReqMi: 128,
-              labels: { app: 'api' },
-              restarts: 0,
-              age: '1d'
-            });
-          }
-          if (!lab.pods.some(p => p.labels?.app === 'dev')) {
-            lab.pods.push({
-              name: 'dev-deploy-69f84b77-m8q2z',
-              namespace: 'default',
-              node: 'w1',
-              status: 'Running',
-              ip: '172.20.1.10',
-              image: 'node:20-alpine',
-              cpuReqM: 100,
-              ramReqMi: 128,
-              labels: { app: 'dev' },
-              restarts: 0,
-              age: '1d'
-            });
+        if (lab.network?.ingress?.rules) {
+          const devRule = lab.network.ingress.rules.find(r => r.host === 'dev.ktci5.kr');
+          if (devRule && devRule.targetPort === 8080) {
+            devRule.targetPort = 8081;
+            devRule.service = 'dev-service:8081';
           }
         }
       }
@@ -2671,97 +2670,149 @@ export async function handleSimulatorApi(request, path, env, user) {
     return new Response(JSON.stringify({ ok: true, labs: list }), { headers: jsonHeaders });
   }
 
-  // 2. POST /api/simulator/labs : 신규 랩 생성 & 저장
+  // 1-1. POST /api/simulator/labs/restore-defaults : 기본 시드 템플릿 랩 3종 복원/재생성
+  if (path === '/api/simulator/labs/restore-defaults' && method === 'POST') {
+    let index = await env.ROSTER.get('sim:labs:index', 'json');
+    if (typeof index === 'string') {
+      try { index = JSON.parse(index); } catch {}
+    }
+    if (!Array.isArray(index)) index = [];
+    const existingIds = new Set(index.map(i => i.id));
+    for (const seedLab of DEFAULT_LABS) {
+      if (!existingIds.has(seedLab.id)) {
+        index.unshift(summarizeLab(seedLab));
+      }
+      await env.ROSTER.put(`sim:lab:${seedLab.id}`, JSON.stringify(seedLab));
+    }
+    await env.ROSTER.put('sim:labs:index', JSON.stringify(index));
+    return new Response(JSON.stringify({ ok: true, labs: index }), { headers: jsonHeaders });
+  }
+
+  // 2. POST /api/simulator/labs : 신규 랩 생성 & 저장 (처음부터 생성 vs 템플릿부터 시작)
   if (path === '/api/simulator/labs' && method === 'POST') {
     let body = {};
     try { body = await request.json(); } catch {}
-    const title = (body.title || '').trim() || '새 쿠버네티스 실습 랩';
-    const desc = (body.description || '').trim() || '수강생 생성 가상 클러스터 실습 환경';
-    const workerCount = Math.min(Math.max(1, parseInt(body.workerCount || '1', 10)), 5);
+    const startMode = body.startMode || 'blank'; // 'blank' (처음부터 생성) | 'template' (템플릿부터 시작)
+    const templateType = body.templateType || 'standard'; // 'standard' | 'scheduling' | 'hpa' | 'multinode'
+    const title = (body.title || '').trim() || (startMode === 'blank' ? '새 백지 클러스터' : '신규 템플릿 클러스터');
+    const desc = (body.description || '').trim() || (startMode === 'blank' ? '처음부터 직접 구축하는 순수 가상 클러스터' : '템플릿 기반 실습 클러스터');
+    const workerCount = Math.min(Math.max(0, parseInt(body.workerCount !== undefined ? body.workerCount : '1', 10)), 5);
     const cpuPerNode = parseInt(body.cpuPerNode || '2000', 10);
     const ramPerNode = parseInt(body.ramPerNode || '4096', 10);
     const editable = body.editable !== false;
 
     const id = 'lab-' + Date.now().toString(36) + '-' + Math.random().toString(36).substring(2, 6);
     const creatorName = user?.name || '수강생';
+    const timeStr = new Date().toTimeString().slice(0, 8);
 
-    const nodes = [
-      {
-        name: 'master1',
-        ip: '10.10.10.12',
-        role: 'control-plane',
-        status: 'Ready',
-        unschedulable: false,
-        cpuTotalM: cpuPerNode,
-        ramTotalMi: ramPerNode,
-        taints: [],
-        labels: { 'kubernetes.io/hostname': 'master1' },
-        disks: [{ name: 'vda (OS)', sizeGb: 50, usedGb: 19, type: 'SSD', mount: '/' }]
+    let newLab;
+
+    if (startMode === 'blank') {
+      // [처음부터 생성 / Clean Slate]: 워크로드, 서비스, 라우팅이 전혀 없는 백지 상태
+      const nodes = [
+        {
+          name: 'master1',
+          ip: '10.10.10.12',
+          role: 'control-plane',
+          status: 'Ready',
+          unschedulable: false,
+          cpuTotalM: cpuPerNode,
+          ramTotalMi: ramPerNode,
+          taints: [],
+          labels: { 'kubernetes.io/hostname': 'master1', 'node-role.kubernetes.io/control-plane': '' },
+          disks: [{ name: 'vda (OS)', sizeGb: 50, usedGb: 19, type: 'SSD', mount: '/' }]
+        }
+      ];
+
+      for (let i = 1; i <= workerCount; i++) {
+        nodes.push({
+          name: `w${i}`,
+          ip: `10.10.10.${20 + (i - 1) * 10}`,
+          role: 'worker',
+          status: 'Ready',
+          unschedulable: false,
+          cpuTotalM: cpuPerNode,
+          ramTotalMi: ramPerNode,
+          taints: [],
+          labels: { 'kubernetes.io/hostname': `w${i}`, 'disktype': i === 1 ? 'hdd' : 'ssd' },
+          disks: [{ name: 'vda (OS)', sizeGb: 50, usedGb: 18, type: 'SSD', mount: '/' }]
+        });
       }
-    ];
 
-    for (let i = 1; i <= workerCount; i++) {
-      nodes.push({
-        name: `w${i}`,
-        ip: `10.10.10.${20 + (i - 1) * 10}`,
-        role: 'worker',
-        status: 'Ready',
-        unschedulable: false,
-        cpuTotalM: cpuPerNode,
-        ramTotalMi: ramPerNode,
-        taints: [],
-        labels: { 'kubernetes.io/hostname': `w${i}`, 'disktype': i === 1 ? 'hdd' : 'ssd' },
-        disks: [{ name: 'vda (OS)', sizeGb: 50, usedGb: 18, type: 'SSD', mount: '/' }]
-      });
-    }
+      const net = createDefaultNetwork();
+      net.ingress.rules = []; // 백지 상태: 라우팅 규칙 없음
+      net.loadBalancer.targetPool = [];
 
-    const newLab = {
-      id,
-      title,
-      description: desc,
-      creator: creatorName,
-      creatorId: user?.id || 'anon',
-      createdAt: new Date().toISOString().slice(0, 10),
-      updatedAt: new Date().toISOString(),
-      editable,
-      trafficRps: 120,
-      network: createDefaultNetwork(),
-      nodes,
-      pods: [
-        {
-          name: 'web-pod-default',
-          namespace: 'default',
-          node: nodes[1].name,
-          status: 'Running',
-          ip: '172.20.1.2',
-          image: 'nginx:alpine',
-          cpuReqM: 100,
-          ramReqMi: 128,
-          labels: { app: 'web' },
-          restarts: 0,
-          age: '1m'
+      newLab = {
+        id,
+        title,
+        description: desc,
+        creator: creatorName,
+        creatorId: user?.id || 'anon',
+        createdAt: new Date().toISOString().slice(0, 10),
+        updatedAt: new Date().toISOString(),
+        editable,
+        template: 'blank',
+        trafficRps: 0,
+        network: net,
+        nodes,
+        pods: [], // 파드 0개
+        deployments: [], // 디플로이먼트 0개
+        services: [], // 가상 서비스 0개
+        activityLogs: [
+          {
+            time: timeStr,
+            user: creatorName,
+            action: `🌱 [처음부터 생성] 순수 백지 상태의 신규 클러스터('${title}') 생성 완료. 파드 및 서비스를 처음부터 직접 구축하세요.`
+          }
+        ]
+      };
+    } else {
+      // [템플릿부터 시작]: 선택한 템플릿 복제 및 커스터마이징
+      let baseTemplate;
+      if (templateType === 'scheduling') {
+        baseTemplate = DEFAULT_LABS[1];
+      } else if (templateType === 'hpa') {
+        baseTemplate = DEFAULT_LABS[2];
+      } else if (templateType === 'multinode') {
+        baseTemplate = JSON.parse(JSON.stringify(DEFAULT_LABS[0]));
+        if (baseTemplate.nodes.length < 3) {
+          baseTemplate.nodes.push({
+            name: 'w2',
+            ip: '10.10.10.30',
+            role: 'worker',
+            status: 'Ready',
+            unschedulable: false,
+            cpuTotalM: cpuPerNode,
+            ramTotalMi: ramPerNode,
+            taints: [],
+            labels: { 'kubernetes.io/hostname': 'w2', 'disktype': 'ssd' },
+            disks: [{ name: 'vda (OS)', sizeGb: 50, usedGb: 14, type: 'SSD', mount: '/' }]
+          });
         }
-      ],
-      deployments: [],
-      services: [
+      } else {
+        // 'standard' (기본 상용 인프라 템플릿)
+        baseTemplate = DEFAULT_LABS[0];
+      }
+
+      newLab = JSON.parse(JSON.stringify(baseTemplate));
+      newLab.id = id;
+      newLab.title = title || baseTemplate.title;
+      newLab.description = desc || baseTemplate.description;
+      newLab.creator = creatorName;
+      newLab.creatorId = user?.id || 'anon';
+      newLab.createdAt = new Date().toISOString().slice(0, 10);
+      newLab.updatedAt = new Date().toISOString();
+      newLab.editable = editable;
+      newLab.template = templateType;
+      newLab.activityLogs = [
         {
-          name: 'web-svc',
-          type: 'NodePort',
-          clusterIp: '10.96.150.80',
-          nodePort: 30080,
-          port: 80,
-          targetPort: 80,
-          selector: { app: 'web' }
-        }
-      ],
-      activityLogs: [
-        {
-          time: new Date().toTimeString().slice(0, 8),
+          time: timeStr,
           user: creatorName,
-          action: `새 실습 랩 '${title}' 생성 완료 (수정 권한: ${editable ? 'ON' : 'OFF'})`
+          action: `📦 [템플릿 생성] '${baseTemplate.title}' 템플릿 기반 실습 랩 생성 완료`
         }
-      ]
-    };
+      ];
+    }
 
     await saveLabDetail(env, newLab);
     return new Response(JSON.stringify({ ok: true, lab: newLab }), { headers: jsonHeaders, status: 201 });
@@ -3656,20 +3707,63 @@ export async function handleSimulatorApi(request, path, env, user) {
       return new Response(JSON.stringify({ ok: true, trafficRps: lab.trafficRps }), { headers: jsonHeaders });
     }
 
-    // 11. POST /api/simulator/labs/:id/reset : 랩 초기화
+    // 11. POST /api/simulator/labs/:id/reset : 랩 초기화 (기본 복원 또는 클러스터 워크로드 완전 비우기)
     if (action === 'reset' && method === 'POST') {
+      let body = {};
+      try { body = await request.json(); } catch {}
+      const mode = body.mode || 'default'; // 'default' | 'wipe'
+
+      if (mode === 'wipe') {
+        // 클러스터 인프라(노드)는 유지하고 파드, 디플로이먼트, 서비스, 인그레스 라우팅만 완전히 비워 순수 백지로 만듦
+        lab.pods = [];
+        lab.deployments = [];
+        lab.services = [];
+        if (lab.network?.ingress) lab.network.ingress.rules = [];
+        if (lab.network?.loadBalancer) lab.network.loadBalancer.targetPool = [];
+        lab.trafficRps = 0;
+        // 노드 상태 정상화
+        for (const n of (lab.nodes || [])) {
+          n.unschedulable = false;
+          n.status = 'Ready';
+          n.taints = [];
+          if (n.disks && n.disks[0]) n.disks[0].usedGb = 18;
+        }
+        lab.activityLogs.unshift({
+          time: timeStr,
+          user: userName,
+          action: '🧹 [클러스터 비우기] 모든 파드, 디플로이먼트, 서비스, 라우팅을 삭제하고 순수 백지 상태로 전환했습니다.'
+        });
+        await saveLabDetail(env, lab);
+        return new Response(JSON.stringify({ ok: true, lab }), { headers: jsonHeaders });
+      }
+
+      // mode === 'default'
       const seed = DEFAULT_LABS.find((s) => s.id === labId);
       if (seed) {
         const fresh = JSON.parse(JSON.stringify(seed));
         fresh.activityLogs.unshift({
           time: timeStr,
           user: userName,
-          action: '클러스터 및 인프라를 기본 상태로 초기화했습니다.'
+          action: '🔄 클러스터 및 인프라를 템플릿 기본 상태로 초기화했습니다.'
         });
         await saveLabDetail(env, fresh);
         return new Response(JSON.stringify({ ok: true, lab: fresh }), { headers: jsonHeaders });
       }
-      return new Response(JSON.stringify({ ok: false, error: 'Custom lab reset not supported' }), { headers: jsonHeaders });
+
+      // 비-시드 랩인 경우: 워크로드 비우기 수행
+      lab.pods = [];
+      lab.deployments = [];
+      lab.services = [];
+      if (lab.network?.ingress) lab.network.ingress.rules = [];
+      if (lab.network?.loadBalancer) lab.network.loadBalancer.targetPool = [];
+      lab.trafficRps = 0;
+      lab.activityLogs.unshift({
+        time: timeStr,
+        user: userName,
+        action: '🔄 클러스터 워크로드를 초기 백지 상태로 초기화했습니다.'
+      });
+      await saveLabDetail(env, lab);
+      return new Response(JSON.stringify({ ok: true, lab }), { headers: jsonHeaders });
     }
 
     // 12. POST /api/simulator/labs/:id/ai : AI 모델 기반 인프라 운영 팁 & 트러블슈팅 가이드
@@ -3692,14 +3786,14 @@ export async function handleSimulatorApi(request, path, env, user) {
       }), { headers: jsonHeaders });
     }
 
-    // 13. DELETE /api/simulator/labs/:id : 랩 삭제
+    // 13. DELETE /api/simulator/labs/:id : 랩 삭제 (시드 랩 및 생성 랩 모두 삭제 가능)
     if (!action && method === 'DELETE') {
-      if (['default', 'scheduling-lab', 'hpa-traffic-lab'].includes(labId)) {
-        return new Response(JSON.stringify({ ok: false, error: '기본 시드 랩은 삭제할 수 없습니다.' }), { headers: jsonHeaders, status: 400 });
-      }
       if (env && env.ROSTER) {
         await env.ROSTER.delete(`sim:lab:${labId}`);
         let index = await env.ROSTER.get('sim:labs:index', 'json');
+        if (typeof index === 'string') {
+          try { index = JSON.parse(index); } catch {}
+        }
         if (Array.isArray(index)) {
           index = index.filter((i) => i.id !== labId);
           await env.ROSTER.put('sim:labs:index', JSON.stringify(index));
@@ -5908,7 +6002,10 @@ export function renderSimulatorPage(user) {
           <h1>☸️ 쿠버네티스 상용 인프라 협업 가상 랩 콘솔</h1>
           <p>L7 로드밸런서, 도메인 연결, 하이브리드 터널, VM vCPU/RAM/디스크 Hot-Add 및 실제 상용 장애 시나리오를 시뮬레이션하고 제어합니다.</p>
         </div>
-        <button class="btn primary" onclick="openModal('create-modal')">+ 새 클러스터 랩 생성</button>
+        <div style="display:flex; gap:10px; align-items:center;">
+          <button class="btn sm" onclick="restoreDefaultLabs()" style="background:#1e293b; border-color:#334155; color:#94a3b8;" title="삭제된 기본 3대 시나리오 랩을 원본으로 복원합니다">🔄 기본 템플릿 복원</button>
+          <button class="btn primary" onclick="openModal('create-modal')">+ 새 클러스터 랩 생성</button>
+        </div>
       </div>
       <div class="lab-grid" id="lab-list-container"></div>
     </div>
@@ -5938,7 +6035,9 @@ export function renderSimulatorPage(user) {
             <button class="switch-btn active-on" id="perm-toggle-btn" onclick="togglePermission()">🔓 ON</button>
           </div>
 
-          <button class="btn sm warning" onclick="resetActiveLab()">🔄 리셋</button>
+          <button class="btn sm" style="background:#334155; border-color:#475569; color:#f8fafc;" onclick="wipeClusterWorkloads()" title="노드는 유지하고 파드, 디플로이먼트, 서비스, 인그레스 라우팅만 완전 백지로 비웁니다">🧹 클러스터 비우기</button>
+          <button class="btn sm warning" onclick="resetActiveLab()" title="선택한 랩을 기본 템플릿 상태로 복원합니다">🔄 리셋</button>
+          <button class="btn sm danger" onclick="deleteCurrentLab()" style="background:#dc2626; border-color:#ef4444; color:#fff;" title="현재 실습 랩 클러스터를 완전히 삭제합니다">🗑️ 랩 삭제</button>
         </div>
       </div>
 
@@ -6262,13 +6361,42 @@ export function renderSimulatorPage(user) {
 
   <!-- 모달 1: 신규 랩 생성 -->
   <div class="modal-overlay" id="create-modal">
-    <div class="modal">
+    <div class="modal" style="max-width:540px;">
       <h2>➕ 신규 실습 랩 클러스터 생성</h2>
-      <p class="desc">가상 노드 수와 자원 할당량을 지정하여 새로운 실습 환경을 생성합니다.</p>
+      <p class="desc">처음부터 직접 구축하는 순수 백지 상태 또는 사전 구성된 템플릿 중 선택하여 시작합니다.</p>
       <form onsubmit="handleCreateLab(event)">
+        <!-- 시작 방식 선택 (라디오) -->
+        <div class="form-group" style="background:#0f172a; padding:12px 14px; border-radius:8px; border:1px solid #1e293b; margin-bottom:14px;">
+          <label style="font-weight:700; color:#38bdf8; display:block; margin-bottom:8px;">🚀 클러스터 시작 방식</label>
+          <div style="display:flex; gap:16px;">
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:13px; color:#f1f5f9;">
+              <input type="radio" name="startMode" id="mode-blank" value="blank" checked onchange="toggleStartMode('blank')">
+              <span>🌱 <strong>처음부터 생성 (Clean Slate)</strong></span>
+            </label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:13px; color:#f1f5f9;">
+              <input type="radio" name="startMode" id="mode-template" value="template" onchange="toggleStartMode('template')">
+              <span>📦 <strong>템플릿부터 시작 (Preset)</strong></span>
+            </label>
+          </div>
+          <div id="mode-desc-text" style="font-size:11px; color:#94a3b8; margin-top:8px; line-height:1.4;">
+            🌱 노드(VM)만 프로비저닝된 순수 백지 클러스터입니다. 파드, 디플로이먼트, 서비스, Ingress 라우팅을 0부터 직접 구축하고 실습할 수 있습니다.
+          </div>
+        </div>
+
+        <!-- 템플릿 선택 드롭다운 (템플릿 모드일 때만 표시) -->
+        <div class="form-group" id="template-select-group" style="display:none;">
+          <label>실습 템플릿 프리셋 선택</label>
+          <select class="form-control" id="form-template-type" onchange="applyTemplatePreset(this.value)">
+            <option value="standard">🏛️ KT Cloud 3-Tier 상용 웹 인프라 (Nginx + API + Redis + L7 ALB)</option>
+            <option value="scheduling">☸️ 파드 스케줄링 & Taint/Toleration 트러블슈팅 실습 랩</option>
+            <option value="hpa">⚡ HPA 오토스케일링 & 트래픽 부하분산 실습 랩</option>
+            <option value="multinode">🌐 다중 워커 노드 고가용성 클러스터 (Master1 + W1 + W2)</option>
+          </select>
+        </div>
+
         <div class="form-group">
           <label>실습 랩 제목</label>
-          <input type="text" class="form-control" id="form-title" placeholder="예: 3조 상용 인프라 및 LB 페일오버 실습" required />
+          <input type="text" class="form-control" id="form-title" placeholder="예: 새 백지 실습 클러스터" required />
         </div>
         <div class="form-group">
           <label>실습 설명</label>
@@ -6278,7 +6406,8 @@ export function renderSimulatorPage(user) {
           <div class="form-group">
             <label>워커 노드 수</label>
             <select class="form-control" id="form-workers">
-              <option value="1">1 Worker (Master1 + W1)</option>
+              <option value="0">0 Worker (Master1 단독 단일노드)</option>
+              <option value="1" selected>1 Worker (Master1 + W1)</option>
               <option value="2">2 Workers (Master1 + W1 + W2)</option>
               <option value="3">3 Workers (Master1 + W1 + W2 + W3)</option>
             </select>
@@ -6296,7 +6425,7 @@ export function renderSimulatorPage(user) {
         </div>
         <div class="modal-actions">
           <button type="button" class="btn sm" onclick="closeModal('create-modal')">취소</button>
-          <button type="submit" class="btn sm primary">저장하고 입장</button>
+          <button type="submit" class="btn sm primary">🚀 클러스터 생성하고 입장</button>
         </div>
       </form>
     </div>
@@ -6607,7 +6736,10 @@ export function renderSimulatorPage(user) {
               <span>📦 파드 \${lab.podCount}개</span>
               <span>⚡ \${lab.trafficRps || 0} req/s</span>
             </div>
-            <button class="btn primary sm" style="width:100%; justify-content:center;" onclick="openLab('\${lab.id}')">실습 랩 입장하기 ➔</button>
+            <div style="display:flex; gap:8px; margin-top:10px;">
+              <button class="btn primary sm" style="flex:1; justify-content:center;" onclick="openLab('\${lab.id}')">실습 랩 입장하기 ➔</button>
+              <button class="btn sm" style="background:#450a0a; border-color:#991b1b; color:#fca5a5; padding:6px 10px;" onclick="deleteLab('\${lab.id}', '\${escapeHtml(lab.title)}')" title="실습 랩 삭제">🗑️</button>
+            </div>
           </div>
         </div>
       \`).join('');
@@ -7907,20 +8039,137 @@ export function renderSimulatorPage(user) {
     }
 
     async function resetActiveLab() {
-      if (!currentLab || !confirm('클러스터를 초기 상태로 리셋하시겠습니까?')) return;
+      if (!currentLab || !confirm('클러스터를 초기 템플릿 상태로 리셋하시겠습니까?')) return;
       try {
-        const res = await fetch(\`/api/simulator/labs/\${currentLab.id}/reset\`, { method: 'POST' });
+        const res = await fetch(\`/api/simulator/labs/\${currentLab.id}/reset\`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ mode: 'default' })
+        });
         const data = await res.json();
         if (data.ok) {
           currentLab = data.lab;
           renderAll(currentLab);
-          appendTermLog('\\n<span style="color:#f59e0b;font-weight:700;">🔄 클러스터가 성공적으로 초기화되었습니다.</span>\\n');
+          appendTermLog('\\n<span style="color:#f59e0b;font-weight:700;">🔄 클러스터가 성공적으로 기본 상태로 초기화되었습니다.</span>\\n');
         }
       } catch (err) { alert('리셋 오류: ' + err.message); }
     }
 
+    async function wipeClusterWorkloads() {
+      if (!currentLab) return;
+      if (!confirm('클러스터의 가상 노드(VM)는 유지한 채 모든 파드, 디플로이먼트, 서비스 및 Ingress 도메인 라우팅을 완전 백지 상태로 비우시겠습니까?')) return;
+      try {
+        const res = await fetch(\`/api/simulator/labs/\${currentLab.id}/reset\`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ mode: 'wipe' })
+        });
+        const data = await res.json();
+        if (data.ok) {
+          currentLab = data.lab;
+          renderAll(currentLab);
+          appendTermLog('\\n<span style="color:#f59e0b;font-weight:700;">🧹 [Clean Slate] 클러스터 내 모든 파드, 서비스, 도메인 라우팅이 비워졌습니다. 처음부터 자유롭게 구축하세요.</span>\\n');
+          alert('클러스터의 모든 워크로드가 성공적으로 비워졌습니다.');
+        } else {
+          alert('비우기 실패: ' + (data.error || '오류 발생'));
+        }
+      } catch (err) { alert('통신 오류: ' + err.message); }
+    }
+
+    async function deleteLab(labId, labTitle) {
+      if (!confirm(\`정말로 실습 랩 '\${labTitle}'을(를) 완전히 삭제하시겠습니까?\\n(삭제 후 필요 시 '기본 템플릿 복원' 버튼으로 복원할 수 있습니다)\`)) return;
+      try {
+        const res = await fetch(\`/api/simulator/labs/\${labId}\`, { method: 'DELETE' });
+        const data = await res.json();
+        if (data.ok) {
+          alert(\`'\${labTitle}' 실습 랩이 삭제되었습니다.\`);
+          await loadLabs();
+        } else {
+          alert('삭제 실패: ' + (data.error || '오류 발생'));
+        }
+      } catch (err) { alert('삭제 통신 오류: ' + err.message); }
+    }
+
+    async function deleteCurrentLab() {
+      if (!currentLab) return;
+      if (!confirm(\`현재 열려있는 실습 랩 '\${currentLab.title}'을(를) 완전히 삭제하고 목록으로 돌아가시겠습니까?\`)) return;
+      try {
+        const res = await fetch(\`/api/simulator/labs/\${currentLab.id}\`, { method: 'DELETE' });
+        const data = await res.json();
+        if (data.ok) {
+          alert(\`'\${currentLab.title}' 실습 랩이 성공적으로 삭제되었습니다.\`);
+          showListView();
+          await loadLabs();
+        } else {
+          alert('삭제 실패: ' + (data.error || '오류 발생'));
+        }
+      } catch (err) { alert('삭제 통신 오류: ' + err.message); }
+    }
+
+    async function restoreDefaultLabs() {
+      if (!confirm('기본 실습 랩 3종(상용 웹 인프라, 스케줄링 트러블슈팅, HPA 부하분산)을 원본 상태로 복원하시겠습니까?')) return;
+      try {
+        const res = await fetch('/api/simulator/labs/restore-defaults', { method: 'POST' });
+        const data = await res.json();
+        if (data.ok) {
+          alert('기본 실습 랩 3종이 성공적으로 복원되었습니다.');
+          await loadLabs();
+        } else {
+          alert('복원 실패: ' + (data.error || '오류 발생'));
+        }
+      } catch (err) { alert('복원 통신 오류: ' + err.message); }
+    }
+
+    function toggleStartMode(mode) {
+      const templateGroup = document.getElementById('template-select-group');
+      const descText = document.getElementById('mode-desc-text');
+      const titleInput = document.getElementById('form-title');
+      const descInput = document.getElementById('form-desc');
+      
+      if (mode === 'template') {
+        if (templateGroup) templateGroup.style.display = 'block';
+        if (descText) descText.innerHTML = '📦 사전 구성된 파드, 서비스 및 라우팅 시나리오가 탑재된 완성형 템플릿 클러스터로 시작합니다.';
+        const tVal = document.getElementById('form-template-type')?.value || 'standard';
+        applyTemplatePreset(tVal);
+      } else {
+        if (templateGroup) templateGroup.style.display = 'none';
+        if (descText) descText.innerHTML = '🌱 노드(VM)만 프로비저닝된 순수 백지 클러스터입니다. 파드, 디플로이먼트, 서비스, Ingress 라우팅을 0부터 직접 구축하고 실습할 수 있습니다.';
+        if (titleInput && (!titleInput.value || titleInput.value.includes('템플릿') || titleInput.value.includes('3조') || titleInput.value.includes('KT Cloud') || titleInput.value.includes('스케줄링') || titleInput.value.includes('HPA'))) {
+          titleInput.value = '새 백지 실습 클러스터';
+        }
+        if (descInput && (!descInput.value || descInput.value.includes('환경') || descInput.value.includes('인프라'))) {
+          descInput.value = '처음부터 직접 구축하는 순수 가상 클러스터';
+        }
+      }
+    }
+
+    function applyTemplatePreset(type) {
+      const titleInput = document.getElementById('form-title');
+      const descInput = document.getElementById('form-desc');
+      const workerSelect = document.getElementById('form-workers');
+      if (type === 'scheduling') {
+        if (titleInput) titleInput.value = '파드 스케줄링 & Taint 트러블슈팅 실습';
+        if (descInput) descInput.value = '노드 레이블, Taint/Toleration 및 Pending 파드 진단 환경';
+        if (workerSelect) workerSelect.value = '2';
+      } else if (type === 'hpa') {
+        if (titleInput) titleInput.value = 'HPA 오토스케일링 & 트래픽 부하분산 실습';
+        if (descInput) descInput.value = '트래픽 급증 및 파드 수평 확장 시뮬레이션 환경';
+        if (workerSelect) workerSelect.value = '2';
+      } else if (type === 'multinode') {
+        if (titleInput) titleInput.value = '다중 워커 노드 고가용성 클러스터';
+        if (descInput) descInput.value = 'Master1 + W1 + W2 3노드 고가용성 인프라 환경';
+        if (workerSelect) workerSelect.value = '2';
+      } else {
+        if (titleInput) titleInput.value = 'KT Cloud 3-Tier 상용 웹 인프라';
+        if (descInput) descInput.value = 'L7 로드밸런서, Ingress, Pod, Hybrid 터널 완비 환경';
+        if (workerSelect) workerSelect.value = '1';
+      }
+    }
+
     async function handleCreateLab(e) {
       e.preventDefault();
+      const startMode = document.querySelector('input[name="startMode"]:checked')?.value || 'blank';
+      const templateType = document.getElementById('form-template-type')?.value || 'standard';
       const title = document.getElementById('form-title').value.trim();
       const desc = document.getElementById('form-desc').value.trim();
       const workerCount = document.getElementById('form-workers').value;
@@ -7931,12 +8180,22 @@ export function renderSimulatorPage(user) {
         const res = await fetch('/api/simulator/labs', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ title, description: desc, workerCount, cpuPerNode: cpu, editable })
+          body: JSON.stringify({
+            startMode,
+            templateType,
+            title,
+            description: desc,
+            workerCount,
+            cpuPerNode: cpu,
+            editable
+          })
         });
         const data = await res.json();
         if (data.ok && data.lab) {
           closeModal('create-modal');
           openLab(data.lab.id);
+        } else {
+          alert('생성 실패: ' + (data.error || '오류 발생'));
         }
       } catch (err) { alert('생성 오류: ' + err.message); }
     }
