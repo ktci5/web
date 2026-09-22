@@ -6843,6 +6843,15 @@ export function renderSimulatorPage(user) {
   </div>
 
   <script>
+    function onVBrowserLoaded() {
+      const loader = document.getElementById('vbrowser-loading');
+      if (loader) loader.style.display = 'none';
+      if (typeof window._onVBrowserLoadedImpl === 'function') {
+        window._onVBrowserLoadedImpl();
+      }
+    }
+    window.onVBrowserLoaded = onVBrowserLoaded;
+
     let currentLab = null;
     let labList = [];
     let commandHistory = [];
@@ -6879,6 +6888,8 @@ export function renderSimulatorPage(user) {
       }
     }
     function closeModal(id) { document.getElementById(id).classList.remove('active'); }
+    window.openModal = openModal;
+    window.closeModal = closeModal;
 
     function openAddNodeModal(defaultRole = 'worker') {
       if (!currentLab) return;
@@ -7148,6 +7159,7 @@ export function renderSimulatorPage(user) {
           </div>
         \`;
       }).join('');
+      }
 
       // 2-1) 활성 디플로이먼트 및 서비스 칩 렌더링
       const depContainer = document.getElementById('deployment-chips-list');
@@ -7634,7 +7646,7 @@ export function renderSimulatorPage(user) {
       }
     };
 
-    window.onVBrowserLoaded = function() {
+    window._onVBrowserLoadedImpl = function() {
       const loader = document.getElementById('vbrowser-loading');
       if (loader) loader.style.display = 'none';
 
