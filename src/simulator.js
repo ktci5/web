@@ -2768,17 +2768,13 @@ export async function handleSimulatorApi(request, path, env, user) {
       if (!lab.editable) return new Response(JSON.stringify({ ok: false, error: '수정 권한이 OFF 상태입니다.' }), { headers: jsonHeaders, status: 403 });
       let body = {};
       try { body = await request.json(); } catch {}
-      const existingNums = (lab.nodes || []).map(n => {
-        const m = n.name.match(/^w(\d+)$/);
-        return m ? parseInt(m[1], 10) : 0;
-      });
-      const nextWorkerNum = Math.max(0, ...existingNums) + 1;
+      const existingNames = new Set((lab.nodes || []).map(n => n.name));
+      let nextWorkerNum = 1;
+      while (existingNames.has('w' + nextWorkerNum)) nextWorkerNum++;
 
-      const existingIps = (lab.nodes || []).map(n => {
-        const m = n.ip.match(/^10\.10\.10\.(\d+)$/);
-        return m ? parseInt(m[1], 10) : 0;
-      });
-      const nextIpLast = Math.max(10, ...existingIps) + 10;
+      const existingIps = new Set((lab.nodes || []).map(n => n.ip));
+      let nextIpLast = 20;
+      while (existingIps.has(`10.10.10.${nextIpLast}`)) nextIpLast += 10;
 
       const name = (body.name || `w${nextWorkerNum}`).trim();
       const ip = (body.ip || `10.10.10.${nextIpLast}`).trim();
@@ -2786,8 +2782,11 @@ export async function handleSimulatorApi(request, path, env, user) {
       const ram = parseInt(body.ram || '4096', 10);
       const disktype = body.disktype || 'ssd';
 
-      if (lab.nodes.some((n) => n.name === name)) {
-        return new Response(JSON.stringify({ ok: false, error: `노드 '${name}'이(가) 이미 존재합니다.` }), { headers: jsonHeaders, status: 400 });
+      if (lab.nodes.some((n) => n.name.toLowerCase() === name.toLowerCase())) {
+        return new Response(JSON.stringify({ ok: false, error: `노드 이름 '${name}'이(가) 이미 존재합니다. 고유한 이름을 사용해주세요.` }), { headers: jsonHeaders, status: 400 });
+      }
+      if (lab.nodes.some((n) => n.ip === ip)) {
+        return new Response(JSON.stringify({ ok: false, error: `노드 IP '${ip}'이(가) 이미 사용 중입니다. 고유한 IP를 사용해주세요.` }), { headers: jsonHeaders, status: 400 });
       }
 
       const newNode = {
@@ -2891,12 +2890,32 @@ export async function handleSimulatorApi(request, path, env, user) {
     }
 
     // 6-2. POST /api/simulator/labs/:id/workloads : GUI 파드 / 디플로이먼트 배포 (초/분/시간 단위 수명 & 랜덤 활동 설정)
+    // 6-2. POST /api/simulator/labs/:id/workloads : GUI 파드 / 디플로이먼트 배포 (초/분/시간 단위 수명 & 랜덤 활동 설정)
     if (action === 'workloads' && method === 'POST') {
       if (!lab.editable) return new Response(JSON.stringify({ ok: false, error: '수정 권한이 OFF 상태입니다.' }), { headers: jsonHeaders, status: 403 });
       let body = {};
       try { body = await request.json(); } catch {}
 
-      const name = (body.name || `app-${Date.now().toString(36).slice(-4)}`).trim().toLowerCase().replace(/[^a-z0-9-]/g, '-');
+      if (!lab.pods) lab.pods = [];
+      if (!lab.deployments) lab.deployments = [];
+      if (!lab.services) lab.services = [];
+
+      let rawName = (body.name || '').trim().toLowerCase().replace(/[^a-z0-9-]/g, '-');
+      let name = rawName;
+      if (!name) {
+        let appIdx = 1;
+        name = `app-${appIdx}`;
+        const existingDepNames = new Set(lab.deployments.map(d => d.name.toLowerCase()));
+        while (existingDepNames.has(name)) {
+          appIdx++;
+          name = `app-${appIdx}`;
+        }
+      } else {
+        if (lab.deployments.some(d => d.name.toLowerCase() === name)) {
+          return new Response(JSON.stringify({ ok: false, error: `디플로이먼트 이름 '${name}'이(가) 이미 존재합니다. 고유한 이름을 사용해주세요.` }), { headers: jsonHeaders, status: 400 });
+        }
+      }
+
       const image = body.image || 'nginx:1.25';
       const replicas = Math.min(Math.max(1, parseInt(body.replicas || '1', 10)), 12);
       const cpuReqM = parseInt(body.cpuReqM || '100', 10);
@@ -2914,10 +2933,6 @@ export async function handleSimulatorApi(request, path, env, user) {
 
       const expiresAt = lifeSeconds > 0 ? Date.now() + (lifeSeconds * 1000) : null;
       const isRandomBurst = Boolean(body.randomBurst || durationUnit === 'random');
-
-      if (!lab.pods) lab.pods = [];
-      if (!lab.deployments) lab.deployments = [];
-      if (!lab.services) lab.services = [];
 
       lab.deployments.push({
         name,
@@ -2957,10 +2972,44 @@ export async function handleSimulatorApi(request, path, env, user) {
       }
 
       if (exposeNodePort) {
-        const nextPort = 30000 + Math.floor(Math.random() * 2000);
-        const randIp = `10.96.${Math.floor(Math.random() * 200) + 10}.${Math.floor(Math.random() * 200) + 10}`;
+        const usedPorts = new Set();
+        (lab.services || []).forEach(s => {
+          if (s.nodePort) usedPorts.add(parseInt(s.nodePort, 10));
+          if (s.port) usedPorts.add(parseInt(s.port, 10));
+        });
+        (lab.network?.ingress?.rules || []).forEach(r => {
+          if (r.port) usedPorts.add(parseInt(r.port, 10));
+        });
+        let nextPort = 30080;
+        while (usedPorts.has(nextPort) && nextPort <= 32767) {
+          nextPort++;
+        }
+        if (nextPort > 32767) {
+          for (let p = 30000; p <= 32767; p++) {
+            if (!usedPorts.has(p)) {
+              nextPort = p;
+              break;
+            }
+          }
+        }
+
+        let svcName = `${name}-svc`;
+        const existingSvcNames = new Set((lab.services || []).map(s => s.name.toLowerCase()));
+        let svcIdx = 1;
+        while (existingSvcNames.has(svcName.toLowerCase())) {
+          svcName = `${name}-svc-${svcIdx++}`;
+        }
+
+        const existingClusterIps = new Set((lab.services || []).map(s => s.clusterIp));
+        let randIp;
+        let attempt = 0;
+        do {
+          randIp = `10.96.${Math.floor(Math.random() * 200) + 10}.${Math.floor(Math.random() * 200) + 10}`;
+          attempt++;
+        } while (existingClusterIps.has(randIp) && attempt < 100);
+
         lab.services.push({
-          name: `${name}-svc`,
+          name: svcName,
           type: 'NodePort',
           clusterIp: randIp,
           nodePort: nextPort,
@@ -3476,6 +3525,118 @@ export async function renderVirtualDomainResponse(request, env, options = {}) {
     return render502BadGatewayResponse({ host: reqHost, port: reqPort, path: reqPath, net, lab });
   }
 
+  // 1-1. VM 노드 매칭 검사 (master1, w1, w2... 또는 master1.ktci5.kr, 10.10.10.X)
+  const matchedVmNode = (lab.nodes || []).find(n => {
+    const nodeLower = n.name.toLowerCase();
+    const hostLower = reqHost.toLowerCase();
+    return hostLower === nodeLower ||
+           hostLower === `${nodeLower}.ktci5.kr` ||
+           hostLower === n.ip;
+  });
+
+  if (matchedVmNode) {
+    // 1-1-A. VM 노드 상의 NodePort 서비스 접근 (30000-32767 포트 또는 s.nodePort 일치)
+    const matchedNodePortSvc = (lab.services || []).find(s => s.type === 'NodePort' && parseInt(s.nodePort, 10) === reqPort);
+    if (matchedNodePortSvc) {
+      const svcSelectorApp = matchedNodePortSvc.selector?.app;
+      const allRunningPods = (lab.pods || []).filter(p => p.status === 'Running');
+      let candidatePods = [];
+      if (svcSelectorApp) {
+        candidatePods = allRunningPods.filter(p => p.labels?.app === svcSelectorApp);
+      }
+      if (candidatePods.length === 0) {
+        const svcPrefix = matchedNodePortSvc.name.replace(/-svc.*$/, '');
+        candidatePods = allRunningPods.filter(p => p.name.includes(svcPrefix) || p.labels?.app === svcPrefix);
+      }
+
+      // 로컬 노드 파드 우선 라우팅 (K8s kube-proxy Local routing)
+      const localPods = candidatePods.filter(p => p.node === matchedVmNode.name);
+      const poolToUse = localPods.length > 0 ? localPods : candidatePods;
+
+      if (poolToUse.length === 0) {
+        if (isAjax || wantsJson) {
+          return new Response(JSON.stringify({
+            ok: false,
+            status: 503,
+            error: `Service Unavailable (NodePort :${reqPort} on ${matchedVmNode.name} has no running pods)`,
+            node: matchedVmNode.name,
+            service: matchedNodePortSvc.name,
+            nodePort: reqPort
+          }), { status: 503, headers: { 'content-type': 'application/json; charset=UTF-8' } });
+        }
+        return render503ServiceUnavailableResponse({
+          host: reqHost,
+          port: reqPort,
+          path: reqPath,
+          targetService: matchedNodePortSvc.name,
+          targetPort: matchedNodePortSvc.port || 80,
+          candidatePods: [],
+          unhealthyNodes: [],
+          targetPool: net.loadBalancer?.targetPool || [],
+          net,
+          lab,
+          isNodePort: true,
+          nodeName: matchedVmNode.name
+        });
+      }
+
+      const chosenPod = poolToUse[Math.floor(Math.random() * poolToUse.length)];
+
+      if (isAjax) {
+        return new Response(JSON.stringify({
+          ok: true,
+          status: 200,
+          type: 'nodeport-proxy',
+          node: matchedVmNode.name,
+          nodeIp: matchedVmNode.ip,
+          nodePort: reqPort,
+          service: matchedNodePortSvc.name,
+          pod: chosenPod.name,
+          podIp: chosenPod.ip,
+          podNode: chosenPod.node,
+          latencyMs: (0.8 + Math.random() * 1.2).toFixed(1),
+          timestamp: new Date().toLocaleTimeString('ko-KR')
+        }), { status: 200, headers: { 'content-type': 'application/json; charset=UTF-8' } });
+      }
+
+      return renderNodePortServicePage({
+        node: matchedVmNode,
+        service: matchedNodePortSvc,
+        nodePort: reqPort,
+        chosenPod,
+        path: reqPath,
+        lab,
+        net
+      });
+    }
+
+    // 1-1-B. VM 노드 웹 콘솔 직접 접속 (포트 80, 443, 6443 또는 기본 접속)
+    if (isAjax || wantsJson) {
+      const hostedPods = (lab.pods || []).filter(p => p.node === matchedVmNode.name);
+      return new Response(JSON.stringify({
+        ok: true,
+        type: 'vm-node-console',
+        node: matchedVmNode.name,
+        ip: matchedVmNode.ip,
+        role: matchedVmNode.role,
+        status: matchedVmNode.status,
+        cpuTotalM: matchedVmNode.cpuTotalM,
+        ramTotalMi: matchedVmNode.ramTotalMi,
+        disks: matchedVmNode.disks || [],
+        hostedPods: hostedPods.map(p => ({ name: p.name, ip: p.ip, status: p.status, cpuReqM: p.cpuReqM })),
+        nodePortServices: (lab.services || []).filter(s => s.type === 'NodePort')
+      }), { status: 200, headers: { 'content-type': 'application/json; charset=UTF-8' } });
+    }
+
+    return renderVmNodeWebPage({
+      node: matchedVmNode,
+      port: reqPort,
+      path: reqPath,
+      lab,
+      net
+    });
+  }
+
   // [예외 2] Ingress 도메인 및 포트 라우팅 유효성 검사
   const registeredRules = net.ingress?.rules || [];
   let matchedRule = registeredRules.find(r => r.host === reqHost && (r.port || 80) === reqPort && (r.path === reqPath || (r.path !== '/' && reqPath.startsWith(r.path))))
@@ -3598,24 +3759,387 @@ export async function renderVirtualDomainResponse(request, env, options = {}) {
 // 페이지별 HTML 렌더러 (200 OK & 예외 페이지)
 // ============================================================================
 
-function commonVirtualNav(currentHost, currentPort, currentPath) {
+function commonVirtualNav(currentHost, currentPort, currentPath, lab) {
+  const labId = lab?.id || 'lab-default';
+  const nodes = lab?.nodes || [];
+  const vmNodesLinks = nodes.map(n => {
+    const isCur = currentHost === n.name || currentHost === `${n.name}.ktci5.kr` || currentHost === n.ip;
+    return `<a href="/vhost/${n.name}.ktci5.kr/?labId=${encodeURIComponent(labId)}" class="v-link ${isCur ? 'active' : ''}">🖥️ ${n.name}</a>`;
+  }).join('');
+
   return `
     <header class="v-nav">
       <div class="v-nav-brand">
         <span class="v-nav-logo">☁️</span>
         <div>
           <span class="v-nav-title">KT Cloud 5기 K8s 클라우드 인프라</span>
-          <span class="v-nav-sub">L7 Ingress Virtual Application</span>
+          <span class="v-nav-sub">L7 Ingress &amp; VM Node Web Console</span>
         </div>
       </div>
       <div class="v-nav-links">
-        <a href="/vhost/app.ktci5.kr/" class="v-link ${currentHost === 'app.ktci5.kr' ? 'active' : ''}">🏢 app.ktci5.kr:80</a>
-        <a href="/vhost/api.ktci5.kr/api" class="v-link ${currentHost === 'api.ktci5.kr' ? 'active' : ''}">⚡ api.ktci5.kr:80/api</a>
-        <a href="/vhost/dev.ktci5.kr/" class="v-link ${currentHost === 'dev.ktci5.kr' ? 'active' : ''}">🧪 dev.ktci5.kr:443</a>
-        <a href="/study/simulator" target="_blank" class="v-btn-console">🖥️ 가상 랩 콘솔</a>
+        <a href="/vhost/app.ktci5.kr/?labId=${encodeURIComponent(labId)}" class="v-link ${currentHost === 'app.ktci5.kr' ? 'active' : ''}">🏢 app:80</a>
+        <a href="/vhost/api.ktci5.kr/api?labId=${encodeURIComponent(labId)}" class="v-link ${currentHost === 'api.ktci5.kr' ? 'active' : ''}">⚡ api:80</a>
+        <a href="/vhost/dev.ktci5.kr/?labId=${encodeURIComponent(labId)}" class="v-link ${currentHost === 'dev.ktci5.kr' ? 'active' : ''}">🧪 dev:443</a>
+        ${vmNodesLinks}
+        <a href="/study/simulator?lab=${encodeURIComponent(labId)}" target="_blank" class="v-btn-console">🖥️ 가상 랩 콘솔</a>
       </div>
     </header>
   `;
+}
+
+// 0-A. VM 노드 대시보드 웹 콘솔 (VM Node Web Console)
+function renderVmNodeWebPage({ node, port, path, lab, net }) {
+  const labId = lab?.id || 'lab-default';
+  const isMaster = node.role === 'control-plane';
+  const hostedPods = (lab.pods || []).filter(p => p.node === node.name);
+  const nodePortSvcs = (lab.services || []).filter(s => s.type === 'NodePort');
+  const osDisk = node.disks?.[0];
+  const isDiskPressure = osDisk && (osDisk.usedGb / osDisk.sizeGb) > 0.90;
+
+  const disksHtml = (node.disks || []).map(d => {
+    const pct = Math.round((d.usedGb / d.sizeGb) * 100);
+    const color = pct > 85 ? '#ef4444' : pct > 65 ? '#f59e0b' : '#10b981';
+    return `
+      <div style="background:#0b0f19; border:1px solid #1f293d; border-radius:8px; padding:12px;">
+        <div style="display:flex; justify-content:space-between; margin-bottom:6px; font-size:12px;">
+          <span style="font-weight:700; color:#f8fafc;">💽 ${d.name} (${d.type || 'SSD'})</span>
+          <span style="color:#94a3b8;">마운트: <b style="color:#38bdf8;">${d.mount}</b></span>
+        </div>
+        <div style="display:flex; justify-content:space-between; font-size:11px; color:#64748b; margin-bottom:4px;">
+          <span>사용량: ${d.usedGb} GB / ${d.sizeGb} GB</span>
+          <span>${pct}%</span>
+        </div>
+        <div style="height:6px; background:#1e293b; border-radius:999px; overflow:hidden;">
+          <div style="width:${pct}%; height:100%; background:${color};"></div>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  const podsHtml = hostedPods.length === 0
+    ? `<tr><td colspan="6" style="text-align:center; padding:24px; color:#64748b;">현재 이 VM 노드에 스케줄된 파드가 없습니다. 워크로드 탭에서 파드를 배포해보세요.</td></tr>`
+    : hostedPods.map(p => {
+        const isRun = p.status === 'Running';
+        return `
+          <tr>
+            <td style="font-family:monospace; color:#38bdf8; font-weight:700;">${p.name}</td>
+            <td><span class="badge blue">${p.namespace || 'default'}</span></td>
+            <td><span class="badge ${isRun ? 'green' : 'amber'}">● ${p.status}</span></td>
+            <td style="font-family:monospace; color:#a855f7;">${p.ip || 'None'}</td>
+            <td style="font-size:11px; color:#cbd5e1;">${p.cpuReqM}m / ${p.ramReqMi || Math.round(p.cpuReqM * 1.28)}Mi</td>
+            <td style="font-size:11px; color:#94a3b8;">${p.lifeSeconds ? (p.lifeSeconds + 's') : '영구 지속'}</td>
+          </tr>
+        `;
+      }).join('');
+
+  const nodePortHtml = nodePortSvcs.length === 0
+    ? `<div style="padding:16px; text-align:center; color:#64748b; font-size:12px;">현재 등록된 NodePort 서비스가 없습니다.</div>`
+    : nodePortSvcs.map(s => {
+        const portNum = s.nodePort;
+        const targetUrl = `/vhost/${node.name}.ktci5.kr:${portNum}/?labId=${encodeURIComponent(labId)}`;
+        return `
+          <div style="display:flex; justify-content:space-between; align-items:center; background:#0b0f19; border:1px solid #1f293d; border-radius:8px; padding:12px; margin-bottom:8px; flex-wrap:wrap; gap:10px;">
+            <div>
+              <div style="display:flex; align-items:center; gap:8px;">
+                <span style="font-weight:700; color:#f8fafc; font-size:13px;">${s.name}</span>
+                <span class="badge purple">NodePort :${portNum}</span>
+                <span class="badge blue">ClusterIP: ${s.clusterIp}:${s.port}</span>
+              </div>
+              <div style="font-size:11px; color:#64748b; margin-top:3px;">
+                외부 엔드포인트: <span style="font-family:monospace; color:#38bdf8;">http://${node.name}.ktci5.kr:${portNum}/</span>
+              </div>
+            </div>
+            <div style="display:flex; gap:6px;">
+              <button class="btn-action" onclick="testNodePort(${portNum})" id="np-btn-${portNum}" style="padding:4px 10px; font-size:11px;">⚡ 인라인 호출</button>
+              <a href="${targetUrl}" target="_blank" class="btn-action" style="padding:4px 10px; font-size:11px; background:#0284c7; border-color:#0ea5e9; text-decoration:none;">🌐 새 창 열기</a>
+            </div>
+          </div>
+        `;
+      }).join('');
+
+  const otherNodes = (lab.nodes || []).map(n => {
+    const isCur = n.name === node.name;
+    return `<a href="/vhost/${n.name}.ktci5.kr/?labId=${encodeURIComponent(labId)}" class="chip-btn ${isCur ? 'primary' : ''}" style="text-decoration:none; padding:4px 10px; font-size:11.5px;">🖥️ ${n.name} (${n.ip})</a>`;
+  }).join(' ');
+
+  const html = `<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>KT Cloud 5기 - VM 노드 콘솔 [${node.name}.ktci5.kr]</title>
+  <style>
+    ${commonVirtualStyles()}
+    .hero-box {
+      background: linear-gradient(135deg, rgba(30, 41, 59, 0.9) 0%, rgba(15, 23, 42, 0.9) 100%);
+      border: 1px solid #334155; border-radius: 12px; padding: 24px; margin-bottom: 20px;
+    }
+    .node-header {
+      display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 14px;
+    }
+  </style>
+</head>
+<body>
+  ${commonVirtualNav(`${node.name}.ktci5.kr`, port, path, lab)}
+
+  <div class="v-container">
+    <div class="hero-box">
+      <div class="node-header">
+        <div>
+          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:8px;">
+            <span class="badge ${node.status === 'Ready' && !isDiskPressure ? 'green' : 'red'}">
+              ● ${isDiskPressure ? 'DiskPressure' : node.status} (kubelet v1.30.2)
+            </span>
+            <span class="badge blue">${isMaster ? 'CONTROL-PLANE' : 'WORKER NODE'}</span>
+            <span class="badge purple">IP: ${node.ip}</span>
+            <span class="badge amber">클러스터 랩: ${lab.name || lab.id}</span>
+          </div>
+          <h1 style="font-size:24px; font-weight:800; color:#ffffff; font-family:monospace; display:flex; align-items:center; gap:8px;">
+            🖥️ ${node.name}.ktci5.kr
+          </h1>
+          <p style="font-size:13px; color:#94a3b8; margin-top:4px;">
+            KT Cloud 인프라 내 가상 머신(VM) 인스턴스이며, 쿠버네티스 컨테이너 런타임 및 노드포트 서비스 데몬이 동작 중입니다.
+          </p>
+        </div>
+        <div style="display:flex; gap:8px; align-items:center;">
+          <button class="btn-action" onclick="location.reload()" style="padding:6px 12px; font-size:12px;">🔄 새로고침</button>
+          <a href="/study/simulator?lab=${encodeURIComponent(labId)}" target="_blank" class="btn-action" style="padding:6px 12px; font-size:12px; background:#4338ca; border-color:#6366f1; text-decoration:none;">🖥️ 가상 랩 콘솔</a>
+        </div>
+      </div>
+
+      <!-- 타 노드로 빠른 전환 -->
+      <div style="margin-top:16px; padding-top:14px; border-top:1px solid #1e293b; display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+        <span style="font-size:11.5px; color:#64748b; font-weight:600;">클러스터 노드 바로가기:</span>
+        ${otherNodes}
+      </div>
+    </div>
+
+    <!-- 하드웨어 스펙 및 동적 확장 상태 -->
+    <div class="v-card">
+      <div class="v-card-header">
+        <div class="v-card-title">⚙️ 하드웨어 스펙 &amp; 동적 확장 자원 (Hot-Add Live Status)</div>
+        <span style="font-size:11px; color:#64748b;">가상 랩 콘솔에서 스펙 변경 시 실시간 반영</span>
+      </div>
+      <div class="info-grid">
+        <div class="info-box">
+          <div class="info-label">가상 CPU (vCPU)</div>
+          <div class="info-val" style="color:#38bdf8;">${node.cpuTotalM / 1000} Core (${node.cpuTotalM}m)</div>
+        </div>
+        <div class="info-box">
+          <div class="info-label">메모리 (RAM)</div>
+          <div class="info-val" style="color:#10b981;">${(node.ramTotalMi / 1024).toFixed(1)} GiB (${node.ramTotalMi} MiB)</div>
+        </div>
+        <div class="info-box">
+          <div class="info-label">OS 및 커널</div>
+          <div class="info-val" style="color:#a855f7; font-size:12px;">Ubuntu 22.04 LTS (Kernel 5.15)</div>
+        </div>
+        <div class="info-box">
+          <div class="info-label">컨테이너 런타임</div>
+          <div class="info-val" style="color:#fbbf24; font-size:12px;">containerd://1.7.11</div>
+        </div>
+      </div>
+
+      <!-- 디스크 목록 -->
+      <div style="margin-top:14px;">
+        <div style="font-size:12px; font-weight:700; color:#cbd5e1; margin-bottom:8px;">마운트된 가상 디스크 볼륨 (${(node.disks || []).length}개)</div>
+        <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap:10px;">
+          ${disksHtml}
+        </div>
+      </div>
+    </div>
+
+    <!-- 호스팅 파드 목록 -->
+    <div class="v-card">
+      <div class="v-card-header">
+        <div class="v-card-title">📦 현재 노드에 배치된 파드 (${hostedPods.length}개)</div>
+        <span class="badge blue">Kubelet Pod Manager</span>
+      </div>
+      <table class="v-table" style="width:100%; border-collapse:collapse; font-size:12px;">
+        <thead>
+          <tr style="background:#0b0f19; border-bottom:1px solid #1f293d;">
+            <th style="padding:8px 12px; text-align:left; color:#94a3b8; font-size:11px;">파드 이름 (Pod Name)</th>
+            <th style="padding:8px 12px; text-align:left; color:#94a3b8; font-size:11px;">네임스페이스</th>
+            <th style="padding:8px 12px; text-align:left; color:#94a3b8; font-size:11px;">상태 (Status)</th>
+            <th style="padding:8px 12px; text-align:left; color:#94a3b8; font-size:11px;">파드 내부 IP</th>
+            <th style="padding:8px 12px; text-align:left; color:#94a3b8; font-size:11px;">요구 자원 (CPU/RAM)</th>
+            <th style="padding:8px 12px; text-align:left; color:#94a3b8; font-size:11px;">동작 수명</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${podsHtml}
+        </tbody>
+      </table>
+    </div>
+
+    <!-- NodePort 리스너 및 서비스 -->
+    <div class="v-card">
+      <div class="v-card-header">
+        <div class="v-card-title">🔌 활성화된 NodePort 리스너 &amp; 서비스 엔드포인트</div>
+        <span style="font-size:11px; color:#64748b;">포트 범위: 30000-32767</span>
+      </div>
+      <div>
+        ${nodePortHtml}
+      </div>
+      <div id="test-result-box" style="display:none; margin-top:12px; padding:12px; background:#0b0f19; border:1px solid #1f293d; border-radius:6px; font-size:12px; font-family:monospace; color:#38bdf8; line-height:1.6;"></div>
+    </div>
+
+    <!-- 시스템 진단 터미널 -->
+    <div class="v-card">
+      <div class="v-card-header">
+        <div class="v-card-title">💻 노드 진단 터미널 로그 (System Diagnostics)</div>
+        <span style="font-size:11px; color:#10b981;">● Active Systemd Services</span>
+      </div>
+      <pre style="background:#0b0f19; border:1px solid #1f293d; border-radius:6px; padding:14px; font-size:11.5px; line-height:1.6; color:#94a3b8; overflow-x:auto; font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;">
+<span style="color:#38bdf8;">root@${node.name}:~#</span> ip addr show eth0
+2: eth0: &lt;BROADCAST,MULTICAST,UP,LOWER_UP&gt; mtu 1500 qdisc mq state UP group default qlen 1000
+    inet <span style="color:#10b981;">${node.ip}/24</span> brd 10.10.10.255 scope global eth0
+<span style="color:#38bdf8;">root@${node.name}:~#</span> systemctl status kubelet --no-pager
+● kubelet.service - kubelet: The Kubernetes Node Agent
+     Loaded: loaded (/lib/systemd/system/kubelet.service; enabled; vendor preset: enabled)
+     Active: <span style="color:#10b981;">active (running)</span> since Mon 2026-09-22 09:00:00 KST
+     Tasks: 19 (limit: 4915)
+     Memory: 38.4M
+     CGroup: /system.slice/kubelet.service
+<span style="color:#38bdf8;">root@${node.name}:~#</span> ss -tulpn | grep -E 'LISTEN'
+tcp   LISTEN 0      4096       127.0.0.1:10248      0.0.0.0:*    users:(("kubelet",pid=842,fd=12))
+tcp   LISTEN 0      4096         0.0.0.0:10250      0.0.0.0:*    users:(("kubelet",pid=842,fd=14))
+${(nodePortSvcs || []).map(s => `tcp   LISTEN 0      4096         0.0.0.0:${s.nodePort}      0.0.0.0:*    users:(("kube-proxy",pid=910,fd=7))`).join('\n')}
+      </pre>
+    </div>
+  </div>
+
+  <footer class="v-footer">
+    KT Cloud 제5기 클라우드 인프라 &amp; K8s 아키텍처 실습 | VM Hostname: ${node.name}.ktci5.kr (${node.ip})
+  </footer>
+
+  <script>
+    async function testNodePort(port) {
+      const btn = document.getElementById('np-btn-' + port);
+      const resBox = document.getElementById('test-result-box');
+      if (btn) btn.innerText = '호출 중...';
+      try {
+        const start = performance.now();
+        const res = await fetch('/vhost/${node.name}.ktci5.kr:' + port + '/?labId=${encodeURIComponent(labId)}&ajax=1');
+        const data = await res.json();
+        const duration = (performance.now() - start).toFixed(1);
+        if (resBox) {
+          resBox.style.display = 'block';
+          resBox.innerHTML = '➔ [200 OK] NodePort :' + port + ' 응답 성공 (' + duration + 'ms)<br>' +
+            '타겟 파드: <b style="color:#10b981;">' + (data.pod || 'unknown') + '</b> (IP: ' + (data.podIp || '10.244.x.x') + ' / 노드: ' + (data.podNode || '${node.name}') + ')<br>' +
+            '타겟 서비스: ' + (data.service || 'NodePort Service');
+        }
+      } catch (err) {
+        if (resBox) {
+          resBox.style.display = 'block';
+          resBox.innerHTML = '<span style="color:#ef4444;">➔ 호출 실패: ' + err.message + '</span>';
+        }
+      } finally {
+        if (btn) btn.innerText = '⚡ 인라인 호출';
+      }
+    }
+  </script>
+</body>
+</html>`;
+
+  return new Response(html, {
+    status: 200,
+    headers: { 'content-type': 'text/html; charset=UTF-8', 'cache-control': 'no-store' }
+  });
+}
+
+// 0-B. NodePort 프록시 경유 서비스 웹 페이지 (NodePort Proxy Service Page)
+function renderNodePortServicePage({ node, service, nodePort, chosenPod, path, lab, net }) {
+  const labId = lab?.id || 'lab-default';
+  const html = `<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>KT Cloud 5기 - NodePort :${nodePort} [${service.name}]</title>
+  <style>
+    ${commonVirtualStyles()}
+    .np-banner {
+      background: linear-gradient(135deg, rgba(67, 56, 202, 0.3) 0%, rgba(14, 165, 233, 0.2) 100%);
+      border: 1px solid #6366f1; border-radius: 10px; padding: 18px; margin-bottom: 20px;
+    }
+  </style>
+</head>
+<body>
+  ${commonVirtualNav(`${node.name}.ktci5.kr`, nodePort, path, lab)}
+
+  <div class="v-container">
+    <div class="np-banner">
+      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
+        <div>
+          <div style="display:flex; align-items:center; gap:8px; margin-bottom:6px; flex-wrap:wrap;">
+            <span class="badge purple">● 200 OK Kubernetes NodePort</span>
+            <span class="badge blue">노드: ${node.name} (${node.ip})</span>
+            <span class="badge green">타겟 파드: ${chosenPod.name}</span>
+          </div>
+          <h1 style="font-size:20px; font-weight:800; color:#ffffff;">
+            🌐 NodePort :${nodePort} ➔ 서비스: ${service.name}
+          </h1>
+          <p style="font-size:12.5px; color:#cbd5e1; margin-top:4px;">
+            클러스터 외부에서 VM 노드 <b style="color:#38bdf8;">${node.name}.ktci5.kr:${nodePort}</b>로 요청이 유입되어 kube-proxy를 거쳐 파드로 포워딩되었습니다.
+          </p>
+        </div>
+        <div>
+          <a href="/vhost/${node.name}.ktci5.kr/?labId=${encodeURIComponent(labId)}" class="btn-action" style="padding:6px 12px; font-size:12px; text-decoration:none;">🖥️ VM 노드 콘솔 보기</a>
+        </div>
+      </div>
+    </div>
+
+    <!-- 파드 응답 및 로드밸런싱 검증 카드 -->
+    <div class="v-card">
+      <div class="v-card-header">
+        <div class="v-card-title">⚡ 파드 트래픽 처리 정보</div>
+        <span class="badge green">Active Running Pod</span>
+      </div>
+      <div class="info-grid">
+        <div class="info-box">
+          <div class="info-label">서비스 명칭</div>
+          <div class="info-val" style="color:#38bdf8;">${service.name} (ClusterIP: ${service.clusterIp}:${service.port})</div>
+        </div>
+        <div class="info-box">
+          <div class="info-label">응답 파드</div>
+          <div class="info-val" id="pod-name" style="color:#10b981;">${chosenPod.name}</div>
+        </div>
+        <div class="info-box">
+          <div class="info-label">파드 IP 및 위치</div>
+          <div class="info-val" id="pod-node" style="color:#a855f7;">${chosenPod.ip} (노드: ${chosenPod.node})</div>
+        </div>
+        <div class="info-box">
+          <div class="info-label">노드포트 포트</div>
+          <div class="info-val" style="color:#fbbf24;">:${nodePort}</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- HTTP 응답 바디 -->
+    <div class="v-card">
+      <div class="v-card-header">
+        <div class="v-card-title">📄 서비스 응답 (Application Payload)</div>
+      </div>
+      <div style="background:#0b0f19; border:1px solid #1f293d; border-radius:6px; padding:16px;">
+        <h2 style="font-size:16px; color:#f8fafc; margin-bottom:8px;">Welcome to ${service.name}!</h2>
+        <p style="font-size:13px; color:#94a3b8; line-height:1.6;">
+          이 페이지는 KT Cloud 5기 K8s 가상 머신 <b>${node.name}</b>의 <b>NodePort :${nodePort}</b>를 통해 서빙되고 있는 애플리케이션 서비스입니다.<br/>
+          도커/컨테이너 이미지 <code>${chosenPod.image || 'nginx:1.25'}</code> 가 성공적으로 구동되어 실시간 클러스터 네트워크 트래픽을 처리하고 있습니다.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <footer class="v-footer">
+    KT Cloud 제5기 클라우드 인프라 &amp; K8s 아키텍처 실습 | NodePort :${nodePort} on ${node.name}.ktci5.kr
+  </footer>
+</body>
+</html>`;
+
+  return new Response(html, {
+    status: 200,
+    headers: { 'content-type': 'text/html; charset=UTF-8', 'cache-control': 'no-store' }
+  });
 }
 
 function commonVirtualStyles() {
@@ -3670,6 +4194,13 @@ function commonVirtualStyles() {
     .badge.blue { background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid #0284c7; }
     .badge.amber { background: rgba(245, 158, 11, 0.15); color: #fbbf24; border: 1px solid #d97706; }
     .badge.red { background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid #dc2626; }
+    .badge.purple { background: rgba(168, 85, 247, 0.15); color: #c084fc; border: 1px solid #9333ea; }
+    .chip-btn {
+      font-size: 11.5px; font-weight: 600; color: #cbd5e1; background: #1e293b; border: 1px solid #334155;
+      border-radius: 6px; padding: 4px 8px; cursor: pointer; display: inline-flex; align-items: center; gap: 4px;
+    }
+    .chip-btn:hover { background: #334155; color: #ffffff; }
+    .chip-btn.primary { background: #4338ca; color: #ffffff; border-color: #6366f1; }
     
     .info-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin-bottom: 16px; }
     .info-box { background: #0b0f19; border: 1px solid #1f293d; border-radius: 8px; padding: 12px 14px; }
@@ -3712,7 +4243,7 @@ function renderAppServicePage({ host, port, path, service, targetPort, chosenPod
   </style>
 </head>
 <body>
-  ${commonVirtualNav(host, port, path)}
+  ${commonVirtualNav(host, port, path, lab)}
 
   <div class="v-container">
     <div class="hero-box">
@@ -3801,7 +4332,7 @@ X-Ingress-Controller: KT-Cloud-ALB/2.4 (L7 Reverse Proxy & Ingress)
       btn.innerText = '⏳ 처리 중...';
       btn.style.opacity = '0.7';
       try {
-        const res = await fetch('/api/simulator/browse?host=${host}&port=${port}&path=${encodeURIComponent(path)}&ajax=1&_t=' + Date.now());
+        const res = await fetch('/api/simulator/browse?host=${host}&port=${port}&path=${encodeURIComponent(path)}&labId=${encodeURIComponent(lab?.id || 'lab-default')}&ajax=1&_t=' + Date.now());
         const data = await res.json();
         if (data.ok) {
           hits++;
@@ -3942,7 +4473,7 @@ function renderApiServicePage({ host, port, path, service, targetPort, chosenPod
   </style>
 </head>
 <body>
-  ${commonVirtualNav(host, port, path)}
+  ${commonVirtualNav(host, port, path, lab)}
 
   <div class="v-container">
     <div class="v-card" style="border-color: rgba(56, 189, 248, 0.3);">
@@ -3956,7 +4487,7 @@ function renderApiServicePage({ host, port, path, service, targetPort, chosenPod
             파이썬/FastAPI 기반 백엔드 서비스가 Ingress 라우팅 규칙에 따라 안전하게 격리 노출되고 있습니다.
           </p>
         </div>
-        <a href="/api/simulator/browse?host=${host}&port=${port}&path=${encodeURIComponent(path)}&format=json" target="_blank" class="btn-action" style="background:#0f172a; border-color:#38bdf8; font-size:11px;">
+        <a href="/api/simulator/browse?host=${host}&port=${port}&path=${encodeURIComponent(path)}&labId=${encodeURIComponent(lab?.id || 'lab-default')}&format=json" target="_blank" class="btn-action" style="background:#0f172a; border-color:#38bdf8; font-size:11px;">
           📄 Raw JSON 열기
         </a>
       </div>
@@ -4016,7 +4547,7 @@ function renderApiServicePage({ host, port, path, service, targetPort, chosenPod
       st.innerText = '호출 중... (' + ep + ')';
       st.style.color = '#38bdf8';
       try {
-        const res = await fetch('/api/simulator/browse?host=${host}&port=${port}&path=' + encodeURIComponent(ep) + '&format=json&_t=' + Date.now());
+        const res = await fetch('/api/simulator/browse?host=${host}&port=${port}&path=' + encodeURIComponent(ep) + '&labId=${encodeURIComponent(lab?.id || 'lab-default')}&format=json&_t=' + Date.now());
         const data = await res.json();
         document.getElementById('json-viewer').innerText = JSON.stringify(data, null, 2);
         st.innerText = '● 200 OK (' + ep + ')';
@@ -4058,7 +4589,7 @@ function renderDevServicePage({ host, port, path, service, targetPort, chosenPod
   </style>
 </head>
 <body>
-  ${commonVirtualNav(host, port, path)}
+  ${commonVirtualNav(host, port, path, lab)}
 
   <div class="v-container">
     <div class="staging-banner">
@@ -4142,7 +4673,7 @@ function renderDevServicePage({ host, port, path, service, targetPort, chosenPod
       const btn = document.getElementById('btn-stage');
       btn.innerText = '진단 중...';
       try {
-        const res = await fetch('/api/simulator/browse?host=${host}&port=${port}&path=${encodeURIComponent(path)}&ajax=1&_t=' + Date.now());
+        const res = await fetch('/api/simulator/browse?host=${host}&port=${port}&path=${encodeURIComponent(path)}&labId=${encodeURIComponent(lab?.id || 'lab-default')}&ajax=1&_t=' + Date.now());
         const data = await res.json();
         if (data.ok) {
           alert('✅ [스테이징 진단 완료] 파드 ' + data.pod + ' (' + data.podIp + ') 가 정상 응답했습니다. (지연시간: ' + data.latencyMs + 'ms)');
@@ -4178,7 +4709,7 @@ function renderGenericServicePage({ host, port, path, service, targetPort, chose
   <style>${commonVirtualStyles()}</style>
 </head>
 <body>
-  ${commonVirtualNav(host, port, path)}
+  ${commonVirtualNav(host, port, path, lab)}
   <div class="v-container">
     <div class="v-card">
       <span class="badge green">● 200 OK Active</span>
@@ -4221,7 +4752,7 @@ function render502BadGatewayResponse({ host, port, path, net, lab }) {
   </style>
 </head>
 <body>
-  ${commonVirtualNav(host, port, path)}
+  ${commonVirtualNav(host, port, path, lab)}
 
   <div class="v-container">
     <div class="err-box">
@@ -4291,7 +4822,7 @@ function render503ServiceUnavailableResponse({ host, port, path, targetService, 
   <style>${commonVirtualStyles()}</style>
 </head>
 <body>
-  ${commonVirtualNav(host, port, path)}
+  ${commonVirtualNav(host, port, path, lab)}
 
   <div class="v-container">
     <div class="v-card" style="border-color:#ef4444; background:#1c1017;">
@@ -4309,7 +4840,7 @@ function render503ServiceUnavailableResponse({ host, port, path, targetService, 
         ${poolListHtml || '<div style="color:#94a3b8;">등록된 타겟 엔드포인트가 없습니다.</div>'}
       </div>
       <div style="font-size:12px; color:#94a3b8; margin-top:8px;">
-        가용 실행 파드 수: <b style="color:#ffffff;">${candidatePods.length}개</b> | 장애 노드: <b style="color:#f87171;">${unhealthyNodes.join(', ') || '없음'}</b>
+        가용 실행 파드 수: <b style="color:#ffffff;">${(candidatePods || []).length}개</b> | 장애 노드: <b style="color:#f87171;">${(unhealthyNodes || []).join(', ') || '없음'}</b>
       </div>
     </div>
 
@@ -4346,6 +4877,7 @@ function render503ServiceUnavailableResponse({ host, port, path, targetService, 
 // 7. [예외] 404 Not Found (Ingress Route Unregistered)
 function render404NotFoundResponse({ host, port, path, registeredRules, net, lab }) {
   const lbVip = net.loadBalancer?.vip || '211.252.85.10';
+  const labId = lab?.id || 'lab-default';
   const validRulesHtml = registeredRules.map(r => `
     <tr>
       <td style="color:#818cf8; font-weight:700;">${r.host}</td>
@@ -4353,9 +4885,13 @@ function render404NotFoundResponse({ host, port, path, registeredRules, net, lab
       <td>${r.path || '/'}</td>
       <td style="color:#38bdf8;">${r.service}</td>
       <td><span class="badge ${r.ssl ? 'green' : 'blue'}">${r.ssl ? 'TLS Valid' : 'HTTP'}</span></td>
-      <td><a href="/vhost/${r.host}:${r.port || 80}${r.path || '/'}" class="btn-action" style="padding:3px 8px; font-size:11px; text-decoration:none;">이동</a></td>
+      <td><a href="/vhost/${r.host}:${r.port || 80}${r.path || '/'}?labId=${encodeURIComponent(labId)}" class="btn-action" style="padding:3px 8px; font-size:11px; text-decoration:none;">이동</a></td>
     </tr>
   `).join('');
+
+  const vmNodesHtml = (lab?.nodes || []).map(n => `
+    <a href="/vhost/${n.name}.ktci5.kr/?labId=${encodeURIComponent(labId)}" class="chip-btn" style="text-decoration:none; padding:5px 12px; font-size:12px; color:#38bdf8; border-color:#0369a1;">🖥️ ${n.name}.ktci5.kr (${n.ip})</a>
+  `).join(' ');
 
   const html = `<!DOCTYPE html>
 <html lang="ko">
@@ -4371,7 +4907,7 @@ function render404NotFoundResponse({ host, port, path, registeredRules, net, lab
   </style>
 </head>
 <body>
-  ${commonVirtualNav(host, port, path)}
+  ${commonVirtualNav(host, port, path, lab)}
 
   <div class="v-container">
     <div class="v-card" style="border-color:#f59e0b; background:#1c170d;">
@@ -4380,6 +4916,15 @@ function render404NotFoundResponse({ host, port, path, registeredRules, net, lab
       <p style="font-size:13.5px; color:#cbd5e1; margin-top:6px;">
         요청하신 호스트 <code>${host}:${port}${path}</code>에 일치하는 Ingress 라우팅 규칙이 정의되어 있지 않습니다.
       </p>
+    </div>
+
+    <!-- 가상 머신(VM) 노드 웹 콘솔 바로가기 -->
+    <div class="v-card">
+      <div class="v-card-title" style="margin-bottom:10px;">🖥️ 클러스터 가상 머신(VM) 노드 웹 콘솔 바로가기</div>
+      <p style="font-size:12px; color:#94a3b8; margin-bottom:12px;">가상 머신 노드 호스트명으로 웹 페이지에 접속할 수 있습니다.</p>
+      <div style="display:flex; gap:8px; flex-wrap:wrap;">
+        ${vmNodesHtml || '<span style="color:#64748b; font-size:12px;">사용 가능한 노드가 없습니다.</span>'}
+      </div>
     </div>
 
     <!-- 현재 실등록된 유효 Ingress 도메인 목록 -->
@@ -5134,7 +5679,7 @@ export function renderSimulatorPage(user) {
           <button class="btn sm" onclick="showListView()">← 목록</button>
           <span class="op-title" id="active-lab-title">기본 클러스터</span>
           <button class="btn sm primary" onclick="openAddNodeModal()">➕ VM 노드 추가</button>
-          <button class="btn sm" onclick="openModal('deploy-modal')">📦 파드 배포</button>
+          <button class="btn sm" onclick="openDeployModal()">📦 파드 배포</button>
           <button class="btn sm" onclick="openVirtualBrowser('app.ktci5.kr', 80, '/')" style="background:#0284c7; border-color:#0ea5e9; color:#fff; font-weight:700;">🌐 가상 웹 브라우저</button>
         </div>
 
@@ -5246,7 +5791,7 @@ export function renderSimulatorPage(user) {
             <div class="panel-card">
               <div class="panel-header">
                 <span class="panel-title">📦 워크로드 파드 (Pods & Lifecycle)</span>
-                <button class="btn sm primary" onclick="openModal('deploy-modal')">+ 파드 배포 (초/분/랜덤 동작)</button>
+                <button class="btn sm primary" onclick="openDeployModal()">+ 파드 배포 (초/분/랜덤 동작)</button>
               </div>
               <div style="overflow-x:auto;">
                 <table class="sim-table">
@@ -5619,6 +6164,7 @@ export function renderSimulatorPage(user) {
 
         <button class="btn sm" onclick="copyVirtualBrowserUrl()" title="URL 복사" style="white-space: nowrap;">📋 복사</button>
         <button class="btn sm" onclick="openVirtualBrowserNewTab()" title="새 탭에서 열기" style="white-space: nowrap;">↗ 새 탭</button>
+        <button class="btn sm" onclick="openVirtualBrowserPopup()" title="실제 새 창 팝업으로 열기" style="background:#4338ca; border-color:#6366f1; color:#fff; white-space: nowrap;">↗ 실제 팝업</button>
       </div>
 
       <!-- 빠른 바로가기 북마크 바 -->
@@ -5744,23 +6290,27 @@ export function renderSimulatorPage(user) {
     function closeModal(id) { document.getElementById(id).classList.remove('active'); }
     function openAddNodeModal() {
       if (!currentLab) return;
-      const existingNums = (currentLab.nodes || [])
-        .map(n => {
-          const m = n.name.match(/^w(\d+)$/);
-          return m ? parseInt(m[1], 10) : 0;
-        });
-      const nextWorkerNum = Math.max(0, ...existingNums) + 1;
+      const existingNames = new Set((currentLab.nodes || []).map(n => n.name));
+      let nextWorkerNum = 1;
+      while (existingNames.has('w' + nextWorkerNum)) nextWorkerNum++;
 
-      const existingIps = (currentLab.nodes || [])
-        .map(n => {
-          const m = n.ip.match(/^10\.10\.10\.(\d+)$/);
-          return m ? parseInt(m[1], 10) : 0;
-        });
-      const nextIpLast = Math.max(10, ...existingIps) + 10;
+      const existingIps = new Set((currentLab.nodes || []).map(n => n.ip));
+      let nextIpLast = 20;
+      while (existingIps.has('10.10.10.' + nextIpLast)) nextIpLast += 10;
 
       document.getElementById('node-form-name').value = 'w' + nextWorkerNum;
       document.getElementById('node-form-ip').value = '10.10.10.' + nextIpLast;
       openModal('add-node-modal');
+    }
+
+    function openDeployModal() {
+      if (!currentLab) return;
+      const existingNames = new Set((currentLab.deployments || []).map(d => d.name.toLowerCase()));
+      let appNum = 1;
+      while (existingNames.has('app-' + appNum)) appNum++;
+      const nameInput = document.getElementById('deploy-form-name');
+      if (nameInput) nameInput.value = 'app-' + appNum;
+      openModal('deploy-modal');
     }
 
     // 3. 랩 목록
@@ -5957,7 +6507,8 @@ export function renderSimulatorPage(user) {
               \${disksHtml}
             </div>
 
-            <div style="display:flex; gap:4px; margin-top:8px; border-top:1px solid #1f293d; padding-top:6px;">
+            <div style="display:flex; gap:4px; margin-top:8px; border-top:1px solid #1f293d; padding-top:6px; flex-wrap:wrap;">
+              <button class="chip-btn" style="color:#38bdf8; border-color:#0369a1;" onclick="openVmPopup('\${node.name}')">🌐 VM 팝업</button>
               \${isMaster ? \`
                 <button class="chip-btn" onclick="executeCommand('k taint nodes master1 node-role.kubernetes.io/control-plane:NoSchedule\${hasTaint ? '-' : ''}')">\${hasTaint ? 'Taint 해제' : 'Taint 설정'}</button>
               \` : \`
@@ -6054,7 +6605,8 @@ export function renderSimulatorPage(user) {
           <td>
             <div style="display:flex; gap:6px; align-items:center;">
               <button class="chip-btn" onclick="runChip('\${curlCmd}')" title="\${titleText}">호출</button>
-              <button class="chip-btn" style="background:#0284c7; color:#ffffff; font-weight:700; border-color:#0ea5e9;" onclick="openVirtualBrowser('\${r.host}', \${testPort}, '\${r.path || \'/\'}')" title="실제 웹 브라우저 페이지 열기">🌐 열기</button>
+              <button class="chip-btn" style="background:#0284c7; color:#ffffff; font-weight:700; border-color:#0ea5e9;" onclick="openVirtualBrowser('\${r.host}', \${testPort}, '\${r.path || \'/\'}')" title="가상 브라우저 열기">🌐 열기</button>
+              <button class="chip-btn" style="background:#4338ca; color:#ffffff; font-weight:700; border-color:#6366f1;" onclick="openVmPopup('\${r.host}', \${testPort}, '\${r.path || \'/\'}')" title="실제 새 창 팝업 열기">↗ 팝업</button>
             </div>
           </td>
         </tr>
@@ -6099,9 +6651,12 @@ export function renderSimulatorPage(user) {
       // 6) 하드웨어 탭 렌더링
       document.getElementById('hardware-nodes-list').innerHTML = (lab.nodes || []).map(node => \`
         <div style="background:#0f1523; border:1px solid #1f293d; border-radius:6px; padding:10px;">
-          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:8px;">
             <span style="font-weight:700; color:#f8fafc; font-family:monospace;">🖥️ \${node.name} (\${node.ip})</span>
-            <span style="font-size:11px; color:#94a3b8;">현재: \${node.cpuTotalM / 1000} Core / \${node.ramTotalMi / 1024} GiB</span>
+            <div style="display:flex; gap:6px; align-items:center;">
+              <span style="font-size:11px; color:#94a3b8;">현재: \${node.cpuTotalM / 1000} Core / \${node.ramTotalMi / 1024} GiB</span>
+              <button class="chip-btn" style="color:#38bdf8; border-color:#0369a1; padding:2px 8px; font-size:11px;" onclick="openVmPopup('\${node.name}')">🌐 VM 팝업</button>
+            </div>
           </div>
 
           <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px;">
@@ -6342,7 +6897,40 @@ export function renderSimulatorPage(user) {
     window.openVirtualBrowserNewTab = function() {
       if (window.currentVBrowser) {
         const { host, port, path } = window.currentVBrowser;
-        window.open('/vhost/' + host + (port && port !== 80 && port !== 443 ? (':' + port) : '') + path, '_blank');
+        const labId = currentLab?.id || 'lab-default';
+        const portPart = (port && port !== 80 && port !== 443) ? (':' + port) : '';
+        window.open('/vhost/' + host + portPart + path + '?labId=' + encodeURIComponent(labId), '_blank');
+      }
+    };
+
+    window.openVirtualBrowserPopup = function() {
+      if (window.currentVBrowser) {
+        const { host, port, path } = window.currentVBrowser;
+        window.openVmPopup(host, port, path);
+      }
+    };
+
+    window.openVmPopup = function(hostOrNode, port, path) {
+      hostOrNode = hostOrNode || 'master1';
+      let host = hostOrNode;
+      if (!host.includes('.')) {
+        host = host + '.ktci5.kr';
+      }
+      port = port ? parseInt(port, 10) : (host.startsWith('dev') ? 443 : 80);
+      path = path || '/';
+      const labId = currentLab?.id || 'lab-default';
+      const portPart = (port && port !== 80 && port !== 443) ? (':' + port) : '';
+      const vhostUrl = '/vhost/' + host + portPart + path + '?labId=' + encodeURIComponent(labId);
+      const popupWindowName = 'vm_popup_' + host.replace(/[^a-zA-Z0-9]/g, '_') + '_' + port;
+      const popupFeatures = 'width=1080,height=800,top=100,left=120,resizable=yes,scrollbars=yes,status=yes';
+
+      const popWin = window.open(vhostUrl, popupWindowName, popupFeatures);
+      if (!popWin || popWin.closed || typeof popWin.closed === 'undefined') {
+        showToast('⚠️ 브라우저 팝업이 차단되어 가상 브라우저 모달로 열립니다.');
+        openVirtualBrowser(host, port, path);
+      } else {
+        popWin.focus();
+        showToast('🌐 [' + host + (portPart || '') + '] 실제 팝업 창이 열렸습니다.');
       }
     };
 
@@ -6362,8 +6950,11 @@ export function renderSimulatorPage(user) {
         return;
       }
 
+      const curHost = window.currentVBrowser?.host || '';
       const rules = currentLab?.network?.ingress?.rules || [];
-      const isRegistered = rules.some(r => r.host === window.currentVBrowser?.host);
+      const nodes = currentLab?.nodes || [];
+      const isRegistered = rules.some(r => r.host === curHost) ||
+                           nodes.some(n => n.name === curHost || (n.name + '.ktci5.kr') === curHost || n.ip === curHost);
       if (!isRegistered) {
         if (badge) {
           badge.innerText = '● 404 Not Found';

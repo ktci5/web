@@ -105,9 +105,10 @@ export default {
         : errorPage('아직 준비되지 않은 프로젝트입니다.', 404);
     }
 
-    // 가상 도메인 직접 접속 (app.ktci5.kr, dev.ktci5.kr, api.ktci5.kr 또는 /vhost/<host>/*)
+    // 가상 도메인 및 VM 노드 직접 접속 (*.ktci5.kr 또는 /vhost/<host>/*)
+    const isSystemPath = path.startsWith('/api/') || path.startsWith('/study/') || path.startsWith('/discord/') || path.startsWith('/vhost/');
     const vhostMatch = url.hostname.match(/^([a-z0-9-]+)\.ktci5\.kr$/);
-    const isDedicatedVhost = vhostMatch && ['app', 'dev', 'api'].includes(vhostMatch[1]);
+    const isDedicatedVhost = vhostMatch && !['project1', 'project2', 'project3', 'discord'].includes(vhostMatch[1]) && !isSystemPath;
     const isVhostPath = path.startsWith('/vhost/');
 
     if (isDedicatedVhost || isVhostPath) {
@@ -135,13 +136,19 @@ export default {
       return renderVirtualDomainResponse(request, env, {
         host: vHost,
         port: vPort,
-        path: vPath
+        path: vPath,
+        labId: url.searchParams.get('labId')
       });
     }
 
     // 가상 웹 브라우저 렌더링 엔드포인트 (/api/simulator/browse)
     if (path === '/api/simulator/browse') {
-      return renderVirtualDomainResponse(request, env);
+      return renderVirtualDomainResponse(request, env, {
+        host: url.searchParams.get('host'),
+        port: url.searchParams.get('port') ? parseInt(url.searchParams.get('port'), 10) : undefined,
+        path: url.searchParams.get('path'),
+        labId: url.searchParams.get('labId')
+      });
     }
 
     // K8s 협업 가상 시뮬레이터 API (/api/simulator/*)
