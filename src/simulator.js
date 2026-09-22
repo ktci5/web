@@ -57,7 +57,7 @@ function createDefaultNetwork() {
       rules: [
         { host: 'app.ktci5.kr', path: '/', port: 80, targetPort: 80, service: 'web-service:80', ssl: true, protocol: 'HTTP/1.1 & HTTP/2' },
         { host: 'api.ktci5.kr', path: '/api', port: 80, targetPort: 8080, service: 'api-service:8080', ssl: true, protocol: 'HTTP/1.1 & HTTP/2' },
-        { host: 'dev.ktci5.kr', path: '/', port: 443, targetPort: 8080, service: 'dev-service:8080', ssl: true, protocol: 'HTTPS (TLS1.3)' }
+        { host: 'dev.ktci5.kr', path: '/', port: 443, targetPort: 8081, service: 'dev-service:8081', ssl: true, protocol: 'HTTPS (TLS1.3)' }
       ]
     },
     router: {
@@ -289,8 +289,8 @@ export const DEFAULT_LABS = [
         type: 'NodePort',
         clusterIp: '10.96.100.60',
         nodePort: 30081,
-        port: 8080,
-        targetPort: 8080,
+        port: 8081,
+        targetPort: 8081,
         selector: { app: 'dev' }
       }
     ],
@@ -490,6 +490,9 @@ export async function getLabDetail(env, id) {
   }
   try {
     let lab = await env.ROSTER.get(`sim:lab:${id}`, 'json');
+    if (typeof lab === 'string') {
+      try { lab = JSON.parse(lab); } catch {}
+    }
     if (!lab) {
       const fallback = DEFAULT_LABS.find((l) => l.id === id);
       if (fallback) {
@@ -541,11 +544,17 @@ export async function getLabDetail(env, id) {
               host: 'dev.ktci5.kr',
               path: '/',
               port: 443,
-              targetPort: 8080,
-              service: 'dev-service:8080',
+              targetPort: 8081,
+              service: 'dev-service:8081',
               ssl: true,
               protocol: 'HTTPS (TLS1.3)'
             });
+          }
+          // 기존 8080으로 등록된 dev.ktci5.kr 규칙을 포트 충돌 방지를 위해 8081로 자동 보정
+          const devRule = rules.find(r => r.host === 'dev.ktci5.kr');
+          if (devRule && devRule.targetPort === 8080) {
+            devRule.targetPort = 8081;
+            devRule.service = 'dev-service:8081';
           }
           // 중복 방지 (host + port + path 기준)
           const seenRules = new Set();
@@ -556,7 +565,7 @@ export async function getLabDetail(env, id) {
             return true;
           });
         }
-        // 서비스 보정: api-service, dev-service 보장
+        // 서비스 보정: api-service, dev-service 보장 및 포트 충돌 방지 보정
         if (lab.services) {
           if (!lab.services.some(s => s.name === 'api-service')) {
             lab.services.push({
@@ -575,10 +584,16 @@ export async function getLabDetail(env, id) {
               type: 'NodePort',
               clusterIp: '10.96.100.60',
               nodePort: 30081,
-              port: 8080,
-              targetPort: 8080,
+              port: 8081,
+              targetPort: 8081,
               selector: { app: 'dev' }
             });
+          }
+          // 기존 8080으로 등록된 dev-service를 포트 충돌 방지를 위해 8081로 자동 보정
+          const devSvc = lab.services.find(s => s.name === 'dev-service');
+          if (devSvc && devSvc.port === 8080) {
+            devSvc.port = 8081;
+            devSvc.targetPort = 8081;
           }
         }
         // 파드 보정: api-deploy, dev-deploy 파드가 없으면 추가
@@ -1002,8 +1017,8 @@ export function evalK8sCommand(cmdLine, lab, user) {
           host: targetHost,
           path: reqPath,
           port: port,
-          targetPort: port === 443 ? 8080 : 80,
-          service: `${subPrefix}-service:${port === 443 ? 8080 : 80}`
+          targetPort: isDevHost ? 8081 : (isApiHost ? 8080 : 80),
+          service: `${subPrefix}-service:${isDevHost ? 8081 : (isApiHost ? 8080 : 80)}`
         };
       }
 
@@ -1589,6 +1604,10 @@ Events:            <none>`;
     }
 
     if (!lab.services) lab.services = [];
+    const conflictingSvc = lab.services.find(s => s.name !== svcName && (s.port === targetPort || s.targetPort === targetPort));
+    if (conflictingSvc) {
+      return { output: `error: [포트 충돌 방지] 타겟 포트 ${targetPort}은(는) 이미 '${conflictingSvc.name}'에서 사용 중입니다. 가상 네트워크 내 모든 타겟 서비스는 고유 포트를 사용해야 합니다.`, labChanged: false };
+    }
     const nodePort = (type === 'NodePort' || type === 'LoadBalancer') ? (30000 + Math.floor(Math.random() * 2767)) : undefined;
     const newSvc = {
       name: svcName,
@@ -1775,9 +1794,32 @@ Events:            <none>`;
       const idx = lab.deployments.findIndex((d) => d.name === name);
       if (idx === -1) return { output: `deployments.apps "${name}" not found`, labChanged: false };
       lab.deployments.splice(idx, 1);
-      lab.pods = lab.pods.filter((p) => !p.name.startsWith(name));
+      lab.pods = (lab.pods || []).filter((p) => !p.name.startsWith(name) && p.labels?.app !== name);
       lab.activityLogs.unshift({ time: timeStr, user: userName, action: `디플로이먼트 '${name}' 삭제` });
       return { output: `deployment.apps "${name}" deleted`, labChanged: true };
+    }
+
+    if (type.startsWith('svc') || type.startsWith('service')) {
+      if (!lab.services) lab.services = [];
+      const idx = lab.services.findIndex((s) => s.name === name);
+      if (idx === -1) return { output: `services "${name}" not found`, labChanged: false };
+      lab.services.splice(idx, 1);
+      if (lab.network?.ingress?.rules) {
+        lab.network.ingress.rules = lab.network.ingress.rules.filter(r => !r.service?.startsWith(`${name}:`));
+      }
+      lab.activityLogs.unshift({ time: timeStr, user: userName, action: `서비스 '${name}' 삭제` });
+      return { output: `service "${name}" deleted`, labChanged: true };
+    }
+
+    if (type.startsWith('ing')) {
+      if (!lab.network?.ingress?.rules) return { output: `ingress "${name}" not found`, labChanged: false };
+      const beforeLen = lab.network.ingress.rules.length;
+      lab.network.ingress.rules = lab.network.ingress.rules.filter(r => !r.host.startsWith(name) && r.host !== name);
+      if (lab.network.ingress.rules.length === beforeLen) {
+        return { output: `ingress "${name}" not found`, labChanged: false };
+      }
+      lab.activityLogs.unshift({ time: timeStr, user: userName, action: `인그레스 '${name}' 삭제` });
+      return { output: `ingress.networking.k8s.io "${name}" deleted`, labChanged: true };
     }
   }
 
@@ -2865,7 +2907,31 @@ export async function handleSimulatorApi(request, path, env, user) {
       return new Response(JSON.stringify({ ok: true, node, lab }), { headers: jsonHeaders });
     }
 
-    // 6-1. DELETE /api/simulator/labs/:id/nodes/:nodeName : VM 노드 삭제 & 파드 재배치
+    // 6-1. DELETE /api/simulator/labs/:id/nodes/:nodeName/disks/:diskIdx : 가상 디스크 분리/삭제
+    if (action && action.startsWith('nodes/') && action.includes('/disks/') && method === 'DELETE') {
+      if (!lab.editable) return new Response(JSON.stringify({ ok: false, error: '수정 권한이 OFF 상태입니다.' }), { headers: jsonHeaders, status: 403 });
+      const parts = action.split('/');
+      const nodeName = parts[1];
+      const diskIdx = parseInt(parts[3], 10);
+      const node = lab.nodes?.find(n => n.name === nodeName);
+      if (!node) return new Response(JSON.stringify({ ok: false, error: '노드를 찾을 수 없습니다.' }), { headers: jsonHeaders, status: 404 });
+      if (!node.disks || isNaN(diskIdx) || diskIdx < 0 || diskIdx >= node.disks.length) {
+        return new Response(JSON.stringify({ ok: false, error: '디스크를 찾을 수 없습니다.' }), { headers: jsonHeaders, status: 404 });
+      }
+      if (diskIdx === 0) {
+        return new Response(JSON.stringify({ ok: false, error: 'OS 루트 디스크(vda)는 분리/삭제할 수 없습니다.' }), { headers: jsonHeaders, status: 400 });
+      }
+      const removedDisk = node.disks.splice(diskIdx, 1)[0];
+      lab.activityLogs.unshift({
+        time: timeStr,
+        user: userName,
+        action: `🗑️ [하드웨어] 노드 '${nodeName}' 디스크 '${removedDisk.name}' 분리 완료`
+      });
+      await saveLabDetail(env, lab);
+      return new Response(JSON.stringify({ ok: true, node, lab }), { headers: jsonHeaders });
+    }
+
+    // 6-2. DELETE /api/simulator/labs/:id/nodes/:nodeName : VM 노드 삭제 & 파드 재배치
     if (action && action.startsWith('nodes/') && method === 'DELETE') {
       if (!lab.editable) return new Response(JSON.stringify({ ok: false, error: '수정 권한이 OFF 상태입니다.' }), { headers: jsonHeaders, status: 403 });
       const nodeName = action.split('/')[1];
@@ -2887,6 +2953,91 @@ export async function handleSimulatorApi(request, path, env, user) {
 
       await saveLabDetail(env, lab);
       return new Response(JSON.stringify({ ok: true, lab }), { headers: jsonHeaders });
+    }
+
+    // 6-3. DELETE /api/simulator/labs/:id/deployments/:name : 디플로이먼트 및 관련 파드/서비스 삭제
+    if (action && action.startsWith('deployments/') && method === 'DELETE') {
+      if (!lab.editable) return new Response(JSON.stringify({ ok: false, error: '수정 권한이 OFF 상태입니다.' }), { headers: jsonHeaders, status: 403 });
+      const depName = decodeURIComponent(action.split('/')[1]);
+      const idx = (lab.deployments || []).findIndex(d => d.name === depName);
+      if (idx === -1) return new Response(JSON.stringify({ ok: false, error: `디플로이먼트 '${depName}'을(를) 찾을 수 없습니다.` }), { headers: jsonHeaders, status: 404 });
+      lab.deployments.splice(idx, 1);
+      if (lab.pods) {
+        lab.pods = lab.pods.filter(p => !p.name.startsWith(depName) && p.labels?.app !== depName);
+      }
+      if (lab.services) {
+        const matchingSvcs = lab.services.filter(s => s.name.startsWith(depName) || s.selector?.app === depName);
+        lab.services = lab.services.filter(s => !s.name.startsWith(depName) && s.selector?.app !== depName);
+        if (lab.network?.ingress?.rules) {
+          matchingSvcs.forEach(ms => {
+            lab.network.ingress.rules = lab.network.ingress.rules.filter(r => !r.service?.startsWith(`${ms.name}:`));
+          });
+        }
+      }
+      lab.activityLogs.unshift({
+        time: timeStr,
+        user: userName,
+        action: `🗑️ [워크로드] 디플로이먼트 '${depName}' 및 관련 파드/서비스 삭제 완료`
+      });
+      await saveLabDetail(env, lab);
+      return new Response(JSON.stringify({ ok: true, lab }), { headers: jsonHeaders });
+    }
+
+    // 6-4. DELETE /api/simulator/labs/:id/services/:name : 가상 서비스 및 Ingress 매핑 삭제
+    if (action && action.startsWith('services/') && method === 'DELETE') {
+      if (!lab.editable) return new Response(JSON.stringify({ ok: false, error: '수정 권한이 OFF 상태입니다.' }), { headers: jsonHeaders, status: 403 });
+      const svcName = decodeURIComponent(action.split('/')[1]);
+      const idx = (lab.services || []).findIndex(s => s.name === svcName);
+      if (idx === -1) return new Response(JSON.stringify({ ok: false, error: `서비스 '${svcName}'을(를) 찾을 수 없습니다.` }), { headers: jsonHeaders, status: 404 });
+      lab.services.splice(idx, 1);
+      if (lab.network?.ingress?.rules) {
+        lab.network.ingress.rules = lab.network.ingress.rules.filter(r => !r.service?.startsWith(`${svcName}:`));
+      }
+      lab.activityLogs.unshift({
+        time: timeStr,
+        user: userName,
+        action: `🗑️ [서비스] 가상 서비스 '${svcName}' 및 연결 Ingress 라우팅 삭제 완료`
+      });
+      await saveLabDetail(env, lab);
+      return new Response(JSON.stringify({ ok: true, lab }), { headers: jsonHeaders });
+    }
+
+    // 6-5. DELETE /api/simulator/labs/:id/pods/:name : 단일 파드 삭제
+    if (action && action.startsWith('pods/') && method === 'DELETE') {
+      if (!lab.editable) return new Response(JSON.stringify({ ok: false, error: '수정 권한이 OFF 상태입니다.' }), { headers: jsonHeaders, status: 403 });
+      const podName = decodeURIComponent(action.split('/')[1]);
+      const idx = (lab.pods || []).findIndex(p => p.name === podName);
+      if (idx === -1) return new Response(JSON.stringify({ ok: false, error: `파드 '${podName}'을(를) 찾을 수 없습니다.` }), { headers: jsonHeaders, status: 404 });
+      lab.pods.splice(idx, 1);
+      lab.activityLogs.unshift({
+        time: timeStr,
+        user: userName,
+        action: `🗑️ [파드] 파드 '${podName}' 삭제 완료`
+      });
+      await saveLabDetail(env, lab);
+      return new Response(JSON.stringify({ ok: true, lab }), { headers: jsonHeaders });
+    }
+
+    // 6-6. DELETE /api/simulator/labs/:id/domains : Ingress 도메인/포트 라우팅 삭제
+    if (action === 'domains' && method === 'DELETE') {
+      if (!lab.editable) return new Response(JSON.stringify({ ok: false, error: '수정 권한이 OFF 상태입니다.' }), { headers: jsonHeaders, status: 403 });
+      let body = {};
+      try { body = await request.json(); } catch {}
+      const host = (body.host || '').trim();
+      const port = parseInt(body.port || '80', 10);
+      const path = (body.path || '/').trim() || '/';
+      if (lab.network?.ingress?.rules) {
+        lab.network.ingress.rules = lab.network.ingress.rules.filter(r => 
+          !(r.host === host && (r.port || 80) === port && (r.path || '/') === path)
+        );
+      }
+      lab.activityLogs.unshift({
+        time: timeStr,
+        user: userName,
+        action: `🗑️ [도메인/포트 라우팅] '${host}:${port}${path}' 라우팅 규칙 삭제 완료`
+      });
+      await saveLabDetail(env, lab);
+      return new Response(JSON.stringify({ ok: true, network: lab.network, lab }), { headers: jsonHeaders });
     }
 
     // 6-2. POST /api/simulator/labs/:id/workloads : GUI 파드 / 디플로이먼트 배포 (초/분/시간 단위 수명 & 랜덤 활동 설정)
@@ -3008,13 +3159,32 @@ export async function handleSimulatorApi(request, path, env, user) {
           attempt++;
         } while (existingClusterIps.has(randIp) && attempt < 100);
 
+        // [타겟 포트 충돌 방지]: 가상 네트워크 내 모든 타겟 서비스는 서로 다른 고유 포트 점유
+        const usedTargetPorts = new Set();
+        (lab.services || []).forEach(s => {
+          if (s.port) usedTargetPorts.add(parseInt(s.port, 10));
+          if (s.targetPort) usedTargetPorts.add(parseInt(s.targetPort, 10));
+        });
+        (lab.network?.ingress?.rules || []).forEach(r => {
+          if (r.targetPort) usedTargetPorts.add(parseInt(r.targetPort, 10));
+          if (r.service?.includes(':')) {
+            const p = parseInt(r.service.split(':')[1], 10);
+            if (!isNaN(p)) usedTargetPorts.add(p);
+          }
+        });
+
+        let targetServicePort = 8082;
+        while (usedTargetPorts.has(targetServicePort)) {
+          targetServicePort++;
+        }
+
         lab.services.push({
           name: svcName,
           type: 'NodePort',
           clusterIp: randIp,
           nodePort: nextPort,
-          port: 80,
-          targetPort: 80,
+          port: targetServicePort,
+          targetPort: targetServicePort,
           selector: { app: name }
         });
       }
@@ -3030,7 +3200,7 @@ export async function handleSimulatorApi(request, path, env, user) {
       return new Response(JSON.stringify({ ok: true, lab }), { headers: jsonHeaders, status: 201 });
     }
 
-    // 7. PATCH /api/simulator/labs/:id/network : 네트워크 설정 (OSI 7단계, VPN 토글, LB 알고리즘, 터널 토글, 도메인/포트 연결)
+    // 7. PATCH /api/simulator/labs/:id/network : 네트워크 설정 (OSI 7단계, VPN 토글, LB 알고리즘, 터널 토글, 도메인/포트 연결 & 삭제)
     if (action === 'network' && (method === 'PATCH' || method === 'POST')) {
       if (!lab.editable) return new Response(JSON.stringify({ ok: false, error: '수정 권한이 OFF 상태입니다.' }), { headers: jsonHeaders, status: 403 });
       let body = {};
@@ -3067,16 +3237,87 @@ export async function handleSimulatorApi(request, path, env, user) {
         });
       }
 
+      if (body.removeDomain || body.deleteDomain) {
+        const delTarget = body.removeDomain || body.deleteDomain;
+        const host = (delTarget.host || '').trim();
+        const port = parseInt(delTarget.port || '80', 10);
+        const path = (delTarget.path || '/').trim() || '/';
+
+        if (lab.network?.ingress?.rules) {
+          lab.network.ingress.rules = lab.network.ingress.rules.filter(r => 
+            !(r.host === host && (r.port || 80) === port && (r.path || '/') === path)
+          );
+        }
+        lab.activityLogs.unshift({
+          time: timeStr,
+          user: userName,
+          action: `🗑️ [도메인/포트 라우팅] '${host}:${port}${path}' 라우팅 규칙 삭제 완료`
+        });
+      }
+
       if (body.addDomain) {
         if (!lab.network.ingress) lab.network.ingress = createDefaultNetwork().ingress;
         if (!lab.network.ingress.rules) lab.network.ingress.rules = [];
+        if (!lab.services) lab.services = [];
+
         const host = (body.addDomain.host || '').trim();
         const port = parseInt(body.addDomain.port || '80', 10);
         const path = (body.addDomain.path || '/').trim() || '/';
-        const targetPort = parseInt(body.addDomain.targetPort || (port === 443 ? '8080' : '80'), 10);
-        const service = body.addDomain.service || `web-service:${targetPort}`;
+        const svcInput = (body.addDomain.service || '').trim();
+        const svcParts = svcInput.split(':');
+        const targetServiceName = svcParts[0] || 'web-service';
+        const targetPort = parseInt(body.addDomain.targetPort || svcParts[1] || (port === 443 ? '8081' : '80'), 10);
+        const service = `${targetServiceName}:${targetPort}`;
         const ssl = port === 443 || Boolean(body.addDomain.ssl);
         const protocol = port === 443 ? 'HTTPS (TLS1.3)' : 'HTTP/1.1';
+
+        // [타겟 서비스 포트 충돌 방지 검증]
+        // 1) lab.services에 다른 이름의 서비스가 동일한 port/targetPort를 사용하는지 검증
+        const conflictingSvc = lab.services.find(s => s.name !== targetServiceName && (s.port === targetPort || s.targetPort === targetPort));
+        if (conflictingSvc) {
+          return new Response(JSON.stringify({
+            ok: false,
+            error: `[포트 충돌 방지] 타겟 포트 :${targetPort}은(는) 이미 다른 가상 서비스('${conflictingSvc.name}')에서 사용 중입니다. 모든 가상 네트워크 타겟 서비스는 서로 다른 고유 포트를 사용해야 합니다.`
+          }), { headers: jsonHeaders, status: 400 });
+        }
+
+        // 2) lab.network.ingress.rules에 다른 서비스가 동일한 targetPort를 사용하는지 검증
+        const conflictingRule = lab.network.ingress.rules.find(r => {
+          const rSvcName = (r.service || '').split(':')[0];
+          const rTargetPort = r.targetPort || parseInt((r.service || '').split(':')[1] || '80', 10);
+          return rSvcName && rSvcName !== targetServiceName && rTargetPort === targetPort;
+        });
+        if (conflictingRule) {
+          return new Response(JSON.stringify({
+            ok: false,
+            error: `[포트 충돌 방지] 타겟 포트 :${targetPort}은(는) 이미 인그레스 라우팅 서비스('${conflictingRule.service}')에서 사용 중입니다. 충돌 방지를 위해 다른 포트를 지정해주세요.`
+          }), { headers: jsonHeaders, status: 400 });
+        }
+
+        // 타겟 서비스가 lab.services에 없으면 가상 서비스로 자동 등록 (포트 일관성 유지)
+        if (!lab.services.some(s => s.name === targetServiceName)) {
+          const usedNodePorts = new Set((lab.services || []).map(s => s.nodePort).filter(Boolean));
+          let nPort = 30083;
+          while (usedNodePorts.has(nPort) && nPort <= 32767) nPort++;
+
+          const existingClusterIps = new Set((lab.services || []).map(s => s.clusterIp));
+          let randIp;
+          let attempt = 0;
+          do {
+            randIp = `10.96.${Math.floor(Math.random() * 200) + 10}.${Math.floor(Math.random() * 200) + 10}`;
+            attempt++;
+          } while (existingClusterIps.has(randIp) && attempt < 100);
+
+          lab.services.push({
+            name: targetServiceName,
+            type: 'NodePort',
+            clusterIp: randIp,
+            nodePort: nPort,
+            port: targetPort,
+            targetPort: targetPort,
+            selector: { app: targetServiceName.replace(/-service$/, '').replace(/-svc$/, '') }
+          });
+        }
 
         const existingIdx = lab.network.ingress.rules.findIndex(r => r.host === host && (r.port || 80) === port && (r.path || '/') === path);
         const newRule = { host, path, port, targetPort, service, ssl, protocol };
@@ -5790,9 +6031,28 @@ export function renderSimulatorPage(user) {
 
             <div class="panel-card">
               <div class="panel-header">
-                <span class="panel-title">📦 워크로드 파드 (Pods & Lifecycle)</span>
-                <button class="btn sm primary" onclick="openDeployModal()">+ 파드 배포 (초/분/랜덤 동작)</button>
+                <span class="panel-title">📦 워크로드 및 서비스 관리 (Deployments, Services &amp; Pods)</span>
+                <button class="btn sm primary" onclick="openDeployModal()">+ 워크로드 배포 (초/분/랜덤 동작)</button>
               </div>
+
+              <!-- 활성 디플로이먼트 관리 섹션 -->
+              <div style="margin-bottom:10px; padding:8px 10px; background:#0b0f19; border:1px solid #1f293d; border-radius:6px; display:flex; flex-direction:column; gap:6px;">
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                  <span style="font-size:11px; font-weight:700; color:#cbd5e1;">🚀 활성 디플로이먼트 (Deployments):</span>
+                  <span style="font-size:10px; color:#64748b;">삭제 시 하위 파드 및 연결 서비스 자동 정리</span>
+                </div>
+                <div id="deployment-chips-list" style="display:flex; flex-wrap:wrap; gap:6px;"></div>
+              </div>
+
+              <!-- 활성 가상 서비스 & 고유 타겟 포트 섹션 -->
+              <div style="margin-bottom:12px; padding:8px 10px; background:#0b0f19; border:1px solid #1f293d; border-radius:6px; display:flex; flex-direction:column; gap:6px;">
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                  <span style="font-size:11px; font-weight:700; color:#cbd5e1;">⚡ 가상 서비스 및 타겟 포트 (Virtual Services):</span>
+                  <span style="font-size:10px; color:#10b981;">● 가상 네트워크 고유 포트 충돌방지 적용됨</span>
+                </div>
+                <div id="service-chips-list" style="display:flex; flex-wrap:wrap; gap:6px;"></div>
+              </div>
+
               <div style="overflow-x:auto;">
                 <table class="sim-table">
                   <thead>
@@ -6521,6 +6781,45 @@ export function renderSimulatorPage(user) {
         \`;
       }).join('');
 
+      // 2-1) 활성 디플로이먼트 및 서비스 칩 렌더링
+      const depContainer = document.getElementById('deployment-chips-list');
+      if (depContainer) {
+        const deploys = lab.deployments || [];
+        if (deploys.length === 0) {
+          depContainer.innerHTML = '<span style="font-size:11px; color:#64748b;">배포된 디플로이먼트가 없습니다.</span>';
+        } else {
+          depContainer.innerHTML = deploys.map(d => {
+            const count = (lab.pods || []).filter(p => p.name.startsWith(d.name) && p.status === 'Running').length;
+            return \`
+              <div style="display:inline-flex; align-items:center; gap:6px; background:#1e293b; border:1px solid #334155; padding:3px 8px; border-radius:4px; font-size:11px;">
+                <span style="color:#38bdf8; font-weight:700;">🚀 \${escapeHtml(d.name)}</span>
+                <span style="color:#94a3b8; font-size:10px;">(\${count}/\${d.replicas} Pods)</span>
+                <button class="chip-btn" style="background:#dc262622; color:#f87171; border-color:#ef444466; padding:1px 6px; font-size:10px;" onclick="deleteDeployment('\${escapeHtml(d.name)}')" title="디플로이먼트 삭제">✕ 삭제</button>
+              </div>
+            \`;
+          }).join('');
+        }
+      }
+
+      const svcContainer = document.getElementById('service-chips-list');
+      if (svcContainer) {
+        const svcs = lab.services || [];
+        if (svcs.length === 0) {
+          svcContainer.innerHTML = '<span style="font-size:11px; color:#64748b;">등록된 가상 서비스가 없습니다.</span>';
+        } else {
+          svcContainer.innerHTML = svcs.map(s => {
+            const portInfo = s.nodePort ? \`Port :\${s.port} ➔ NP :\${s.nodePort}\` : \`Port :\${s.port}\`;
+            return \`
+              <div style="display:inline-flex; align-items:center; gap:6px; background:#1e293b; border:1px solid #334155; padding:3px 8px; border-radius:4px; font-size:11px;">
+                <span style="color:#a855f7; font-weight:700;">⚡ \${escapeHtml(s.name)}</span>
+                <span style="color:#38bdf8; font-size:10px; font-family:monospace;">[\${portInfo}]</span>
+                <button class="chip-btn" style="background:#dc262622; color:#f87171; border-color:#ef444466; padding:1px 6px; font-size:10px;" onclick="deleteService('\${escapeHtml(s.name)}')" title="서비스 삭제">✕ 삭제</button>
+              </div>
+            \`;
+          }).join('');
+        }
+      }
+
       // 3) 파드 테이블 & 수명 카운트다운
       const now = Date.now();
       document.getElementById('pod-table-body').innerHTML = (lab.pods || []).map(pod => {
@@ -6544,7 +6843,7 @@ export function renderSimulatorPage(user) {
             <td>\${pod.ip}</td>
             <td>\${pod.image}</td>
             <td>\${lifeStr}</td>
-            <td><button class="chip-btn" onclick="executeCommand('k delete pod \${pod.name}')" style="color:#f87171;">삭제</button></td>
+            <td><button class="chip-btn" onclick="deletePod('\${escapeHtml(pod.name)}')" style="color:#f87171;">삭제</button></td>
           </tr>
         \`;
       }).join('');
@@ -6607,6 +6906,7 @@ export function renderSimulatorPage(user) {
               <button class="chip-btn" onclick="runChip('\${curlCmd}')" title="\${titleText}">호출</button>
               <button class="chip-btn" style="background:#0284c7; color:#ffffff; font-weight:700; border-color:#0ea5e9;" onclick="openVirtualBrowser('\${r.host}', \${testPort}, '\${r.path || \'/\'}')" title="가상 브라우저 열기">🌐 열기</button>
               <button class="chip-btn" style="background:#4338ca; color:#ffffff; font-weight:700; border-color:#6366f1;" onclick="openVmPopup('\${r.host}', \${testPort}, '\${r.path || \'/\'}')" title="실제 새 창 팝업 열기">↗ 팝업</button>
+              <button class="chip-btn" style="background:#dc2626; color:#ffffff; font-weight:700; border-color:#ef4444;" onclick="deleteDomainRule('\${r.host}', \${testPort}, '\${r.path || \'/\'}')" title="라우팅 규칙 삭제">🗑️ 삭제</button>
             </div>
           </td>
         </tr>
@@ -6681,8 +6981,18 @@ export function renderSimulatorPage(user) {
           </div>
 
           <!-- 디스크 목록 -->
-          <div style="font-size:10.5px; color:#64748b; font-family:monospace;">
-            마운트 디스크: \${(node.disks || []).map(d => \`\${d.name}: \${d.sizeGb}GB (\${d.mount})\`).join(', ')}
+          <div style="font-size:11px; color:#94a3b8; font-family:monospace; margin-top:8px; display:flex; flex-direction:column; gap:4px;">
+            <div style="color:#cbd5e1; font-weight:600; font-size:11px;">💾 마운트 디스크 볼륨 목록:</div>
+            \${(node.disks || []).map((d, dIdx) => \`
+              <div style="display:flex; justify-content:space-between; align-items:center; background:#1e293b55; border:1px solid #1e293b; padding:4px 8px; border-radius:4px;">
+                <span><b>\${escapeHtml(d.name)}</b> (\${d.sizeGb}GB, \${d.type || 'SSD'}) ➔ <span style="color:#38bdf8;">\${escapeHtml(d.mount)}</span></span>
+                \${dIdx > 0 ? \`
+                  <button class="chip-btn" style="background:#dc262622; color:#f87171; border-color:#ef444466; padding:1px 6px; font-size:10.5px;" onclick="removeDiskFromNode('\${node.name}', \${dIdx})" title="디스크 분리/삭제">🗑️ 분리</button>
+                \` : \`
+                  <span style="font-size:10px; color:#64748b;">[OS 루트 기본]</span>
+                \`}
+              </div>
+            \`).join('')}
           </div>
         </div>
       \`).join('');
@@ -6799,9 +7109,31 @@ export function renderSimulatorPage(user) {
           currentLab = data.lab;
           renderAll(currentLab);
           appendTermLog(\`\\n<span style="color:#10b981;font-weight:700;">🌐 [Ingress Binding] 도메인/포트 '\${host}:\${port}'이(가) 서비스 '\${svc}'에 매핑되었습니다.</span>\\n\`);
+        } else {
+          alert('도메인 추가 실패: ' + (data.error || '오류가 발생했습니다.'));
         }
       } catch (err) { alert('도메인 추가 실패: ' + err.message); }
     }
+
+    window.deleteDomainRule = async function(host, port, path) {
+      if (!currentLab) return;
+      if (!confirm(\`'\${host}:\${port}\${path}' 라우팅 규칙을 삭제하시겠습니까?\`)) return;
+      try {
+        const res = await fetch(\`/api/simulator/labs/\${currentLab.id}/network\`, {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ removeDomain: { host, port, path } })
+        });
+        const data = await res.json();
+        if (data.ok) {
+          currentLab = data.lab;
+          renderAll(currentLab);
+          appendTermLog(\`\\n<span style="color:#f87171;font-weight:700;">🗑️ [Ingress Rule] 도메인/포트 라우팅 규칙 '\${host}:\${port}\${path}'이(가) 삭제되었습니다.</span>\\n\`);
+        } else {
+          alert('삭제 실패: ' + (data.error || '오류가 발생했습니다.'));
+        }
+      } catch (err) { alert('삭제 실패: ' + err.message); }
+    };
 
     // 7-1. 실시간 가상 웹 브라우저 뷰어 제어
     window.currentVBrowser = {
@@ -7479,6 +7811,59 @@ export function renderSimulatorPage(user) {
         } else { alert(data.error); }
       } catch (err) { alert('삭제 오류: ' + err.message); }
     }
+    window.deleteNode = deleteNode;
+
+    window.deleteDeployment = async function(name) {
+      if (!currentLab || !confirm(\`디플로이먼트 '\${name}' 및 관련 파드/서비스를 삭제하시겠습니까?\`)) return;
+      try {
+        const res = await fetch(\`/api/simulator/labs/\${currentLab.id}/deployments/\${encodeURIComponent(name)}\`, { method: 'DELETE' });
+        const data = await res.json();
+        if (data.ok) {
+          currentLab = data.lab;
+          renderAll(currentLab);
+          appendTermLog(\`\\n<span style="color:#f87171;font-weight:700;">🗑️ [Deployment] 디플로이먼트 '\${name}' 및 관련 파드가 삭제되었습니다.</span>\\n\`);
+        } else { alert('삭제 실패: ' + (data.error || '오류가 발생했습니다.')); }
+      } catch (err) { alert('디플로이먼트 삭제 오류: ' + err.message); }
+    };
+
+    window.deleteService = async function(name) {
+      if (!currentLab || !confirm(\`가상 서비스 '\${name}' 및 연결된 Ingress 라우팅 규칙을 삭제하시겠습니까?\`)) return;
+      try {
+        const res = await fetch(\`/api/simulator/labs/\${currentLab.id}/services/\${encodeURIComponent(name)}\`, { method: 'DELETE' });
+        const data = await res.json();
+        if (data.ok) {
+          currentLab = data.lab;
+          renderAll(currentLab);
+          appendTermLog(\`\\n<span style="color:#f87171;font-weight:700;">🗑️ [Service] 가상 서비스 '\${name}'이(가) 삭제되었습니다.</span>\\n\`);
+        } else { alert('삭제 실패: ' + (data.error || '오류가 발생했습니다.')); }
+      } catch (err) { alert('서비스 삭제 오류: ' + err.message); }
+    };
+
+    window.deletePod = async function(name) {
+      if (!currentLab || !confirm(\`파드 '\${name}'을(를) 삭제하시겠습니까?\`)) return;
+      try {
+        const res = await fetch(\`/api/simulator/labs/\${currentLab.id}/pods/\${encodeURIComponent(name)}\`, { method: 'DELETE' });
+        const data = await res.json();
+        if (data.ok) {
+          currentLab = data.lab;
+          renderAll(currentLab);
+          appendTermLog(\`\\n<span style="color:#f87171;font-weight:700;">🗑️ [Pod] 파드 '\${name}'이(가) 삭제되었습니다.</span>\\n\`);
+        } else { alert('삭제 실패: ' + (data.error || '오류가 발생했습니다.')); }
+      } catch (err) { alert('파드 삭제 오류: ' + err.message); }
+    };
+
+    window.removeDiskFromNode = async function(nodeName, diskIdx) {
+      if (!currentLab || !confirm(\`노드 '\${nodeName}'의 추가 디스크를 분리하시겠습니까?\`)) return;
+      try {
+        const res = await fetch(\`/api/simulator/labs/\${currentLab.id}/nodes/\${encodeURIComponent(nodeName)}/disks/\${diskIdx}\`, { method: 'DELETE' });
+        const data = await res.json();
+        if (data.ok) {
+          currentLab = data.lab;
+          renderAll(currentLab);
+          appendTermLog(\`\\n<span style="color:#f87171;font-weight:700;">🗑️ [Disk Detach] 노드 '\${nodeName}'의 가상 디스크가 분리되었습니다.</span>\\n\`);
+        } else { alert('디스크 분리 실패: ' + (data.error || '오류가 발생했습니다.')); }
+      } catch (err) { alert('디스크 분리 오류: ' + err.message); }
+    };
 
     // 11. 파드 배포
     async function handleDeployWorkload(e) {
